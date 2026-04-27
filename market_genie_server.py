@@ -3827,105 +3827,189 @@ def macro_pulse():
     return jsonify(result)
 
 
-# ── Kronos-Style Price Forecast ───────────────────────────────────────────────
+# ── Real Kronos AI Model — lazy singleton loader ───────────────────────────────
+import threading as _threading
+import sys as _sys
+import os as _os
+
+_kronos_predictor      = None
+_kronos_predictor_lock = _threading.Lock()
+_kronos_loading        = False   # guard against concurrent load attempts
+
+def _load_kronos_predictor():
+    """Load KronosPredictor once and cache it globally. Thread-safe."""
+    global _kronos_predictor, _kronos_loading
+    if _kronos_predictor is not None:
+        return _kronos_predictor
+    with _kronos_predictor_lock:
+        if _kronos_predictor is not None:
+            return _kronos_predictor
+        if _kronos_loading:
+            return None   # already being loaded by another thread
+        _kronos_loading = True
+
+    try:
+        print("[Kronos] Loading model from HuggingFace (first run — ~1 min)…")
+        # Ensure the model package is importable from this file's directory
+        _app_dir = _os.path.dirname(_os.path.abspath(__file__))
+        if _app_dir not in _sys.path:
+            _sys.path.insert(0, _app_dir)
+
+        from model import KronosTokenizer, Kronos, KronosPredictor
+
+        tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
+        model_k   = Kronos.from_pretrained("NeoQuasar/Kronos-mini")
+        predictor = KronosPredictor(model_k, tokenizer, device="cpu", max_context=2048)
+
+        with _kronos_predictor_lock:
+            _kronos_predictor = predictor
+        print("[Kronos] Model ready ✓")
+        return predictor
+
+    except Exception as e:
+        print(f"[Kronos] Failed to load model: {e}")
+        _kronos_loading = False   # allow retry
+        return None
+
+
+def _get_kronos_ohlcv(ticker, lookback=200):
+    """Fetch 5-min OHLCV bars for a ticker; return (df, timestamps) or (None, None)."""
+    import pandas as pd
+    try:
+        t    = yf.Ticker(ticker)
+        hist = t.history(period="30d", interval="5m")
+        hist = hist[hist["Volume"] >= 0].dropna(subset=["Close"])
+        if len(hist) < 50:
+            return None, None
+
+        hist = hist.tail(lookback)
+        hist.index = hist.index.tz_localize(None) if hist.index.tzinfo else hist.index
+
+        df = pd.DataFrame({
+            "open":   hist["Open"].values,
+            "high":   hist["High"].values,
+            "low":    hist["Low"].values,
+            "close":  hist["Close"].values,
+            "volume": hist["Volume"].values,
+        })
+        timestamps = pd.Series(pd.to_datetime(hist.index))
+        return df, timestamps
+    except Exception:
+        return None, None
+
+
+# Kick off model pre-load in background the moment the module is imported
+# (works for both Gunicorn and local __main__ runs)
+_threading.Thread(target=_load_kronos_predictor, daemon=True).start()
+
+
+def _make_future_timestamps(last_ts, n_bars=20, interval_min=5):
+    """Generate n_bars future 5-min timestamps, skipping weekends."""
+    import pandas as pd
+    from datetime import timedelta
+    ts = pd.Timestamp(last_ts)
+    future = []
+    delta = timedelta(minutes=interval_min)
+    cur = ts
+    for _ in range(n_bars):
+        cur += delta
+        while cur.weekday() >= 5:   # skip Saturday / Sunday
+            cur += timedelta(days=1)
+        future.append(cur)
+    return pd.Series(future)
+
+
+# ── Kronos Real-AI Price Forecast ─────────────────────────────────────────────
 @app.route("/api/forecast/<ticker>")
 def api_forecast(ticker):
     """
-    Kronos-inspired probabilistic price forecast using Geometric Brownian Motion
-    + momentum bias.  Uses the same mathematical foundation as the Kronos AI model
-    (stochastic differential equations over recent OHLCV context).
-
-    Returns mean forecast path + 68% and 95% confidence bands for next 20 bars.
-    Cache: 60s
+    Real Kronos foundation-model price forecast (transformer trained on 45+ exchanges).
+    Uses KronosPredictor (NeoQuasar/Kronos-mini, 4.1M params) for 20-bar ahead prediction.
+    Falls back to GBM+Momentum if model is still loading.
+    Cache: 90s
     """
-    try:
-        import numpy as np
-    except ImportError:
-        return jsonify({"error": "numpy not installed — restart the server after running START Market Genie.bat"}), 500
+    import numpy as np
     from datetime import timedelta
 
     ticker = ticker.upper()
     key = f"forecast:{ticker}"
-    if (v := cached(key, ttl=60)): return jsonify(v)
+    if (v := cached(key, ttl=90)): return jsonify(v)
 
     try:
-        t = yf.Ticker(ticker)
+        pred_len = 20
+        predictor = _load_kronos_predictor()
 
-        # ── Context data: prefer 1-min intraday, fall back to 5-min ──────────
-        hist = t.history(period="1d", interval="1m")
-        interval_sec = 60
-        if hist.empty or len(hist) < 30:
-            hist = t.history(period="5d", interval="5m")
-            interval_sec = 300
-        hist = hist[hist["Volume"] >= 0].dropna(subset=["Close"])
-
-        if len(hist) < 20:
+        # ── Fetch OHLCV data ──────────────────────────────────────────────────
+        df, x_ts = _get_kronos_ohlcv(ticker, lookback=300)
+        if df is None or len(df) < 50:
             return jsonify({"error": "Insufficient data for forecast"}), 400
 
-        # ── Use last 100 bars as Kronos-style context window ──────────────────
-        context_df   = hist.tail(100)
-        closes       = context_df["Close"].values.astype(float)
-        last_price   = float(closes[-1])
-        last_ts      = context_df.index[-1]
+        last_price = float(df["close"].iloc[-1])
+        last_ts    = x_ts.iloc[-1]
 
-        # Infer actual bar interval from data
-        if len(context_df) >= 2:
-            interval_sec = int((context_df.index[-1] - context_df.index[-2]).total_seconds())
-        interval_sec = max(interval_sec, 60)
+        if predictor is not None:
+            # ── Real Kronos inference ─────────────────────────────────────────
+            y_ts = _make_future_timestamps(last_ts, n_bars=pred_len, interval_min=5)
 
-        # ── GBM parameters from log returns ───────────────────────────────────
-        log_ret  = np.log(closes[1:] / closes[:-1])
-        mu       = float(np.mean(log_ret))        # drift per bar
-        sigma    = float(np.std(log_ret))         # volatility per bar
-
-        # Momentum: weight last 10 bars more heavily (30% momentum, 70% mean)
-        recent_ret = log_ret[-10:]
-        momentum   = float(np.mean(recent_ret))
-        adj_mu     = mu * 0.7 + momentum * 0.3
-
-        # ── Monte Carlo: 300 paths × 20 forward bars ──────────────────────────
-        pred_len  = 20
-        n_sims    = 300
-        np.random.seed(int(last_price * 1000) % (2**31))  # deterministic per price level
-
-        shocks = np.random.standard_normal((n_sims, pred_len))
-        paths  = np.zeros((n_sims, pred_len + 1))
-        paths[:, 0] = last_price
-
-        for i in range(pred_len):
-            paths[:, i+1] = paths[:, i] * np.exp(
-                (adj_mu - 0.5 * sigma**2) + sigma * shocks[:, i]
+            pred_df = predictor.predict(
+                df=df,
+                x_timestamp=x_ts,
+                y_timestamp=y_ts,
+                pred_len=pred_len,
+                T=1.0, top_k=0, top_p=0.9, sample_count=3,
+                verbose=False
             )
 
-        forecast = paths[:, 1:]   # (n_sims, pred_len)
+            mean_path = pred_df["close"].values
+            # Approx bands from high/low predictions
+            upper_68  = pred_df["high"].values
+            lower_68  = pred_df["low"].values
+            upper_95  = pred_df["high"].values * 1.005
+            lower_95  = pred_df["low"].values * 0.995
 
-        mean_path = np.mean(forecast, axis=0)
-        upper_68  = np.percentile(forecast, 84,   axis=0)
-        lower_68  = np.percentile(forecast, 16,   axis=0)
-        upper_95  = np.percentile(forecast, 97.5, axis=0)
-        lower_95  = np.percentile(forecast, 2.5,  axis=0)
+            prob_up     = float(np.mean(mean_path > last_price) * 100)
+            if prob_up == 0 or prob_up == 100:   # heuristic when all same direction
+                prob_up = 85.0 if mean_path[-1] > last_price else 15.0
+            expected_chg = round((float(mean_path[-1]) - last_price) / last_price * 100, 2)
+            future_ts    = [int(ts.timestamp()) for ts in y_ts]
+            model_label  = "Kronos-mini (Transformer · 4.1M params)"
 
-        # ── Future timestamps (skip weekends) ─────────────────────────────────
-        future_ts = []
-        ts = last_ts.to_pydatetime() if hasattr(last_ts, 'to_pydatetime') else last_ts
-        # Strip timezone for arithmetic (use replace, no pytz needed)
-        ts_naive = ts.replace(tzinfo=None)
-        for _ in range(pred_len):
-            ts_naive += timedelta(seconds=interval_sec)
-            while ts_naive.weekday() >= 5:   # skip Sat/Sun
-                ts_naive += timedelta(days=1)
-            future_ts.append(int(ts_naive.timestamp()))
-
-        # ── Forecast statistics ────────────────────────────────────────────────
-        final_prices  = forecast[:, -1]
-        prob_up       = float(np.mean(final_prices > last_price) * 100)
-        expected_chg  = round(float(mean_path[-1] - last_price) / last_price * 100, 2)
-        volatility_pct = round(float(sigma) * 100, 3)
+        else:
+            # ── GBM fallback while model is loading ──────────────────────────
+            closes  = df["close"].values.astype(float)
+            log_ret = np.log(closes[1:] / closes[:-1])
+            mu      = float(np.mean(log_ret))
+            sigma   = float(np.std(log_ret))
+            adj_mu  = mu * 0.7 + float(np.mean(log_ret[-10:])) * 0.3
+            n_sims  = 300
+            np.random.seed(int(last_price * 1000) % (2**31))
+            shocks  = np.random.standard_normal((n_sims, pred_len))
+            paths   = np.zeros((n_sims, pred_len + 1))
+            paths[:, 0] = last_price
+            for i in range(pred_len):
+                paths[:, i+1] = paths[:, i] * np.exp((adj_mu - 0.5*sigma**2) + sigma*shocks[:, i])
+            forecast  = paths[:, 1:]
+            mean_path = np.mean(forecast, axis=0)
+            upper_68  = np.percentile(forecast, 84,   axis=0)
+            lower_68  = np.percentile(forecast, 16,   axis=0)
+            upper_95  = np.percentile(forecast, 97.5, axis=0)
+            lower_95  = np.percentile(forecast, 2.5,  axis=0)
+            prob_up   = float(np.mean(forecast[:, -1] > last_price) * 100)
+            expected_chg = round((float(mean_path[-1]) - last_price) / last_price * 100, 2)
+            ts_naive  = last_ts.to_pydatetime() if hasattr(last_ts, 'to_pydatetime') else last_ts
+            ts_naive  = ts_naive.replace(tzinfo=None)
+            future_ts = []
+            for _ in range(pred_len):
+                ts_naive += timedelta(seconds=300)
+                while ts_naive.weekday() >= 5:
+                    ts_naive += timedelta(days=1)
+                future_ts.append(int(ts_naive.timestamp()))
+            model_label = "GBM+Momentum (Kronos loading…)"
 
         result = {
             "ticker":       ticker,
             "anchor_price": round(last_price, 4),
-            "anchor_ts":    int(last_ts.timestamp()),
+            "anchor_ts":    int(last_ts.timestamp()) if hasattr(last_ts, 'timestamp') else int(last_ts.value // 1e9),
             "timestamps":   future_ts,
             "mean":         [round(float(v), 4) for v in mean_path],
             "upper_68":     [round(float(v), 4) for v in upper_68],
@@ -3934,10 +4018,9 @@ def api_forecast(ticker):
             "lower_95":     [round(float(v), 4) for v in lower_95],
             "prob_up":      round(prob_up, 1),
             "expected_chg": expected_chg,
-            "volatility":   volatility_pct,
             "pred_len":     pred_len,
-            "context_bars": len(context_df),
-            "model":        "GBM+Momentum (Kronos-style)",
+            "context_bars": len(df),
+            "model":        model_label,
         }
         return jsonify(set_cache(key, result))
 
@@ -3947,87 +4030,147 @@ def api_forecast(ticker):
         return jsonify({"error": str(e)}), 500
 
 
-# ── Kronos Top Signals Scanner ────────────────────────────────────────────────
+# ── Kronos Top Signals Scanner — real AI on elite 40-stock universe ────────────
 @app.route("/api/kronos/scanner")
 def kronos_scanner():
     """
-    Runs the Kronos GBM+Momentum forecast across a universe of 60 liquid stocks.
-    Returns up to 10 tickers where prob_up >= 80% (strong bull) or <= 20% (strong bear).
-    Sorted by signal strength. Cache: 5 minutes.
+    Runs the real Kronos-mini transformer forecast on 40 high-volume US stocks.
+    Uses predict_batch() for efficiency. Falls back to GBM if model not yet loaded.
+    Cache: 10 minutes.
     """
-    try:
-        import numpy as np
-    except ImportError:
-        return jsonify({"error": "numpy not installed"}), 500
+    import numpy as np
+    import pandas as pd
     from concurrent.futures import ThreadPoolExecutor, as_completed as _asc2
 
-    UNIVERSE = SCANNER_UNIVERSE   # ~200 curated names
+    # Elite universe — top 40 most liquid US stocks/ETFs for day trading
+    ELITE_UNIVERSE = [
+        "AAPL","MSFT","NVDA","TSLA","AMZN","META","GOOGL","AMD","SPY","QQQ",
+        "SOFI","PLTR","RIVN","LCID","NIO","MARA","RIOT","COIN","HOOD","RBLX",
+        "SNAP","UBER","LYFT","ABNB","SHOP","SQ","PYPL","ROKU","ZM","ARKK",
+        "SQQQ","TQQQ","SPXL","UPRO","IWM","DIA","XLF","XLE","GLD","MSTR",
+    ]
 
     key = "kronos:scanner"
-    if (v := cached(key, ttl=300)): return jsonify(v)
+    if (v := cached(key, ttl=600)): return jsonify(v)
 
-    def _run_one(sym):
-        try:
-            t    = yf.Ticker(sym)
-            # Use 5d/5m — more reliable on cloud, still enough context
-            hist = t.history(period="5d", interval="5m")
-            hist = hist[hist["Volume"] >= 0].dropna(subset=["Close"])
-            if len(hist) < 20:
-                return None
-            ctx    = hist.tail(100)
-            closes = ctx["Close"].values.astype(float)
-            last_p = float(closes[-1])
-            if last_p <= 0:
-                return None
-            log_ret = np.log(closes[1:] / closes[:-1])
-            mu      = float(np.mean(log_ret))
-            sigma   = float(np.std(log_ret))
-            if sigma < 1e-8:
-                return None
-            adj_mu  = mu * 0.7 + float(np.mean(log_ret[-10:])) * 0.3
-            pred_len, n_sims = 20, 300
-            np.random.seed(int(last_p * 1000) % (2**31))
-            shocks  = np.random.standard_normal((n_sims, pred_len))
-            paths   = np.zeros((n_sims, pred_len + 1))
-            paths[:, 0] = last_p
-            for i in range(pred_len):
-                paths[:, i+1] = paths[:, i] * np.exp(
-                    (adj_mu - 0.5 * sigma**2) + sigma * shocks[:, i])
-            finals   = paths[:, 1:][:, -1]
-            prob_up  = float(np.mean(finals > last_p) * 100)
-            mean_end = float(np.mean(finals))
-            exp_chg  = round((mean_end - last_p) / last_p * 100, 2)
-            return {
-                "sym":          sym,
-                "price":        round(last_p, 2),
-                "prob_up":      round(prob_up, 1),
-                "direction":    "up" if prob_up >= 50 else "down",
-                "prob_pct":     round(prob_up, 1) if prob_up >= 50 else round(100 - prob_up, 1),
-                "expected_chg": exp_chg,
-                "volatility":   round(float(sigma) * 100, 3),
-                "bars":         len(ctx),
-            }
-        except Exception:
-            return None
+    pred_len = 20
+    LOOKBACK = 200   # must be identical for all tickers in batch
+
+    # ── Step 1: Fetch OHLCV for all tickers in parallel ──────────────────────
+    def _fetch(sym):
+        df, ts = _get_kronos_ohlcv(sym, lookback=LOOKBACK)
+        if df is None or len(df) < LOOKBACK:
+            return sym, None, None
+        return sym, df, ts
+
+    ticker_data = {}
+    with ThreadPoolExecutor(max_workers=20) as ex:
+        futs = {ex.submit(_fetch, s): s for s in ELITE_UNIVERSE}
+        for fut in _asc2(futs, timeout=60):
+            try:
+                sym, df, ts = fut.result()
+                if df is not None:
+                    ticker_data[sym] = (df, ts)
+            except Exception:
+                pass
+
+    valid_syms = list(ticker_data.keys())
+    if not valid_syms:
+        return jsonify({"error": "No data available", "signals": [], "scanned": 0, "found": 0, "ts": int(time.time())}), 200
 
     results = []
-    with ThreadPoolExecutor(max_workers=20) as ex:
-        futs = {ex.submit(_run_one, s): s for s in UNIVERSE}
-        for fut in _asc2(futs, timeout=55):   # 55s — more stocks, more workers
-            try:
-                r = fut.result()
-            except Exception:
-                r = None
-            if r and (r["prob_up"] >= 70 or r["prob_up"] <= 30):
-                results.append(r)
+    predictor = _load_kronos_predictor()
 
-    # Sort by distance from 50% (strongest signal first)
-    results.sort(key=lambda x: abs(x["prob_up"] - 50), reverse=True)
+    if predictor is not None:
+        # ── Real Kronos batch inference ───────────────────────────────────────
+        try:
+            # Trim all to shortest available length (batch requires identical seq_len)
+            min_len = min(len(ticker_data[s][0]) for s in valid_syms)
+            min_len = min(min_len, LOOKBACK)
+
+            df_list, x_ts_list, y_ts_list = [], [], []
+            for sym in valid_syms:
+                df, ts = ticker_data[sym]
+                df_trim = df.tail(min_len).reset_index(drop=True)
+                ts_trim = ts.tail(min_len).reset_index(drop=True)
+                last_ts = ts_trim.iloc[-1]
+                y_ts = _make_future_timestamps(last_ts, n_bars=pred_len, interval_min=5)
+                df_list.append(df_trim)
+                x_ts_list.append(ts_trim)
+                y_ts_list.append(y_ts)
+
+            pred_dfs = predictor.predict_batch(
+                df_list, x_ts_list, y_ts_list, pred_len,
+                T=1.0, top_k=0, top_p=0.9, sample_count=1, verbose=False
+            )
+
+            for i, sym in enumerate(valid_syms):
+                try:
+                    pred_df  = pred_dfs[i]
+                    last_p   = float(ticker_data[sym][0]["close"].iloc[-1])
+                    mean_end = float(pred_df["close"].iloc[-1])
+                    # Count predicted bars above vs below anchor for probability
+                    closes_pred = pred_df["close"].values
+                    prob_up  = float(np.mean(closes_pred > last_p) * 100)
+                    exp_chg  = round((mean_end - last_p) / last_p * 100, 2)
+                    results.append({
+                        "sym":          sym,
+                        "price":        round(last_p, 2),
+                        "prob_up":      round(prob_up, 1),
+                        "direction":    "up" if prob_up >= 50 else "down",
+                        "prob_pct":     round(prob_up, 1) if prob_up >= 50 else round(100 - prob_up, 1),
+                        "expected_chg": exp_chg,
+                        "bars":         min_len,
+                    })
+                except Exception:
+                    pass
+
+        except Exception as e:
+            print(f"[KronosScanner] Batch inference error: {e}")
+            predictor = None   # fall through to GBM below
+
+    if not results:
+        # ── GBM fallback ─────────────────────────────────────────────────────
+        for sym in valid_syms:
+            try:
+                df, _ = ticker_data[sym]
+                closes  = df["close"].values.astype(float)
+                last_p  = float(closes[-1])
+                log_ret = np.log(closes[1:] / closes[:-1])
+                mu      = float(np.mean(log_ret))
+                sigma   = float(np.std(log_ret))
+                if sigma < 1e-8 or last_p <= 0:
+                    continue
+                adj_mu  = mu * 0.7 + float(np.mean(log_ret[-10:])) * 0.3
+                n_sims  = 300
+                np.random.seed(int(last_p * 1000) % (2**31))
+                shocks  = np.random.standard_normal((n_sims, pred_len))
+                paths   = np.zeros((n_sims, pred_len + 1)); paths[:, 0] = last_p
+                for i in range(pred_len):
+                    paths[:, i+1] = paths[:, i] * np.exp((adj_mu - 0.5*sigma**2) + sigma*shocks[:, i])
+                finals  = paths[:, 1:][:, -1]
+                prob_up = float(np.mean(finals > last_p) * 100)
+                exp_chg = round((float(np.mean(finals)) - last_p) / last_p * 100, 2)
+                results.append({
+                    "sym": sym, "price": round(last_p, 2),
+                    "prob_up": round(prob_up, 1),
+                    "direction": "up" if prob_up >= 50 else "down",
+                    "prob_pct": round(prob_up, 1) if prob_up >= 50 else round(100 - prob_up, 1),
+                    "expected_chg": exp_chg, "bars": len(df),
+                })
+            except Exception:
+                pass
+
+    # Filter to strong signals and rank
+    strong = [r for r in results if r["prob_up"] >= 70 or r["prob_up"] <= 30]
+    strong.sort(key=lambda x: abs(x["prob_up"] - 50), reverse=True)
+
     payload = {
-        "signals":  results[:15],   # top 15 with larger universe
-        "scanned":  len(UNIVERSE),
-        "found":    len(results),
+        "signals":  strong[:15],
+        "scanned":  len(valid_syms),
+        "found":    len(strong),
         "ts":       int(time.time()),
+        "model":    "Kronos-mini" if predictor is not None else "GBM+Momentum",
     }
     return jsonify(set_cache(key, payload))
 
