@@ -4109,10 +4109,16 @@ def kronos_scanner():
                     pred_df  = pred_dfs[i]
                     last_p   = float(ticker_data[sym][0]["close"].iloc[-1])
                     mean_end = float(pred_df["close"].iloc[-1])
-                    # Count predicted bars above vs below anchor for probability
                     closes_pred = pred_df["close"].values
-                    prob_up  = float(np.mean(closes_pred > last_p) * 100)
-                    exp_chg  = round((mean_end - last_p) / last_p * 100, 2)
+                    exp_chg_pct = (mean_end - last_p) / last_p * 100
+                    # Use signal-to-noise: scale expected move by predicted path volatility
+                    # This prevents 100%/0% clustering from a single deterministic path
+                    path_std_pct = float(np.std(closes_pred) / last_p * 100) if last_p > 0 else 1.0
+                    path_std_pct = max(path_std_pct, 0.3)  # floor to avoid div-by-zero
+                    z = exp_chg_pct / path_std_pct
+                    prob_up = float(50.0 + 50.0 * math.tanh(z * 0.8))
+                    prob_up = max(5.0, min(95.0, round(prob_up, 1)))
+                    exp_chg  = round(exp_chg_pct, 2)
                     results.append({
                         "sym":          sym,
                         "price":        round(last_p, 2),
