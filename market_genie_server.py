@@ -4201,8 +4201,8 @@ def scalp_scanner():
     # ── Fetch SPY 1-min for relative-strength baseline ─────────────────────
     spy_ret1 = 0.0
     try:
-        spy_raw = yf.download("SPY", period="1d", interval="1m",
-                              progress=False, auto_adjust=True)
+        spy_tk  = yf.Ticker("SPY")
+        spy_raw = spy_tk.history(period="1d", interval="1m")
         if spy_raw is not None and len(spy_raw) >= 3:
             spy_raw.columns = [c.lower() for c in spy_raw.columns]
             sc = spy_raw["close"].values.astype(float)
@@ -4309,12 +4309,18 @@ def scalp_scanner():
     # Parallel fetch — 8 threads for speed
     import concurrent.futures
     alerts = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
-        futures = {ex.submit(_fetch_sym, sym): sym for sym in _SCALP_UNIVERSE}
-        for fut in concurrent.futures.as_completed(futures):
-            res = fut.result()
-            if res:
-                alerts.append(res)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            futures = {ex.submit(_fetch_sym, sym): sym for sym in _SCALP_UNIVERSE}
+            for fut in concurrent.futures.as_completed(futures, timeout=25):
+                try:
+                    res = fut.result()
+                    if res:
+                        alerts.append(res)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[Scalp] Batch error: {e}")
 
     alerts.sort(key=lambda x: (x["score"], abs(x["chg_pct"])), reverse=True)
 
