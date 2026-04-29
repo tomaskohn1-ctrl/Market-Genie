@@ -2475,6 +2475,27 @@
     </div>
   </div>
 
+  <!-- ── Contract Award Alerts — USASpending.gov ──────────────────── -->
+  <div class="card" data-tab="signal" id="contractAlertCard">
+    <div class="card-header">
+      <div class="card-title"><span class="card-icon">📜</span> Contract Awards <span style="font-size:10px;font-weight:400;color:var(--muted)">USASpending.gov</span></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="contractBadge" class="card-tag tag-neutral">Ready</span>
+        <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="loadContractAlerts(true)">▶ Scan</button>
+      </div>
+    </div>
+    <div class="card-body" style="padding:0">
+      <div style="padding:10px 14px 6px;font-size:10px;color:var(--muted)">
+        Federal contracts $5M+ awarded in last 48h matched to <strong style="color:var(--text-hi)">publicly traded companies</strong> · Small &amp; Mid cap focus · Auto-refreshes every 5 min
+      </div>
+      <div id="contractBody">
+        <div style="padding:20px 14px;text-align:center;color:var(--muted);font-size:12px">
+          Click <strong>▶ Scan</strong> to find public companies receiving new government contracts
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Scalp Alerts — 5-10 min momentum scanner ──────────────── -->
   <div class="card" data-tab="signal" id="scalpAlertCard">
     <div class="card-header">
@@ -4978,6 +4999,82 @@ function wlSortBy(col) {
   renderWatchlistScanner();
 }
 
+// ── Contract Award Scanner ────────────────────────────────────────────────────
+let _contractData     = null;
+let _contractInterval = null;
+const CONTRACT_REFRESH_MS = 5 * 60 * 1000;  // 5-minute auto-refresh
+
+async function loadContractAlerts(force = false) {
+  if (!SERVER_MODE) return;
+  const badge = document.getElementById('contractBadge');
+  const body  = document.getElementById('contractBody');
+  if (badge) { badge.textContent = 'Scanning…'; badge.className = 'card-tag tag-neutral'; }
+  if (body)  { body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">📜 Fetching contract awards from USASpending.gov…</div>`; }
+  try {
+    const resp = await fetch('/api/contracts/scanner');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    _contractData = await resp.json();
+    renderContractAlerts();
+    if (!_contractInterval) {
+      _contractInterval = setInterval(() => loadContractAlerts(true), CONTRACT_REFRESH_MS);
+    }
+  } catch(e) {
+    if (body) body.innerHTML = `<div style="padding:20px;text-align:center;color:#ff4455;font-size:12px">Error loading contracts: ${e.message}</div>`;
+    if (badge) { badge.textContent = 'Error'; badge.className = 'card-tag tag-bear'; }
+  }
+}
+
+function renderContractAlerts() {
+  const d     = _contractData;
+  const badge = document.getElementById('contractBadge');
+  const body  = document.getElementById('contractBody');
+  if (!d || !body) return;
+
+  const total = d.alerts ? d.alerts.length : 0;
+  if (badge) {
+    badge.textContent = total > 0 ? `${total} MATCHED` : 'No Matches';
+    badge.className   = total > 0 ? 'card-tag tag-bull' : 'card-tag tag-neutral';
+  }
+
+  if (!total) {
+    body.innerHTML = `<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">No public company contract matches in last 48h. Auto-retrying in 5 min.</div>`;
+    return;
+  }
+
+  const CAP_COLORS = { 'Small Cap': '#ff9900', 'Mid Cap': '#00aaff', 'Large Cap': '#718096', 'Unknown': '#718096' };
+
+  const rows = d.alerts.map(a => {
+    const capClr  = CAP_COLORS[a.cap_label] || '#718096';
+    const chgClr  = a.chg_pct >= 0 ? '#00e676' : '#ff4455';
+    const chgStr  = (a.chg_pct >= 0 ? '+' : '') + a.chg_pct + '%';
+    const agency  = a.agency.replace('Department of ', 'DoD ').replace('Department of Defense', 'DoD');
+    const desc    = a.description ? `<div style="font-size:9px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px">${a.description}</div>` : '';
+
+    return `<div style="display:grid;grid-template-columns:70px 1fr auto;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--border);cursor:pointer" onclick="loadTicker('${a.ticker}')">
+      <div>
+        <div style="font-size:14px;font-weight:700;color:var(--text-hi)">${a.ticker}</div>
+        <div style="font-size:9px;color:${capClr};font-weight:600">${a.cap_label}</div>
+      </div>
+      <div style="min-width:0">
+        <div style="font-size:11px;color:var(--text-hi);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${a.recipient}</div>
+        <div style="font-size:10px;color:var(--muted)">${agency}</div>
+        ${desc}
+      </div>
+      <div style="text-align:right;white-space:nowrap">
+        <div style="font-size:13px;font-weight:700;color:#ffcc00">${a.amount_fmt}</div>
+        <div style="font-size:11px;color:${chgClr}">${chgStr} · $${a.price}</div>
+        <div style="font-size:9px;color:var(--muted)">${a.date}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const footer = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);border-top:1px solid var(--border)">
+    ${total} public companies matched · ${new Date(d.ts * 1000).toLocaleTimeString()} · Source: USASpending.gov
+  </div>`;
+
+  body.innerHTML = rows + footer;
+}
+
 // ── Scalp Alerts Scanner ──────────────────────────────────────────────────────
 const SCALP_REFRESH_MS  = 60_000;   // 60-second auto-refresh
 let _scalpData          = null;
@@ -6186,6 +6283,7 @@ window.onload = () => {
     setInterval(refreshEtfFlows,    120000);   // 2min — ETF flows
     setInterval(refreshPreMarket,    60000);   // 60s — pre/after-hours movers
     setInterval(refreshHeatmap,     120000);   // 2min — S&P 500 heat map
+    loadContractAlerts();                      // initial load on startup
   } else {
     const banner = document.createElement('div');
     banner.style.cssText = 'background:rgba(255,170,0,0.08);border-bottom:1px solid rgba(255,170,0,0.2);padding:6px 24px;font-size:11px;color:#ffaa00;text-align:center';
@@ -7673,174 +7771,4 @@ function _renderCompanyCard(d) {
   const webEl = document.getElementById('companyWebsiteEl');
   const webVal = document.getElementById('companyWebsiteVal');
   if (webEl && website) {
-    webEl.style.display = 'inline';
-    webEl.href = website.startsWith('http') ? website : 'https://' + website;
-    if (webVal) webVal.textContent = website.replace(/^https?:\/\//, '').replace(/\/$/, '');
-  } else if (webEl) {
-    webEl.style.display = 'none';
-  }
-}
-
-// ── Quick-Set Alert helpers ───────────────────────────────────────────────────
-
-function openQuickAlert() {
-  const ticker = _lastTicker;
-  if (!ticker) { showAlertToast('Scan a ticker first', 'warn'); return; }
-  const priceText = document.getElementById('heroPrice')?.textContent || '';
-  const cur = parseFloat(priceText.replace(/[^0-9.]/g, '')) || 0;
-  const tickerInput = document.getElementById('alertTicker');
-  const priceInput  = document.getElementById('alertPrice');
-  if (tickerInput) tickerInput.value = ticker;
-  if (priceInput && cur > 0) priceInput.value = cur.toFixed(2);
-  const panel = document.getElementById('alertsPanel');
-  if (panel) { panel.style.display = 'block'; _alertsVisible = true; }
-  _renderSuggestedLevels(ticker, cur);
-  setTimeout(() => priceInput?.focus(), 100);
-}
-
-function _renderSuggestedLevels(ticker, cur) {
-  const wrap = document.getElementById('suggestedLevels');
-  if (!wrap) return;
-  if (!cur || cur <= 0) { wrap.innerHTML = ''; return; }
-  const pct  = (p) => (cur * p).toFixed(2);
-  const levels = [
-    { label: '+3%',  price: pct(1.03), dir: 'above' },
-    { label: '+1%',  price: pct(1.01), dir: 'above' },
-    { label: '-1%',  price: pct(0.99), dir: 'below' },
-    { label: '-3%',  price: pct(0.97), dir: 'below' },
-    { label: '-5%',  price: pct(0.95), dir: 'below' },
-  ];
-  wrap.innerHTML = '<div style="font-size:11px;color:var(--txt-dim);margin-bottom:6px;">Quick set:</div>' +
-    levels.map(l =>
-      `<button onclick="_quickSetLevel('${l.price}','${l.dir}')"
-        style="margin:2px;padding:3px 8px;font-size:11px;border-radius:6px;border:1px solid var(--border);
-               background:var(--card2);color:var(--txt-main);cursor:pointer;"
-        title="${l.dir} ${l.price}">${l.label} — $${l.price}</button>`
-    ).join('');
-}
-
-function _quickSetLevel(price, dir) {
-  const priceInput = document.getElementById('alertPrice');
-  const dirSel     = document.getElementById('alertDir');
-  if (priceInput) priceInput.value = price;
-  if (dirSel)     dirSel.value     = dir;
-  priceInput?.focus();
-}
-
-// ── Per-ticker elite indicators are wired directly in fetchLiveData() ────────
-// (loadMultiTF, loadRelativeStrength, loadDarkPool called after populateLiveDashboard)
-
-// ── Push Alerts (ntfy.sh) ─────────────────────────────────────────────────────
-
-function saveNtfyTopic() {
-  const input = document.getElementById('ntfyTopicInput');
-  const topic = (input?.value || '').trim();
-  if (!topic) { showAlertToast('Enter a topic name first', 'warn'); return; }
-  localStorage.setItem('ntfyTopic', topic);
-  showAlertToast(`Topic saved: ${topic} — now add NTFY_TOPIC to Railway Variables`, 'ok');
-}
-
-async function sendTestPush() {
-  try {
-    const res = await fetch('/api/push/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    const d = await res.json();
-    if (d.sent > 0) {
-      showAlertToast('✅ Test notification sent to ntfy!', 'ok');
-    } else {
-      showAlertToast('NTFY_TOPIC not set in Railway — check setup steps', 'warn');
-    }
-  } catch (err) {
-    showAlertToast('Test failed: ' + err.message, 'warn');
-  }
-}
-
-function saveAlertPrefs() {
-  const prefs = {
-    gapPct:      parseFloat(document.getElementById('alertGapSlider')?.value || '2.5'),
-    kronosScore: parseFloat(document.getElementById('alertKronosSlider')?.value || '70'),
-    volMult:     parseFloat(document.getElementById('alertVolSlider')?.value || '3.0'),
-  };
-  localStorage.setItem('alertPrefs', JSON.stringify(prefs));
-}
-
-function loadAlertPrefs() {
-  try {
-    const saved = localStorage.getItem('alertPrefs');
-    if (!saved) return;
-    const p = JSON.parse(saved);
-    if (document.getElementById('alertGapSlider'))    { document.getElementById('alertGapSlider').value    = p.gapPct;      document.getElementById('alertGapVal').textContent    = p.gapPct; }
-    if (document.getElementById('alertKronosSlider')) { document.getElementById('alertKronosSlider').value = p.kronosScore; document.getElementById('alertKronosVal').textContent = p.kronosScore; }
-    if (document.getElementById('alertVolSlider'))    { document.getElementById('alertVolSlider').value    = p.volMult;     document.getElementById('alertVolVal').textContent    = p.volMult; }
-    // Restore saved topic
-    const topic = localStorage.getItem('ntfyTopic');
-    if (topic && document.getElementById('ntfyTopicInput')) document.getElementById('ntfyTopicInput').value = topic;
-  } catch (e) {}
-}
-
-// Check if ntfy is configured on the server and update the status tag
-async function _checkAlertStatus() {
-  loadAlertPrefs();
-  _loadPriceAlerts();   // restore saved price alerts from localStorage
-  try {
-    const res = await fetch('/api/push/status');
-    const d   = await res.json();
-    const tag = document.getElementById('alertStatusTag');
-    const banner = document.getElementById('alertSetupBanner');
-    const guide  = document.getElementById('alertSetupGuide');
-    if (d.enabled) {
-      if (tag)    { tag.textContent = 'ON'; tag.className = 'card-tag tag-bull'; }
-      if (banner) banner.style.display = 'block';
-      if (guide)  guide.style.display  = 'none';
-    }
-  } catch (e) {}
-}
-window.addEventListener('load', _checkAlertStatus);
-
-// ── PWA: Service Worker Registration ─────────────────────────────────────────
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js')
-      .then(reg => {
-        console.log('[PWA] Service worker registered, scope:', reg.scope);
-        // Listen for SW updates and notify user
-        reg.addEventListener('updatefound', () => {
-          const newWorker = reg.installing;
-          newWorker.addEventListener('statechange', () => {
-            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-              showAlertToast('Market Genie updated — reload for the latest version', 'ok');
-            }
-          });
-        });
-      })
-      .catch(err => console.warn('[PWA] SW registration failed:', err));
-  });
-}
-
-// ── PWA: Install prompt (Android "Add to Home Screen") ───────────────────────
-let _pwaInstallPrompt = null;
-window.addEventListener('beforeinstallprompt', e => {
-  e.preventDefault();
-  _pwaInstallPrompt = e;
-  // Show install button in header if it exists
-  const btn = document.getElementById('pwaInstallBtn');
-  if (btn) btn.style.display = 'flex';
-});
-window.addEventListener('appinstalled', () => {
-  _pwaInstallPrompt = null;
-  const btn = document.getElementById('pwaInstallBtn');
-  if (btn) btn.style.display = 'none';
-  showAlertToast('Market Genie installed! 🎉', 'ok');
-});
-
-</script>
-
-<!-- Alert toast notification -->
-<div id="alertToast" style="
-  display:none;position:fixed;bottom:80px;left:50%;transform:translateX(-50%);
-  padding:12px 20px;border-radius:8px;font-size:13px;font-weight:600;
-  box-shadow:0 4px 20px rgba(0,0,0,0.5);z-index:99999;
-  transition:opacity 0.4s ease;white-space:nowrap;pointer-events:none;
-  max-width:90vw;text-align:center"></div>
-
-</body>
-</html>
+    webEl.style.display 
