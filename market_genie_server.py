@@ -4111,18 +4111,10 @@ def kronos_scanner():
                     mean_end = float(pred_df["close"].iloc[-1])
                     closes_pred = pred_df["close"].values
                     exp_chg_pct = (mean_end - last_p) / last_p * 100
-                    # Normalize against historical volatility (not predicted path std)
-                    # Kronos produces smooth deterministic paths so path std is tiny.
-                    # Using realized vol gives realistic 55-85% probability range.
-                    hist_closes = ticker_data[sym][0]["close"].values.astype(float)
-                    log_rets = np.log(hist_closes[1:] / hist_closes[:-1])
-                    hist_vol_pct = float(np.std(log_rets[-30:]) * 100) if len(log_rets) >= 5 else 1.0
-                    hist_vol_pct = max(hist_vol_pct, 0.2)
-                    # Expected log change vs vol over pred_len bars
-                    exp_log_chg = math.log(mean_end / last_p) if last_p > 0 and mean_end > 0 else 0.0
-                    vol_over_horizon = hist_vol_pct * math.sqrt(pred_len)
-                    z = (exp_log_chg * 100) / vol_over_horizon
-                    prob_up = float(50.0 + 50.0 * math.tanh(z * 1.2))
+                    # Sigmoid on expected % change with wide denominator (6.0)
+                    # Gives realistic spread: ±2%→73%, ±5%→84%, ±8%→93% (capped 95%)
+                    # Kronos predicts large moves on 5-min bars so wide scale avoids 100% clustering
+                    prob_up = float(50.0 + 50.0 * math.tanh(exp_chg_pct / 6.0))
                     prob_up = max(5.0, min(95.0, round(prob_up, 1)))
                     exp_chg  = round(exp_chg_pct, 2)
                     results.append({
