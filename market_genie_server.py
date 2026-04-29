@@ -4193,6 +4193,15 @@ _SCALP_UNIVERSE = [
 
 @app.route("/api/scalp/scanner")
 def scalp_scanner():
+    try:
+        return _scalp_scanner_inner()
+    except Exception as e:
+        print(f"[Scalp] Fatal: {e}")
+        return jsonify({"alerts": [], "total": 0, "scanned": 0,
+                        "ts": int(time.time()), "spy_ret1": 0.0,
+                        "error": str(e)}), 200
+
+def _scalp_scanner_inner():
     import numpy as np
     now = time.time()
     if _scalp_cache["data"] and now - _scalp_cache["ts"] < _SCALP_TTL:
