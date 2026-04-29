@@ -4181,14 +4181,40 @@ def kronos_scanner():
 
 # ── Scalp Alert Scanner — 5-10 min momentum/volume/VWAP signals ───────────────
 _scalp_cache = {"ts": 0, "data": None}
-_SCALP_TTL   = 60   # 60-second cache
+_SCALP_TTL   = 30   # 30-second cache for fresher signals
 
 _SCALP_UNIVERSE = [
-    "AAPL","MSFT","NVDA","TSLA","AMZN","META","AMD","GOOGL",
-    "SPY","QQQ","IWM","TQQQ","SQQQ",
-    "SOFI","PLTR","COIN","HOOD","MARA","RIOT","MSTR",
-    "RIVN","LCID","NIO","RBLX","SNAP","UBER","SHOP","SQ","PYPL",
-    "ABNB","LYFT","ARKK","GLD","XLF"
+    # ── Mega-cap tech ─────────────────────────────────────────────────────
+    "AAPL","MSFT","NVDA","TSLA","AMZN","META","AMD","GOOGL","GOOG","AVGO",
+    "ORCL","CRM","ADBE","INTC","QCOM","MU","ARM","AMAT","LRCX","KLAC",
+    "MRVL","TXN","SMCI","DELL","HPQ",
+    # ── High-beta / retail favorites ──────────────────────────────────────
+    "PLTR","SOFI","COIN","HOOD","MARA","RIOT","MSTR","CLSK","HUT",
+    "GME","AMC","SOUN","IONQ","QBTS","RGTI","BBAI",
+    "RBLX","SNAP","PINS","RDDT","HIMS","OPEN","SPCE",
+    # ── ETFs (leveraged + sector) ─────────────────────────────────────────
+    "SPY","QQQ","IWM","TQQQ","SQQQ","SPXL","SPXS","LABU","LABD",
+    "UVXY","VXX","ARKK","ARKG","SOXL","SOXS",
+    "XLF","XLE","XLK","XBI","XLV","GDX","GDXJ",
+    # ── Growth / SaaS ────────────────────────────────────────────────────
+    "SHOP","SNOW","DDOG","NET","CRWD","OKTA","ZS","PANW","S",
+    "BILL","HUBS","MDB","APP","TTD","ROKU","TWLO",
+    # ── Financials ───────────────────────────────────────────────────────
+    "JPM","BAC","GS","MS","C","WFC","BX","KKR","SCHW",
+    "NU","AFRM","UPST","SQ","PYPL","V","MA",
+    # ── EV / Autos ───────────────────────────────────────────────────────
+    "RIVN","LCID","NIO","XPEV","LI","F","GM",
+    # ── Energy ───────────────────────────────────────────────────────────
+    "XOM","CVX","SLB","HAL","OXY","DVN","FANG","AR",
+    # ── Healthcare / Biotech ─────────────────────────────────────────────
+    "MRNA","NVAX","BNTX","PFE","ABBV","LLY","ISRG","DXCM",
+    "CRSP","EDIT","SRPT","REGN","BIIB","VRTX",
+    # ── Consumer / Media ─────────────────────────────────────────────────
+    "NFLX","DIS","UBER","LYFT","ABNB","DASH","SPOT","CHWY","ETSY",
+    # ── China ADRs ───────────────────────────────────────────────────────
+    "BABA","JD","PDD","BIDU","BILI",
+    # ── Commodities / Macro ──────────────────────────────────────────────
+    "GLD","SLV","USO","GOLD","NEM",
 ]
 
 @app.route("/api/scalp/scanner")
@@ -4269,27 +4295,64 @@ def _scalp_scanner_inner():
             rs_strong = abs(sym_ret1) > abs(spy_ret1) * 1.5 and abs(sym_ret1) > 0.15
             rs_up     = sym_ret1 > 0
 
-            # ── Directional scoring ────────────────────────────────────────
+            # ── PRE-MOVE Signal 6: Bollinger Band Squeeze ─────────────────
+            # Bands tightening = energy coiling before a breakout
+            bb_squeeze = False
+            bb_up      = last_p >= vwap_now   # direction follows VWAP position
+            if len(closes) >= 35:
+                std_recent = float(np.std(closes[-10:]))
+                std_prior  = float(np.std(closes[-30:-10]))
+                bb_squeeze = std_recent < std_prior * 0.65 and std_prior > 0
+
+            # ── PRE-MOVE Signal 7: NR7 — Narrowest Range in 7 Bars ───────
+            # Compression before explosion — price coiling tightly
+            nr7    = False
+            nr7_up = last_p >= vwap_now
+            if len(highs) >= 8:
+                bar_ranges  = highs - lows
+                current_rng = float(bar_ranges[-1])
+                nr7 = current_rng < float(np.min(bar_ranges[-8:-1]))
+
+            # ── PRE-MOVE Signal 8: Accelerating Volume ────────────────────
+            # Volume building across 3 bars BEFORE the surge — early pressure
+            vol_accel    = False
+            vol_accel_up = closes[-1] > closes[-2]
+            if len(volumes) >= 22:
+                v1 = float(volumes[-3])
+                v2 = float(volumes[-2])
+                v3 = float(volumes[-1])
+                vol_avg = float(np.mean(volumes[-21:-1]))
+                vol_accel = (v1 < v2 < v3) and v3 > vol_avg * 1.2 and v2 > vol_avg * 0.8
+
+            pre_move = bb_squeeze or nr7 or vol_accel
+
+            # ── Directional scoring (8 signals total) ─────────────────────
             bull = sum([
-                vol_surge  and vol_up_dir,
+                vol_surge    and vol_up_dir,
                 cross_up,
-                mom_burst  and mom_up,
-                trend_lock and trend_up,
-                rs_strong  and rs_up,
+                mom_burst    and mom_up,
+                trend_lock   and trend_up,
+                rs_strong    and rs_up,
+                bb_squeeze   and bb_up,
+                nr7          and nr7_up,
+                vol_accel    and vol_accel_up,
             ])
             bear = sum([
-                vol_surge  and not vol_up_dir,
+                vol_surge    and not vol_up_dir,
                 cross_dn,
-                mom_burst  and not mom_up,
-                trend_lock and not trend_up,
-                rs_strong  and not rs_up,
+                mom_burst    and not mom_up,
+                trend_lock   and not trend_up,
+                rs_strong    and not rs_up,
+                bb_squeeze   and not bb_up,
+                nr7          and not nr7_up,
+                vol_accel    and not vol_accel_up,
             ])
             score = max(bull, bear)
-            if score < 2:
+            if score < 3:
                 return None
 
             direction = "up" if bull >= bear else "down"
-            grade     = "A" if score >= 4 else ("B" if score >= 3 else "C")
+            grade     = "A" if score >= 5 else "B"   # A=5+/8, B=3-4/8
 
             return {
                 "sym":        sym,
@@ -4301,6 +4364,7 @@ def _scalp_scanner_inner():
                 "vol_ratio":  round(float(vol_ratio), 1),
                 "vwap":       round(float(vwap_now), 2),
                 "vs_vwap":    round(float((last_p - vwap_now) / vwap_now * 100), 2),
+                "pre_move":   bool(pre_move),
                 "signals": {
                     "vol_surge":   bool(vol_surge),
                     "vwap_cross":  bool(vwap_cross),
@@ -4309,19 +4373,22 @@ def _scalp_scanner_inner():
                     "trend_lock":  bool(trend_lock),
                     "trend_up":    bool(trend_up),
                     "rs_strong":   bool(rs_strong),
+                    "bb_squeeze":  bool(bb_squeeze),
+                    "nr7":         bool(nr7),
+                    "vol_accel":   bool(vol_accel),
                 },
             }
         except Exception as e:
             print(f"[Scalp] {sym}: {e}")
             return None
 
-    # Parallel fetch — 8 threads for speed
+    # Parallel fetch — 20 threads for speed across large universe
     import concurrent.futures
     alerts = []
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as ex:
             futures = {ex.submit(_fetch_sym, sym): sym for sym in _SCALP_UNIVERSE}
-            for fut in concurrent.futures.as_completed(futures, timeout=25):
+            for fut in concurrent.futures.as_completed(futures, timeout=30):
                 try:
                     res = fut.result()
                     if res:
@@ -4331,10 +4398,12 @@ def _scalp_scanner_inner():
     except Exception as e:
         print(f"[Scalp] Batch error: {e}")
 
-    alerts.sort(key=lambda x: (x["score"], abs(x["chg_pct"])), reverse=True)
+    # Sort: A grades first, then by score desc, then by vol_ratio desc
+    grade_order = {"A": 0, "B": 1}
+    alerts.sort(key=lambda x: (grade_order.get(x["grade"], 2), -x["score"], -x["vol_ratio"]))
 
     payload = {
-        "alerts":   alerts[:15],
+        "alerts":   alerts[:25],   # show top 25 A/B signals
         "total":    len(alerts),
         "scanned":  len(_SCALP_UNIVERSE),
         "ts":       int(now),
