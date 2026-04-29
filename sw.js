@@ -1,7 +1,7 @@
-// Market Genie Service Worker v1.0
+// Market Genie Service Worker v2.0
 // Strategy: Cache-first for static shell, network-first for API calls
 
-const CACHE_NAME = 'market-genie-v1';
+const CACHE_NAME = 'market-genie-v2';
 const SHELL_URLS = [
   '/',
   '/manifest.json',

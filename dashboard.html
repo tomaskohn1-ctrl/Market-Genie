@@ -6298,32 +6298,31 @@ let _serverOnline = false;
 function setServerStatus(online, label) {
   try {
     const badge = document.getElementById('serverBadge');
-    const dot   = document.getElementById('serverDot');
-    const lbl   = document.getElementById('serverLabel');
     if (!badge) return;
-    _serverOnline = online;
+    _serverOnline = !!online;
+    const dot = document.getElementById('serverDot');
+    const lbl = document.getElementById('serverLabel');
     if (online) {
-      badge.style.background = 'rgba(0,230,118,0.12)';
-      badge.style.color      = 'var(--green)';
-      badge.style.borderColor= 'rgba(0,230,118,0.25)';
-      if (dot) dot.style.background = 'var(--green)';
+      badge.setAttribute('style',
+        'background:rgba(0,230,118,0.12);color:#00e676;border-color:rgba(0,230,118,0.25)');
+      if (dot) dot.setAttribute('style', 'width:6px;height:6px;border-radius:50%;background:#00e676;flex-shrink:0');
       if (lbl) lbl.textContent = label || 'LIVE';
     } else {
-      badge.style.background = 'rgba(255,61,87,0.12)';
-      badge.style.color      = 'var(--red)';
-      badge.style.borderColor= 'rgba(255,61,87,0.25)';
-      if (dot) { dot.style.background = 'var(--red)'; dot.style.animation = 'none'; }
+      badge.setAttribute('style',
+        'background:rgba(255,61,87,0.12);color:#ff3d57;border-color:rgba(255,61,87,0.25)');
+      if (dot) dot.setAttribute('style', 'width:6px;height:6px;border-radius:50%;background:#ff3d57;flex-shrink:0;animation:none');
       if (lbl) lbl.textContent = label || 'OFFLINE';
     }
-  } catch(e) { console.warn('[Status] setServerStatus error:', e); }
+  } catch(e) { console.warn('[Status]', e); }
 }
 
 async function checkServerConnection() {
   try {
-    // Use 8 s timeout — Railway cold-starts can take up to 7 s
-    const r = await fetch('/api/ping', { signal: AbortSignal.timeout(8000) });
+    // Use Promise.race for timeout — works on all browsers without AbortSignal.timeout
+    const timeoutP = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000));
+    const fetchP   = fetch('/api/ping');
+    const r = await Promise.race([fetchP, timeoutP]);
     if (r.ok) {
-      const d = await r.json();
       setServerStatus(true, 'LIVE');
       hideServerError();
       return true;
@@ -6331,8 +6330,10 @@ async function checkServerConnection() {
   } catch(e) {
     console.warn('[Ping] failed:', e.message || e);
   }
-  setServerStatus(false, 'OFFLINE');
-  showServerError('Cannot reach the Market Genie server. If this is Railway, the app may still be waking up — wait 10 s and click Retry.');
+  try {
+    setServerStatus(false, 'OFFLINE');
+    showServerError('Cannot reach the Market Genie server. Wait 10 s and click Retry.');
+  } catch(e2) { console.warn('[Status offline]', e2); }
   return false;
 }
 
