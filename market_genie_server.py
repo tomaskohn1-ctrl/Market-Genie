@@ -126,7 +126,7 @@ SCANNER_UNIVERSE = [
     "SHOP","UBER","LYFT","DASH","ABNB","RDDT","RBLX","SNAP","PINS",
     "ROKU","ZM","DOCU","BILL","PTON","SPOT","TTD",
     # ── Fintech / Payments ──────────────────────────────────────────────────
-    "COIN","HOOD","SQ","PYPL","AFRM","SOFI","NU","SMAR","ADYEY",
+    "COIN","HOOD","PYPL","AFRM","SOFI","NU",
     # ── Bitcoin / Crypto Proxies ────────────────────────────────────────────
     "MSTR","MARA","RIOT","CLSK","HUT","IREN","CIFR","BTBT",
     # ── EV / Auto ───────────────────────────────────────────────────────────
@@ -4046,7 +4046,7 @@ def kronos_scanner():
     ELITE_UNIVERSE = [
         "AAPL","MSFT","NVDA","TSLA","AMZN","META","GOOGL","AMD","SPY","QQQ",
         "SOFI","PLTR","RIVN","LCID","NIO","MARA","RIOT","COIN","HOOD","RBLX",
-        "SNAP","UBER","LYFT","ABNB","SHOP","SQ","PYPL","ROKU","ZM","ARKK",
+        "SNAP","UBER","LYFT","ABNB","SHOP","PYPL","ROKU","ZM","ARKK",
         "SQQQ","TQQQ","SPXL","UPRO","IWM","DIA","XLF","XLE","GLD","MSTR",
     ]
 
@@ -4201,7 +4201,7 @@ _SCALP_UNIVERSE = [
     "BILL","HUBS","MDB","APP","TTD","ROKU","TWLO",
     # ── Financials ───────────────────────────────────────────────────────
     "JPM","BAC","GS","MS","C","WFC","BX","KKR","SCHW",
-    "NU","AFRM","UPST","SQ","PYPL","V","MA",
+    "NU","AFRM","UPST","PYPL","V","MA",
     # ── EV / Autos ───────────────────────────────────────────────────────
     "RIVN","LCID","NIO","XPEV","LI","F","GM",
     # ── Energy ───────────────────────────────────────────────────────────
