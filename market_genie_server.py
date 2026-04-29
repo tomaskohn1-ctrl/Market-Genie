@@ -4293,14 +4293,14 @@ def _scalp_scanner_inner():
 
             return {
                 "sym":        sym,
-                "price":      round(last_p, 2),
+                "price":      round(float(last_p), 2),
                 "direction":  direction,
                 "grade":      grade,
-                "score":      score,
-                "chg_pct":    round(sym_ret1, 2),
-                "vol_ratio":  round(vol_ratio, 1),
-                "vwap":       round(vwap_now, 2),
-                "vs_vwap":    round((last_p - vwap_now) / vwap_now * 100, 2),
+                "score":      int(score),
+                "chg_pct":    round(float(sym_ret1), 2),
+                "vol_ratio":  round(float(vol_ratio), 1),
+                "vwap":       round(float(vwap_now), 2),
+                "vs_vwap":    round(float((last_p - vwap_now) / vwap_now * 100), 2),
                 "signals": {
                     "vol_surge":   bool(vol_surge),
                     "vwap_cross":  bool(vwap_cross),
