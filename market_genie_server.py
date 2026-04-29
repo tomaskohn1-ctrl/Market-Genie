@@ -4237,7 +4237,7 @@ def _scalp_scanner_inner():
     spy_ret1 = 0.0
     try:
         spy_tk  = yf.Ticker("SPY")
-        spy_raw = spy_tk.history(period="1d", interval="1m")
+        spy_raw = spy_tk.history(period="1d", interval="1m", prepost=True)
         if spy_raw is not None and len(spy_raw) >= 3:
             spy_raw.columns = [c.lower() for c in spy_raw.columns]
             sc = spy_raw["close"].values.astype(float)
@@ -4248,7 +4248,7 @@ def _scalp_scanner_inner():
     def _fetch_sym(sym):
         try:
             tk  = yf.Ticker(sym)
-            df  = tk.history(period="1d", interval="1m")
+            df  = tk.history(period="1d", interval="1m", prepost=True)
             if df is None or len(df) < 25:
                 return None
             df.columns = [c.lower() for c in df.columns]
@@ -5922,143 +5922,4 @@ Return ONLY valid JSON in this exact format (no markdown, no extra text):
 confidence is an integer 1-10. Be honest — use 5 for neutral/unclear setups, not 7+ for everything.
 """
 
-    # ── Call Claude via plain HTTP (no anthropic SDK needed) ─────────────────
-    try:
-        claude_resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key":         api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type":      "application/json",
-            },
-            json={
-                "model":      "claude-haiku-4-5-20251001",
-                "max_tokens": 600,
-                "messages":   [{"role": "user", "content": prompt}]
-            },
-            timeout=30
-        )
-        if claude_resp.status_code != 200:
-            return jsonify({"ok": False, "error": f"Claude API error {claude_resp.status_code}: {claude_resp.text[:300]}"}), 500
-        raw = claude_resp.json()["content"][0]["text"].strip()
-
-        # Strip markdown code fences if model adds them
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-
-        thesis = json.loads(raw)
-        thesis["ok"]        = True
-        thesis["ticker"]    = ticker
-        thesis["price"]     = data.get("price", 0)
-        thesis["change_pct"]= data.get("change_pct", 0)
-        thesis["generated_at"] = datetime.utcnow().strftime("%H:%M UTC")
-        thesis["data_used"] = {
-            "quote":       "price" in data,
-            "news":        bool(data.get("headlines")),
-            "sentiment":   "st_messages" in data,
-            "kronos":      "kronos_score" in data,
-            "short_int":   "short_float_pct" in data,
-            "premarket":   "premarket_gap_pct" in data,
-        }
-
-        set_cache(cache_key, thesis)
-        return jsonify(thesis)
-
-    except json.JSONDecodeError as e:
-        return jsonify({"ok": False, "error": f"Claude returned non-JSON: {str(e)}", "raw": raw[:300]}), 500
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-# ── Status endpoint ────────────────────────────────────────────────────────────
-@app.route("/api/status")
-def status():
-    # Live-test each source with a real call
-    results = {}
-
-    # Finnhub — test with AAPL quote
-    if FINNHUB_KEY:
-        try:
-            r = requests.get(f"{FINNHUB_BASE}/quote", params={"symbol":"AAPL","token":FINNHUB_KEY}, timeout=5)
-            d = r.json()
-            price = d.get("c", 0)
-            results["finnhub"] = f"✅ Live — AAPL ${price:.2f}" if price else "⚠️ Key loaded but no price returned (check key)"
-        except Exception as e:
-            results["finnhub"] = f"❌ Error: {e}"
-    else:
-        results["finnhub"] = "❌ No API key — set FINNHUB_API_KEY in .env"
-
-    # Massive — test with AAPL snapshot
-    if MASSIVE_KEY:
-        try:
-            snap = massive_snapshot("AAPL")
-            if snap:
-                results["massive"] = f"✅ Live — got snapshot data"
-            else:
-                results["massive"] = "⚠️ Key loaded but endpoint returned no data"
-        except Exception as e:
-            results["massive"] = f"❌ Error: {e}"
-    else:
-        results["massive"] = "❌ No API key — set MASSIVE_API_KEY in .env"
-
-    # yfinance
-    try:
-        t = yf.Ticker("AAPL")
-        info = t.fast_info
-        price = getattr(info, "last_price", None)
-        results["yfinance"] = f"✅ Live — AAPL ${price:.2f}" if price else "⚠️ Available but no price"
-    except Exception as e:
-        results["yfinance"] = f"❌ Error: {e}"
-
-    # StockTwits
-    try:
-        r = requests.get("https://api.stocktwits.com/api/2/streams/symbol/AAPL.json", timeout=5)
-        results["stocktwits"] = "✅ Live" if r.status_code == 200 else f"⚠️ Status {r.status_code}"
-    except Exception as e:
-        results["stocktwits"] = f"❌ Error: {e}"
-
-    # Reddit
-    try:
-        r = requests.get("https://www.reddit.com/r/wallstreetbets/hot.json?limit=1",
-                         headers={"User-Agent":"MarketGenie/1.0"}, timeout=5)
-        results["reddit"] = "✅ Live" if r.status_code == 200 else f"⚠️ Status {r.status_code}"
-    except Exception as e:
-        results["reddit"] = f"❌ Error: {e}"
-
-    results["quiver"] = "✅ Connected" if QUIVER_KEY else "⚠️ No key (optional)"
-    return jsonify(results)
-
-
-# ── Main ───────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    print("""
-╔══════════════════════════════════════════════════╗
-  🔮 Market Genie Server — Starting up...
-╚══════════════════════════════════════════════════╝
-
-  Dashboard:   http://localhost:5000
-  Status:      http://localhost:5000/api/status
-
-  API keys loaded:
-    Finnhub:     """ + ("✅ Found" if FINNHUB_KEY else "❌ Missing → set in .env") + """
-    Quiver Quant:""" + ("✅ Found" if QUIVER_KEY  else "❌ Missing → set in .env") + """
-
-  Free data (no keys needed):
-    yfinance, StockTwits, Reddit public API ✅
-""")
-
-    # Railway (and other cloud hosts) provide PORT as an env variable.
-    # Locally it falls back to 5000.
-    port = int(os.environ.get("PORT", 5000))
-
-    # Only open a browser tab when running locally (Railway has no display)
-    if not os.environ.get("PORT"):
-        def open_browser():
-            time.sleep(1.5)
-            webbrowser.open(f"http://localhost:{port}")
-        threading.Thread(target=open_browser, daemon=True).start()
-
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    # ── Call Claude via plain HTTP (no anthropic SDK needed) ─────�
