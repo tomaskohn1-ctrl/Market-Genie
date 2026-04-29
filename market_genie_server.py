@@ -4179,6 +4179,157 @@ def kronos_scanner():
     return jsonify(set_cache(key, payload))
 
 
+# ── Scalp Alert Scanner — 5-10 min momentum/volume/VWAP signals ───────────────
+_scalp_cache = {"ts": 0, "data": None}
+_SCALP_TTL   = 60   # 60-second cache
+
+_SCALP_UNIVERSE = [
+    "AAPL","MSFT","NVDA","TSLA","AMZN","META","AMD","GOOGL",
+    "SPY","QQQ","IWM","TQQQ","SQQQ",
+    "SOFI","PLTR","COIN","HOOD","MARA","RIOT","MSTR",
+    "RIVN","LCID","NIO","RBLX","SNAP","UBER","SHOP","SQ","PYPL",
+    "ABNB","LYFT","ARKK","GLD","XLF"
+]
+
+@app.route("/api/scalp/scanner")
+def scalp_scanner():
+    import numpy as np
+    now = time.time()
+    if _scalp_cache["data"] and now - _scalp_cache["ts"] < _SCALP_TTL:
+        return jsonify(_scalp_cache["data"])
+
+    # ── Fetch SPY 1-min for relative-strength baseline ─────────────────────
+    spy_ret1 = 0.0
+    try:
+        spy_raw = yf.download("SPY", period="1d", interval="1m",
+                              progress=False, auto_adjust=True)
+        if spy_raw is not None and len(spy_raw) >= 3:
+            spy_raw.columns = [c.lower() for c in spy_raw.columns]
+            sc = spy_raw["close"].values.astype(float)
+            spy_ret1 = float((sc[-1] - sc[-2]) / sc[-2] * 100) if sc[-2] > 0 else 0.0
+    except Exception:
+        pass
+
+    def _fetch_sym(sym):
+        try:
+            tk  = yf.Ticker(sym)
+            df  = tk.history(period="1d", interval="1m")
+            if df is None or len(df) < 25:
+                return None
+            df.columns = [c.lower() for c in df.columns]
+            closes  = df["close"].values.astype(float)
+            volumes = df["volume"].values.astype(float)
+            highs   = df["high"].values.astype(float)
+            lows    = df["low"].values.astype(float)
+            last_p  = closes[-1]
+            if last_p <= 0:
+                return None
+
+            # ── Signal 1: Volume Surge ─────────────────────────────────────
+            vol_avg20  = float(np.mean(volumes[-21:-1]))
+            vol_ratio  = float(volumes[-1] / vol_avg20) if vol_avg20 > 0 else 1.0
+            vol_up_dir = closes[-1] > closes[-2]
+            vol_surge  = vol_ratio >= 2.0
+
+            # ── Signal 2: VWAP Cross ───────────────────────────────────────
+            typical   = (highs + lows + closes) / 3.0
+            cum_tpv   = np.cumsum(typical * volumes)
+            cum_vol   = np.cumsum(volumes)
+            vwap_arr  = cum_tpv / np.where(cum_vol > 0, cum_vol, 1.0)
+            vwap_now  = float(vwap_arr[-1])
+            cross_up  = float(closes[-2]) < float(vwap_arr[-2]) and last_p >= vwap_now
+            cross_dn  = float(closes[-2]) > float(vwap_arr[-2]) and last_p <= vwap_now
+            vwap_cross = cross_up or cross_dn
+
+            # ── Signal 3: Momentum Burst ───────────────────────────────────
+            bar_chgs    = np.abs(np.diff(closes[-21:]))
+            avg_bar_chg = float(np.mean(bar_chgs[:-1])) if len(bar_chgs) > 1 else 0.01
+            last_chg    = abs(float(closes[-1] - closes[-2]))
+            mom_burst   = last_chg >= 1.8 * avg_bar_chg and avg_bar_chg > 0
+            mom_up      = closes[-1] > closes[-2]
+
+            # ── Signal 4: 3-Bar Trend Lock ────────────────────────────────
+            moves = [closes[i] - closes[i-1] for i in range(-3, 0)]
+            all_up = all(m > 0 for m in moves)
+            all_dn = all(m < 0 for m in moves)
+            trend_lock = all_up or all_dn
+            trend_up   = all_up
+
+            # ── Signal 5: Relative Strength vs SPY ────────────────────────
+            sym_ret1  = float((closes[-1] - closes[-2]) / closes[-2] * 100) if closes[-2] > 0 else 0.0
+            rs_strong = abs(sym_ret1) > abs(spy_ret1) * 1.5 and abs(sym_ret1) > 0.15
+            rs_up     = sym_ret1 > 0
+
+            # ── Directional scoring ────────────────────────────────────────
+            bull = sum([
+                vol_surge  and vol_up_dir,
+                cross_up,
+                mom_burst  and mom_up,
+                trend_lock and trend_up,
+                rs_strong  and rs_up,
+            ])
+            bear = sum([
+                vol_surge  and not vol_up_dir,
+                cross_dn,
+                mom_burst  and not mom_up,
+                trend_lock and not trend_up,
+                rs_strong  and not rs_up,
+            ])
+            score = max(bull, bear)
+            if score < 2:
+                return None
+
+            direction = "up" if bull >= bear else "down"
+            grade     = "A" if score >= 4 else ("B" if score >= 3 else "C")
+
+            return {
+                "sym":        sym,
+                "price":      round(last_p, 2),
+                "direction":  direction,
+                "grade":      grade,
+                "score":      score,
+                "chg_pct":    round(sym_ret1, 2),
+                "vol_ratio":  round(vol_ratio, 1),
+                "vwap":       round(vwap_now, 2),
+                "vs_vwap":    round((last_p - vwap_now) / vwap_now * 100, 2),
+                "signals": {
+                    "vol_surge":   bool(vol_surge),
+                    "vwap_cross":  bool(vwap_cross),
+                    "vwap_cross_up": bool(cross_up),
+                    "mom_burst":   bool(mom_burst),
+                    "trend_lock":  bool(trend_lock),
+                    "trend_up":    bool(trend_up),
+                    "rs_strong":   bool(rs_strong),
+                },
+            }
+        except Exception as e:
+            print(f"[Scalp] {sym}: {e}")
+            return None
+
+    # Parallel fetch — 8 threads for speed
+    import concurrent.futures
+    alerts = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        futures = {ex.submit(_fetch_sym, sym): sym for sym in _SCALP_UNIVERSE}
+        for fut in concurrent.futures.as_completed(futures):
+            res = fut.result()
+            if res:
+                alerts.append(res)
+
+    alerts.sort(key=lambda x: (x["score"], abs(x["chg_pct"])), reverse=True)
+
+    payload = {
+        "alerts":   alerts[:15],
+        "total":    len(alerts),
+        "scanned":  len(_SCALP_UNIVERSE),
+        "ts":       int(now),
+        "spy_ret1": round(spy_ret1, 3),
+    }
+    _scalp_cache["ts"]   = now
+    _scalp_cache["data"] = payload
+    return jsonify(payload)
+
+
 # ── WebSocket token (client uses this to connect directly to Finnhub WS) ──────
 @app.route("/api/ws_token")
 def ws_token():

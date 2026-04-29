@@ -2475,6 +2475,29 @@
     </div>
   </div>
 
+  <!-- ── Scalp Alerts — 5-10 min momentum scanner ──────────────── -->
+  <div class="card" data-tab="signal" id="scalpAlertCard">
+    <div class="card-header">
+      <div class="card-title"><span class="card-icon">⚡</span> Scalp Alerts <span style="font-size:10px;font-weight:400;color:var(--muted)">5-10 min</span></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="scalpBadge" class="card-tag tag-neutral">Ready</span>
+        <span id="scalpCountdown" style="font-size:10px;color:var(--accent);font-family:'JetBrains Mono',monospace;display:none"></span>
+        <button id="scalpNotifBtn" class="btn secondary" style="padding:4px 8px;font-size:11px;opacity:0.5" onclick="toggleScalpNotifs()" title="Enable A-grade alerts">🔔</button>
+        <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="loadScalpAlerts(true)">▶ Scan</button>
+      </div>
+    </div>
+    <div class="card-body" style="padding:0">
+      <div style="padding:10px 14px 6px;font-size:10px;color:var(--muted)">
+        Real-time signals: <strong style="color:var(--text-hi)">Volume Surge · VWAP Cross · Momentum Burst · Trend Lock · Rel. Strength</strong> · Auto-refreshes every 90s
+      </div>
+      <div id="scalpBody">
+        <div style="padding:20px 14px;text-align:center;color:var(--muted);font-size:12px">
+          Click <strong>▶ Scan</strong> to detect 5-10 min setups across 34 liquid stocks
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Pre-market / Intraday Gap Scanner ─────────────────────── -->
   <div class="card" data-tab="signal" id="gapScanCard">
     <div class="card-header">
@@ -4953,6 +4976,139 @@ function wlSortBy(col) {
     _wlSortAsc = col === 'sym'; // sym sorts A→Z by default, numbers descending
   }
   renderWatchlistScanner();
+}
+
+// ── Scalp Alerts Scanner ──────────────────────────────────────────────────────
+const SCALP_REFRESH_MS  = 90_000;   // 90-second auto-refresh
+let _scalpData          = null;
+let _scalpPrev          = null;
+let _scalpScanTime      = null;
+let _scalpInterval      = null;
+let _scalpCountdownTick = null;
+let _scalpNotifsOn      = false;
+
+const _GRADE_STYLE = {
+  A: { bg:'#00e67622', clr:'#00e676', label:'A' },
+  B: { bg:'#ffbb0022', clr:'#ffbb00', label:'B' },
+  C: { bg:'#44aaff22', clr:'#44aaff', label:'C' },
+};
+const _DIR_ARROW = { up:'▲', down:'▼' };
+const _DIR_CLR   = { up:'#00e676', down:'#ff4455' };
+
+function toggleScalpNotifs() {
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'granted') {
+    _scalpNotifsOn = !_scalpNotifsOn;
+  } else {
+    Notification.requestPermission().then(p => {
+      _scalpNotifsOn = p === 'granted';
+    });
+  }
+  const btn = document.getElementById('scalpNotifBtn');
+  if (btn) btn.style.opacity = _scalpNotifsOn ? '1' : '0.5';
+}
+
+function _checkScalpAGrade(alerts) {
+  if (!_scalpNotifsOn || Notification.permission !== 'granted') return;
+  const prevSyms = new Set((_scalpPrev?.alerts || []).filter(a => a.grade === 'A').map(a => a.sym));
+  alerts.filter(a => a.grade === 'A' && !prevSyms.has(a.sym)).forEach(a => {
+    new Notification(`⚡ Scalp Alert: ${a.sym}`, {
+      body: `${a.direction === 'up' ? '▲ BULL' : '▼ BEAR'} · ${a.score}/5 signals · $${a.price} · ${a.chg_pct > 0 ? '+' : ''}${a.chg_pct}%`,
+      icon: '/icon-192.png',
+    });
+  });
+}
+
+function _startScalpAutoRefresh() {
+  if (_scalpInterval) clearInterval(_scalpInterval);
+  _scalpInterval = setInterval(() => loadScalpAlerts(true), SCALP_REFRESH_MS);
+  _startScalpCountdown();
+}
+
+function _startScalpCountdown() {
+  if (_scalpCountdownTick) clearInterval(_scalpCountdownTick);
+  const el = document.getElementById('scalpCountdown');
+  if (!el) return;
+  el.style.display = 'inline';
+  _scalpCountdownTick = setInterval(() => {
+    if (!_scalpScanTime) return;
+    const rem  = Math.max(0, SCALP_REFRESH_MS - (Date.now() - _scalpScanTime));
+    const secs = Math.ceil(rem / 1000);
+    el.textContent = secs > 0 ? `↻ ${secs}s` : '↻ now';
+    if (rem === 0) el.textContent = '↻ scanning…';
+  }, 1000);
+}
+
+async function loadScalpAlerts(force = false) {
+  if (!SERVER_MODE) return;
+  const badge = document.getElementById('scalpBadge');
+  const body  = document.getElementById('scalpBody');
+  if (badge) { badge.textContent = 'Scanning…'; badge.className = 'card-tag tag-neutral'; }
+  if (body)  { body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">⚡ Fetching 1-min bars across 34 stocks…</div>`; }
+  try {
+    const resp = await fetch('/api/scalp/scanner');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    _scalpPrev     = _scalpData;
+    _scalpData     = await resp.json();
+    _scalpScanTime = Date.now();
+    _checkScalpAGrade(_scalpData.alerts);
+    renderScalpAlerts();
+    _startScalpAutoRefresh();
+  } catch(e) {
+    if (badge) { badge.textContent = 'Error'; badge.className = 'card-tag tag-bear'; }
+    if (body)  { body.innerHTML = `<div style="padding:20px;text-align:center;color:#ff4455;font-size:12px">Error: ${e.message}</div>`; }
+  }
+}
+
+function renderScalpAlerts() {
+  const d     = _scalpData;
+  const badge = document.getElementById('scalpBadge');
+  const body  = document.getElementById('scalpBody');
+  if (!d || !body) return;
+
+  const aCount = d.alerts.filter(a => a.grade === 'A').length;
+  badge.textContent = `${d.total} ALERTS · ${aCount} A-GRADE`;
+  badge.className   = aCount > 0 ? 'card-tag tag-bull' : (d.total > 0 ? 'card-tag tag-neutral' : 'card-tag tag-neutral');
+
+  if (!d.alerts.length) {
+    body.innerHTML = `<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">No setups found right now. Auto-retrying in 90s.</div>`;
+    return;
+  }
+
+  const rows = d.alerts.map(a => {
+    const gs  = _GRADE_STYLE[a.grade] || _GRADE_STYLE.C;
+    const dir = a.direction;
+    const sigs = a.signals;
+    const badges = [
+      sigs.vol_surge   ? `<span style="background:#ff880033;color:#ff8800;padding:1px 5px;border-radius:3px;font-size:9px">VOL ${a.vol_ratio}x</span>` : '',
+      sigs.vwap_cross  ? `<span style="background:#aa44ff33;color:#aa44ff;padding:1px 5px;border-radius:3px;font-size:9px">VWAP✗</span>` : '',
+      sigs.mom_burst   ? `<span style="background:#00aaff33;color:#00aaff;padding:1px 5px;border-radius:3px;font-size:9px">MOM</span>` : '',
+      sigs.trend_lock  ? `<span style="background:#00e67633;color:#00e676;padding:1px 5px;border-radius:3px;font-size:9px">TREND</span>` : '',
+      sigs.rs_strong   ? `<span style="background:#ffbb0033;color:#ffbb00;padding:1px 5px;border-radius:3px;font-size:9px">RS</span>` : '',
+    ].filter(Boolean).join(' ');
+
+    return `<div style="display:grid;grid-template-columns:28px 60px 1fr auto;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--border)">
+      <div style="background:${gs.bg};color:${gs.clr};border:1px solid ${gs.clr}55;border-radius:4px;text-align:center;font-size:11px;font-weight:700;padding:2px 0">${gs.label}</div>
+      <div>
+        <div style="font-size:13px;font-weight:700;color:var(--text-hi)">${a.sym}</div>
+        <div style="font-size:10px;color:var(--muted)">$${a.price}</div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:3px;align-items:center">
+        <span style="font-size:11px;font-weight:600;color:${_DIR_CLR[dir]};margin-right:4px">${_DIR_ARROW[dir]} ${dir.toUpperCase()}</span>
+        ${badges}
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:12px;font-weight:600;color:${a.chg_pct >= 0 ? '#00e676' : '#ff4455'}">${a.chg_pct >= 0 ? '+' : ''}${a.chg_pct}%</div>
+        <div style="font-size:9px;color:var(--muted)">${a.score}/5 sigs</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const spyLine = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);border-bottom:1px solid var(--border)">
+    SPY ${d.spy_ret1 >= 0 ? '+' : ''}${d.spy_ret1}% · ${d.scanned} stocks scanned · ${new Date(d.ts * 1000).toLocaleTimeString()}
+  </div>`;
+
+  body.innerHTML = spyLine + rows;
 }
 
 // ── Kronos Top Signals Scanner ────────────────────────────────────────────────
