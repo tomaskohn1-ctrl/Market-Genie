@@ -4414,6 +4414,250 @@ def _scalp_scanner_inner():
     return jsonify(payload)
 
 
+# ── Contract Award Scanner — USASpending.gov ─────────────────────────────────
+_contract_cache = {"ts": 0, "data": None}
+_CONTRACT_TTL   = 300   # 5-minute cache
+
+# Publicly traded companies that commonly receive government contracts
+# Key = uppercase fragment to search for in recipient name, Value = ticker
+_CONTRACTOR_TICKERS = {
+    # Defense primes
+    "LOCKHEED MARTIN":     "LMT",
+    "RAYTHEON":            "RTX",
+    "NORTHROP GRUMMAN":    "NOC",
+    "GENERAL DYNAMICS":    "GD",
+    "L3HARRIS":            "LHX",
+    "BOEING":              "BA",
+    "TEXTRON":             "TXT",
+    "TRANSDIGM":           "TDG",
+    "HOWMET":              "HWM",
+    "HEICO":               "HEI",
+    "MOOG":                "MOG.A",
+    "CURTISS-WRIGHT":      "CW",
+    "TRIUMPH GROUP":       "TGI",
+    "AEROJET":             "AJRD",
+    # Mid/small defense & services
+    "LEIDOS":              "LDOS",
+    "SAIC":                "SAIC",
+    "BOOZ ALLEN":          "BAH",
+    "CACI":                "CACI",
+    "MANTECH":             "MANT",
+    "PARSONS":             "PSN",
+    "KRATOS":              "KTOS",
+    "MERCURY SYSTEMS":     "MRCY",
+    "DXC TECHNOLOGY":      "DXC",
+    "KBR INC":             "KBR",
+    "MAXIMUS":             "MMS",
+    "ICF INTERNATIONAL":   "ICFI",
+    # AI / Tech contractors
+    "PALANTIR":            "PLTR",
+    "BIGBEAR":             "BBAI",
+    "SOUNDHOUND":          "SOUN",
+    "IONQ":                "IONQ",
+    "IBM":                 "IBM",
+    "ORACLE":              "ORCL",
+    "MICROSOFT":           "MSFT",
+    "AMAZON":              "AMZN",
+    "GOOGLE":              "GOOGL",
+    "DELL":                "DELL",
+    "CISCO":               "CSCO",
+    "ACCENTURE":           "ACN",
+    "SCIENCE APPLICATIONS": "SAIC",
+    # Space & emerging
+    "ROCKET LAB":          "RKLB",
+    "PLANET LABS":         "PL",
+    "SPIRE GLOBAL":        "SPIR",
+    "INTUITIVE MACHINES":  "LUNR",
+    "REDWIRE":             "RDW",
+    "JOBY":                "JOBY",
+    "ARCHER AVIATION":     "ACHR",
+    "KULR":                "KULR",
+    # Healthcare & services
+    "HUMANA":              "HUM",
+    "UNITEDHEALTH":        "UNH",
+    "CVS":                 "CVS",
+    "QUEST DIAGNOSTICS":   "DGX",
+    "LABCORP":             "LH",
+    "CENTENE":             "CNC",
+    "MOLINA":              "MOH",
+    # Engineering & construction
+    "JACOBS":              "J",
+    "AECOM":               "ACM",
+    "FLUOR":               "FLR",
+    "QUANTA":              "PWR",
+    "DYCOM":               "DY",
+}
+
+# Runtime cache: company name → ticker (persists for the session)
+_name_ticker_cache: dict = {}
+
+def _match_contractor_ticker(recipient_name: str) -> str | None:
+    """
+    Two-stage lookup:
+    1. Fast static dict — catches well-known contractors instantly.
+    2. Finnhub company search — dynamically finds ANY publicly traded company
+       by name so we're not limited to 60 pre-listed names.
+    Results are cached in-process so repeat names skip the API call.
+    """
+    if not recipient_name:
+        return None
+
+    name_up = recipient_name.upper()
+
+    # Stage 1: static lookup (fast, covers most common contractors)
+    for fragment, ticker in _CONTRACTOR_TICKERS.items():
+        if fragment in name_up:
+            _name_ticker_cache[recipient_name] = ticker
+            return ticker
+
+    # Stage 2: in-process cache from previous Finnhub searches
+    if recipient_name in _name_ticker_cache:
+        return _name_ticker_cache[recipient_name]   # may be None (known miss)
+
+    # Stage 3: Finnhub company search — finds any US-listed stock
+    if not FINNHUB_KEY:
+        _name_ticker_cache[recipient_name] = None
+        return None
+
+    # Clean up legal suffixes that confuse search (INC, LLC, CORP, etc.)
+    clean = re.sub(
+        r"\b(INC\.?|LLC\.?|CORP\.?|CORPORATION|CO\.?|LTD\.?|L\.L\.C\.?|"
+        r"INCORPORATED|LIMITED|HOLDINGS?|GROUP|TECHNOLOGIES?|SOLUTIONS?|"
+        r"SERVICES?|SYSTEMS?|INTERNATIONAL|ENTERPRISES?)\b",
+        "", name_up
+    ).strip().rstrip(",").strip()
+
+    try:
+        r = requests.get(
+            f"{FINNHUB_BASE}/search",
+            params={"q": clean, "token": FINNHUB_KEY},
+            timeout=6,
+        )
+        if r.status_code == 200:
+            hits = r.json().get("result", [])
+            # Pick first US-exchange common stock
+            for h in hits[:5]:
+                sym  = h.get("symbol", "")
+                typ  = h.get("type", "")
+                exch = h.get("primaryExchange", "")
+                # Accept Common Stock on US exchanges, skip ETFs/funds/foreign
+                if (typ in ("Common Stock", "") and
+                        "." not in sym and          # skip BRK.B style
+                        len(sym) <= 5 and
+                        any(x in exch.upper() for x in ["NASDAQ", "NYSE", ""])):
+                    _name_ticker_cache[recipient_name] = sym
+                    print(f"[Contracts] Matched '{clean}' → {sym}")
+                    return sym
+    except Exception as e:
+        print(f"[Contracts] Finnhub search error for '{clean}': {e}")
+
+    _name_ticker_cache[recipient_name] = None  # cache miss to avoid re-querying
+    return None
+
+@app.route("/api/contracts/scanner")
+def contracts_scanner():
+    try:
+        return _contracts_scanner_inner()
+    except Exception as e:
+        print(f"[Contracts] Fatal: {e}")
+        return jsonify({"alerts": [], "total": 0, "ts": int(time.time()), "error": str(e)}), 200
+
+def _contracts_scanner_inner():
+    now = time.time()
+    if _contract_cache["data"] and now - _contract_cache["ts"] < _CONTRACT_TTL:
+        return jsonify(_contract_cache["data"])
+
+    end_dt   = datetime.utcnow()
+    start_dt = end_dt - timedelta(days=2)   # 48-hr window covers weekends
+
+    body = {
+        "filters": {
+            "award_type_codes": ["A", "B", "C", "D"],
+            "time_period": [{
+                "start_date": start_dt.strftime("%Y-%m-%d"),
+                "end_date":   end_dt.strftime("%Y-%m-%d"),
+                "date_type":  "action_date",
+            }],
+            "award_amounts": [{"lower_bound": 5_000_000}],
+        },
+        "fields": [
+            "Award ID", "Recipient Name", "Award Amount",
+            "Awarding Agency", "Description", "Action Date",
+        ],
+        "page":  1,
+        "limit": 100,
+        "sort":  "Award Amount",
+        "order": "desc",
+    }
+
+    try:
+        resp = requests.post(
+            "https://api.usaspending.gov/api/v2/search/spending_by_award/",
+            json=body,
+            timeout=20,
+            headers={"Content-Type": "application/json"},
+        )
+        resp.raise_for_status()
+        raw = resp.json()
+    except Exception as e:
+        print(f"[Contracts] API error: {e}")
+        return jsonify({"alerts": [], "total": 0, "ts": int(now), "error": str(e)}), 200
+
+    results   = raw.get("results", [])
+    alerts    = []
+    seen_tix  = set()
+
+    for award in results:
+        recipient = award.get("Recipient Name") or ""
+        ticker    = _match_contractor_ticker(recipient)
+        if not ticker or ticker in seen_tix:
+            continue
+        seen_tix.add(ticker)
+
+        try:
+            tk      = yf.Ticker(ticker)
+            fi      = tk.fast_info
+            price   = float(fi.last_price   or 0)
+            prev    = float(fi.previous_close or 0)
+            chg_pct = float((price - prev) / prev * 100) if prev > 0 else 0.0
+            mkt_cap = float(fi.market_cap   or 0)
+        except Exception:
+            price = chg_pct = mkt_cap = 0.0
+
+        if price <= 0:
+            continue
+
+        amount = float(award.get("Award Amount") or 0)
+        if mkt_cap <= 0:          cap_label = "Unknown"
+        elif mkt_cap < 2e9:       cap_label = "Small Cap"
+        elif mkt_cap < 10e9:      cap_label = "Mid Cap"
+        else:                     cap_label = "Large Cap"
+
+        amount_fmt = (f"${amount/1e9:.2f}B" if amount >= 1e9
+                      else f"${amount/1e6:.1f}M")
+
+        alerts.append({
+            "ticker":      ticker,
+            "recipient":   recipient[:55],
+            "amount":      int(amount),
+            "amount_fmt":  amount_fmt,
+            "agency":      (award.get("Awarding Agency") or "")[:50],
+            "description": (award.get("Description")     or "")[:80],
+            "date":        (award.get("Action Date")      or ""),
+            "price":       round(float(price),   2),
+            "chg_pct":     round(float(chg_pct), 2),
+            "mkt_cap":     int(mkt_cap),
+            "cap_label":   cap_label,
+        })
+
+    alerts.sort(key=lambda x: x["amount"], reverse=True)
+
+    out = {"alerts": alerts[:20], "total": len(alerts), "ts": int(now)}
+    _contract_cache["ts"]   = now
+    _contract_cache["data"] = out
+    return jsonify(out)
+
+
 # ── WebSocket token (client uses this to connect directly to Finnhub WS) ──────
 @app.route("/api/ws_token")
 def ws_token():
