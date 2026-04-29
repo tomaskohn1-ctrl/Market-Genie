@@ -6296,39 +6296,43 @@ window.onload = () => {
 let _serverOnline = false;
 
 function setServerStatus(online, label) {
-  const badge = document.getElementById('serverBadge');
-  const dot   = document.getElementById('serverDot');
-  const lbl   = document.getElementById('serverLabel');
-  if (!badge) return;
-  _serverOnline = online;
-  if (online) {
-    badge.style.background = 'rgba(0,230,118,0.12)';
-    badge.style.color      = 'var(--green)';
-    badge.style.borderColor= 'rgba(0,230,118,0.25)';
-    dot.style.background   = 'var(--green)';
-    lbl.textContent        = label || 'LIVE';
-  } else {
-    badge.style.background = 'rgba(255,61,87,0.12)';
-    badge.style.color      = 'var(--red)';
-    badge.style.borderColor= 'rgba(255,61,87,0.25)';
-    dot.style.background   = 'var(--red)';
-    dot.style.animation    = 'none';
-    lbl.textContent        = label || 'OFFLINE';
-  }
+  try {
+    const badge = document.getElementById('serverBadge');
+    const dot   = document.getElementById('serverDot');
+    const lbl   = document.getElementById('serverLabel');
+    if (!badge) return;
+    _serverOnline = online;
+    if (online) {
+      badge.style.background = 'rgba(0,230,118,0.12)';
+      badge.style.color      = 'var(--green)';
+      badge.style.borderColor= 'rgba(0,230,118,0.25)';
+      if (dot) dot.style.background = 'var(--green)';
+      if (lbl) lbl.textContent = label || 'LIVE';
+    } else {
+      badge.style.background = 'rgba(255,61,87,0.12)';
+      badge.style.color      = 'var(--red)';
+      badge.style.borderColor= 'rgba(255,61,87,0.25)';
+      if (dot) { dot.style.background = 'var(--red)'; dot.style.animation = 'none'; }
+      if (lbl) lbl.textContent = label || 'OFFLINE';
+    }
+  } catch(e) { console.warn('[Status] setServerStatus error:', e); }
 }
 
 async function checkServerConnection() {
   try {
-    const r = await fetch('/api/ping', { signal: AbortSignal.timeout(3000) });
+    // Use 8 s timeout — Railway cold-starts can take up to 7 s
+    const r = await fetch('/api/ping', { signal: AbortSignal.timeout(8000) });
     if (r.ok) {
       const d = await r.json();
       setServerStatus(true, 'LIVE');
       hideServerError();
       return true;
     }
-  } catch(e) {}
+  } catch(e) {
+    console.warn('[Ping] failed:', e.message || e);
+  }
   setServerStatus(false, 'OFFLINE');
-  showServerError('Server is not running. Open <strong>START Market Genie.bat</strong> in your Market Genie folder to start it, then refresh this page.');
+  showServerError('Cannot reach the Market Genie server. If this is Railway, the app may still be waking up — wait 10 s and click Retry.');
   return false;
 }
 
