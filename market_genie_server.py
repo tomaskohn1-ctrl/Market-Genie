@@ -50,6 +50,26 @@ except Exception as _ce:
 app = Flask(__name__, static_folder=".")
 CORS(app)
 
+# ── JSON sanitizer: replace Infinity / NaN with null so responses are valid JSON
+import math as _math
+from flask.json.provider import DefaultJSONProvider as _DJP
+
+class _SafeJSONProvider(_DJP):
+    def dumps(self, obj, **kw):
+        def _clean(o):
+            if isinstance(o, float):
+                if _math.isnan(o) or _math.isinf(o):
+                    return None
+            elif isinstance(o, dict):
+                return {k: _clean(v) for k, v in o.items()}
+            elif isinstance(o, list):
+                return [_clean(v) for v in o]
+            return o
+        return super().dumps(_clean(obj), **kw)
+
+app.json_provider_class = _SafeJSONProvider
+app.json = _SafeJSONProvider(app)
+
 # ── API Keys ──────────────────────────────────────────────────────────────────
 FINNHUB_KEY  = os.getenv("FINNHUB_API_KEY",  "")
 QUIVER_KEY   = os.getenv("QUIVER_API_KEY",   "")
@@ -4363,7 +4383,7 @@ def _scalp_scanner_inner():
                 "chg_pct":    round(float(sym_ret1), 2),
                 "vol_ratio":  round(float(vol_ratio), 1),
                 "vwap":       round(float(vwap_now), 2),
-                "vs_vwap":    round(float((last_p - vwap_now) / vwap_now * 100), 2),
+                "vs_vwap":    round(float((last_p - vwap_now) / vwap_now * 100), 2) if vwap_now else 0.0,
                 "pre_move":   bool(pre_move),
                 "signals": {
                     "vol_surge":   bool(vol_surge),
