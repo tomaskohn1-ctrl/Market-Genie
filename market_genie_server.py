@@ -4598,14 +4598,14 @@ def _contracts_scanner_inner():
                 "end_date":   end_dt.strftime("%Y-%m-%d"),
                 "date_type":  "action_date",
             }],
-            "award_amounts": [{"lower_bound": 5_000_000}],
+            "award_amounts": [{"lower_bound": 1_000_000}],
         },
         "fields": [
             "Award ID", "Recipient Name", "Award Amount",
             "Awarding Agency", "Description", "Action Date",
         ],
         "page":  1,
-        "limit": 100,
+        "limit": 200,
         "sort":  "Award Amount",
         "order": "desc",
     }
