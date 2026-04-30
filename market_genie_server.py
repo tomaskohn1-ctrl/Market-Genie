@@ -4205,31 +4205,39 @@ def kronos_scanner():
 
 
 # ── TimesFM — lazy-loaded Google foundation model for 5-bar price forecast ─────
+# Uses timesfm 1.x PyPI API (TimesFmHparams / TimesFmCheckpoint / .forecast())
+# Model: google/timesfm-1.0-200m-pytorch (~800MB, downloaded once to HF cache)
 _tfm_model   = None          # singleton — loaded once, reused forever
 _tfm_ready   = False
 _tfm_loading = False
 _tfm_lock    = threading.Lock()
 _tfm_closes  = {}            # { sym: np.ndarray } populated during scalp scan
 
+_TFM_HORIZON = 5             # predict next 5 one-minute bars
+
 def _tfm_load():
-    """Download + compile TimesFM 2.5 in a background thread (called once)."""
+    """Download TimesFM 1.0-200M (PyTorch) in a background thread (called once)."""
     global _tfm_model, _tfm_ready, _tfm_loading
     with _tfm_lock:
         if _tfm_ready or _tfm_loading:
             return
         _tfm_loading = True
     try:
-        print("[TFM] Loading TimesFM 2.5-200M …")
+        print("[TFM] Loading TimesFM 1.0-200M (PyTorch CPU) …")
         import timesfm
-        m = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
-            "google/timesfm-2.5-200m-pytorch"
+        checkpoint = timesfm.TimesFmCheckpoint(
+            huggingface_repo_id="google/timesfm-1.0-200m-pytorch",
         )
-        m.compile(timesfm.ForecastConfig(
-            max_context=512,
-            max_horizon=10,
-            normalize_inputs=True,
-            use_continuous_quantile_head=False,  # point-only for speed
-        ))
+        m = timesfm.TimesFm(
+            hparams=timesfm.TimesFmHparams(
+                backend="cpu",
+                per_core_batch_size=32,
+                horizon_len=_TFM_HORIZON,
+                context_len=512,
+            ),
+            checkpoint=checkpoint,
+        )
+        m.load_from_checkpoint(checkpoint=checkpoint)
         with _tfm_lock:
             _tfm_model   = m
             _tfm_ready   = True
@@ -4244,6 +4252,8 @@ def _tfm_batch(sym_list):
     """
     Run TFM on a batch of symbols whose closes are in _tfm_closes.
     Returns { sym: (direction, delta_pct) } for symbols that succeed.
+    API: tfm.forecast(inputs=[array, ...], freq=[0, ...])
+         → (mean_fc, quantile_fc) where mean_fc.shape = (n, horizon_len)
     """
     if not _tfm_ready or _tfm_model is None:
         return {}
@@ -4254,18 +4264,19 @@ def _tfm_batch(sym_list):
         if not valid:
             return {}
         inputs = [np.array(_tfm_closes[s][-60:], dtype=np.float32) for s in valid]
+        freq   = [0] * len(inputs)   # 0 = high frequency (sub-daily / 1-min)
         with _tfm_lock:
-            pt_fc, _ = _tfm_model.forecast(horizon=5, inputs=inputs)
-        # pt_fc shape: (n, 5)
+            mean_fc, _ = _tfm_model.forecast(inputs=inputs, freq=freq)
+        # mean_fc shape: (n, _TFM_HORIZON)
         for i, sym in enumerate(valid):
             current = float(_tfm_closes[sym][-1])
             if current <= 0:
                 continue
-            pred_mean  = float(np.mean(pt_fc[i]))
-            delta_pct  = (pred_mean - current) / current * 100
+            pred_mean = float(np.mean(mean_fc[i]))
+            delta_pct = (pred_mean - current) / current * 100
             results[sym] = (
                 "up" if delta_pct > 0 else "down",
-                round(delta_pct, 3)
+                round(delta_pct, 3),
             )
     except Exception as e:
         print(f"[TFM] Batch forecast error: {e}")
