@@ -4445,14 +4445,14 @@ def _scalp_scanner_inner():
                             (direction == "down" and rsi_val < 25)
 
             score = max(bull, bear)
-            if rsi_exhausted:
-                score = max(score - 1, 0)   # penalise chasing exhausted moves
+            # RSI exhaustion shown as a UI warning colour but does NOT reduce score
+            # (removing the penalty so borderline setups still fire)
 
-            if score < 4:          # minimum threshold to appear (raised from 3)
+            if score < 3:          # minimum threshold to appear
                 return None
 
-            # A = 7+/11, B = 5-6/11  (proportionally same as old A=5+/8)
-            grade = "A" if score >= 7 else "B"
+            # A = 5+/11, B = 3-4/11
+            grade = "A" if score >= 5 else "B"
 
             return {
                 "sym":        sym,
