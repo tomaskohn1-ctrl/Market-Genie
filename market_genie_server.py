@@ -4283,370 +4283,427 @@ def _tfm_batch(sym_list):
     return results
 
 
-# ── Scalp Alert Scanner — 5-10 min momentum/volume/VWAP signals ───────────────
-_scalp_cache = {"ts": 0, "data": None}
-_SCALP_TTL   = 30   # 30-second cache for fresher signals
+# ── Scalp Alert Scanner — rotating-bucket background architecture ─────────────
+# Universe is split into 4 buckets; a background thread scans one bucket every
+# 15 s so the full ~1 000-ticker universe refreshes every ~60 s continuously.
 
 _SCALP_UNIVERSE = [
     # ── Mega-cap tech ─────────────────────────────────────────────────────
     "AAPL","MSFT","NVDA","TSLA","AMZN","META","AMD","GOOGL","GOOG","AVGO",
     "ORCL","CRM","ADBE","INTC","QCOM","MU","ARM","AMAT","LRCX","KLAC",
-    "MRVL","TXN","SMCI","DELL","HPQ",
+    "MRVL","TXN","SMCI","DELL","HPQ","CSCO","IBM","ANET","NTAP","PSTG",
+    "WDC","STX","NTNX","HPE","KEYS","TRMB","CDNS","SNPS","ANSS","ADSK",
     # ── High-beta / retail favorites ──────────────────────────────────────
     "PLTR","SOFI","COIN","HOOD","MARA","RIOT","MSTR","CLSK","HUT",
-    "GME","AMC","SOUN","IONQ","QBTS","RGTI","BBAI",
-    "RBLX","SNAP","PINS","RDDT","HIMS","OPEN","SPCE",
-    # ── ETFs (leveraged + sector) ─────────────────────────────────────────
+    "GME","AMC","SOUN","IONQ","QBTS","RGTI","BBAI","RBLX","SNAP","PINS",
+    "RDDT","HIMS","OPEN","SPCE","RKLB","ASTS","ACHR","JOBY","LUNR",
+    "WKHS","BLNK","CHPT","EVGO","NKLA","CLOV","WOOF","BARK","NKTR",
+    # ── ETFs — leveraged, sector, volatility ─────────────────────────────
     "SPY","QQQ","IWM","TQQQ","SQQQ","SPXL","SPXS","LABU","LABD",
-    "UVXY","VXX","ARKK","ARKG","SOXL","SOXS",
-    "XLF","XLE","XLK","XBI","XLV","GDX","GDXJ",
-    # ── Growth / SaaS ────────────────────────────────────────────────────
+    "UVXY","VXX","ARKK","ARKG","SOXL","SOXS","TNA","TZA","FAS","FAZ",
+    "TECL","TECS","NAIL","HIBL","HIBS","UDOW","SDOW","URTY","SRTY",
+    "ERX","ERY","GUSH","DRIP","BOIL","KOLD","UCO","SCO",
+    "XLF","XLE","XLK","XBI","XLV","XLP","XLU","XLB","XLI","XLC","XLRE",
+    "GDX","GDXJ","SLV","GLD","USO","IBB","SMH","SOXX","HACK","WCLD",
+    # ── Growth / SaaS / Cloud ────────────────────────────────────────────
     "SHOP","SNOW","DDOG","NET","CRWD","OKTA","ZS","PANW","S",
-    "BILL","HUBS","MDB","APP","TTD","ROKU","TWLO",
+    "BILL","HUBS","MDB","APP","TTD","ROKU","TWLO","VEEV","WDAY","NOW",
+    "INTU","ZM","DOCU","GTLB","CFLT","ESTC","BRZE","AMPL","TOST",
+    "PCTY","PAYC","SMAR","NCNO","ALTR","LPSN","DOMO","PEGA","APPF",
     # ── Financials ───────────────────────────────────────────────────────
-    "JPM","BAC","GS","MS","C","WFC","BX","KKR","SCHW",
-    "NU","AFRM","UPST","PYPL","V","MA",
+    "JPM","BAC","GS","MS","C","WFC","BX","KKR","SCHW","AXP","COF",
+    "USB","PNC","TFC","STT","BK","SYF","ALLY","FITB","KEY","RF","HBAN",
+    "CFG","MTB","TROW","BEN","IVZ","AMG","NU","AFRM","UPST","PYPL",
+    "V","MA","SQ","FIS","FISV","GPN","WEX","FOUR","RELY","FLYW",
     # ── EV / Autos ───────────────────────────────────────────────────────
-    "RIVN","LCID","NIO","XPEV","LI","F","GM",
+    "RIVN","LCID","NIO","XPEV","LI","F","GM","TSLA",
     # ── Energy ───────────────────────────────────────────────────────────
-    "XOM","CVX","SLB","HAL","OXY","DVN","FANG","AR",
-    # ── Healthcare / Biotech ─────────────────────────────────────────────
-    "MRNA","NVAX","BNTX","PFE","ABBV","LLY","ISRG","DXCM",
-    "CRSP","EDIT","SRPT","REGN","BIIB","VRTX",
-    # ── Consumer / Media ─────────────────────────────────────────────────
+    "XOM","CVX","SLB","HAL","OXY","DVN","FANG","AR","COP","EOG",
+    "MPC","PSX","VLO","HES","PXD","CTRA","APA","MRO","WMB","KMI",
+    "LNG","OKE","ET","EPD","TRGP","RRC","EQT","CRK","SM","NOG",
+    # ── Healthcare / Large-cap Pharma ─────────────────────────────────────
+    "MRNA","NVAX","BNTX","PFE","ABBV","LLY","ISRG","DXCM","JNJ","UNH",
+    "MRK","BMY","AMGN","GILD","CVS","CI","HUM","MOH","CNC","HCA",
+    "TMO","DHR","ABT","MDT","BSX","SYK","ZBH","HOLX","IDXX","IQV",
+    # ── Biotech / Small-cap ───────────────────────────────────────────────
+    "CRSP","EDIT","SRPT","REGN","BIIB","VRTX","HALO","VKTX","RVMD",
+    "ARQT","APLS","RARE","PTCT","BMRN","ALKS","TGTX","KYMR","ROIV",
+    "RXRX","VERV","BEAM","NTLA","FATE","BLUE","SANA","PTGX","EXEL",
+    "RCKT","FOLD","ACAD","PRGO","ACMR","IMGO","KROS","NUVB","KRYS",
+    "ARDX","ACLX","TVTX","XNCR","CPRX","HRMY","IGMS","IMVT","INSM",
+    "ITCI","JANX","LEGN","MNKD","MYOV","NRIX","PCVX","PMVP","PRTA",
+    "RVNC","SIGA","SILK","SMMT","TARS","TELA","TRIL","TSVT","TYRA",
+    "VCYT","VERU","VSTM","VTGN","VTRS","VXRT","UTHR","NKTR","AKRO",
+    "ALNY","INCY","ACAD","SAGE","NBIX","HRTX","ZAFG","DAWN","IRON",
+    # ── Consumer / Retail / Media ────────────────────────────────────────
     "NFLX","DIS","UBER","LYFT","ABNB","DASH","SPOT","CHWY","ETSY",
+    "PARA","FOXA","WBD","CMCSA","T","VZ","TMUS","SIRI","CHTR",
+    "WMT","COST","TGT","HD","LOW","MCD","SBUX","YUM","CMG","NKE",
+    "LULU","ONON","TJX","ROST","BURL","ANF","AEO","URBN","GPS","BOOT",
+    "DKNG","MGM","CZR","WYNN","LVS","PENN","NCLH","CCL","RCL","UAL",
+    "DAL","AAL","LUV","JBLU","SAVE","HA","CPNG","MELI","SE","GRAB",
     # ── China ADRs ───────────────────────────────────────────────────────
-    "BABA","JD","PDD","BIDU","BILI",
-    # ── Commodities / Macro ──────────────────────────────────────────────
-    "GLD","SLV","USO","GOLD","NEM",
+    "BABA","JD","PDD","BIDU","BILI","EDU","TAL","FUTU","TIGR","UP",
+    "ZH","KC","VNET","GDS","BEKE","MNSO","RLX","QFIN","CNF","CANG",
+    # ── Industrials / Defense / Aerospace ────────────────────────────────
+    "GE","BA","HON","MMM","CAT","DE","UPS","FDX","CSX","UNP","NSC",
+    "LMT","RTX","NOC","GD","KTOS","AXON","HII","TXT","LDOS","SAIC",
+    "CACI","BAH","MANT","DRS","FLIR","VSE","HLIO","SPIR","RCAT",
+    "ADP","PAYX","CDAY","PAYC","WEX","TNET","NSP","G","KELYA",
+    # ── Materials / Mining / Metals ──────────────────────────────────────
+    "FCX","NUE","STLD","CLF","AA","MP","VALE","X","CMC","ATI",
+    "GOLD","NEM","AEM","KGC","HL","PAAS","AG","WPM","FNV","RGLD",
+    "SCCO","TECK","HBM","CDE","EXK","MAG","AUY","OR","ELD","BTG",
+    # ── Utilities / Clean Energy ──────────────────────────────────────────
+    "NEE","DUK","SO","D","EXC","PCG","PEG","ES","XEL","WEC",
+    "AEE","CMS","LNT","EVRG","NI","ETR","FE","PPL","EIX","AES",
+    "ENPH","SEDG","FSLR","CSIQ","JKS","SPWR","NOVA","RUN","BE","PLUG",
+    "BLDP","FCEL","HTOO","CWEN","NEP","BEP","CWEN","AY","ARRY",
+    # ── Real Estate / REITs ───────────────────────────────────────────────
+    "AMT","PLD","EQIX","CCI","WELL","O","SPG","DLR","IRM","VICI",
+    "GLPI","TRNO","EGP","REXR","COLD","CUBE","EXR","PSA","LSI","NSA",
+    # ── Commodities / Macro plays ─────────────────────────────────────────
+    "SLV","USO","UNG","CORN","WEAT","DBA","MOO","PDBC","BCI","GSG",
 ]
+
+# ── Rotating-bucket background state ─────────────────────────────────────────
+_scalp_spy        = {"ret1": 0.0, "bull_trend": False, "bear_trend": False}
+_scalp_results    = {}          # { sym: alert_dict }  — live merged results
+_scalp_r_lock     = threading.Lock()
+_scalp_bg_started = False
+_scalp_bg_lock    = threading.Lock()
+_scalp_stats      = {"bucket": -1, "ts": 0}
+_SCALP_NUM_BUCKETS  = 4
+_SCALP_BUCKET_SECS  = 15   # scan one bucket every 15 s → full universe every 60 s
+_SCALP_RESULT_TTL   = 90   # drop alerts not refreshed in 90 s
+
+def _scalp_ema(arr, period):
+    k = 2.0 / (period + 1)
+    e = float(arr[0])
+    for v in arr[1:]:
+        e = float(v) * k + e * (1 - k)
+    return e
+
+def _scalp_refresh_spy():
+    """Update the cached SPY ret1 and EMA trend (called once per full rotation)."""
+    try:
+        import numpy as np
+        raw = yf.Ticker("SPY").history(period="1d", interval="1m", prepost=True)
+        if raw is None or len(raw) < 25:
+            return
+        raw.columns = [c.lower() for c in raw.columns]
+        sc = raw["close"].values.astype(float)
+        ret1 = float((sc[-1] - sc[-2]) / sc[-2] * 100) if sc[-2] > 0 else 0.0
+        e9  = _scalp_ema(sc, 9)
+        e20 = _scalp_ema(sc, 20)
+        _scalp_spy["ret1"]       = ret1
+        _scalp_spy["bull_trend"] = e9 > e20
+        _scalp_spy["bear_trend"] = e9 < e20
+    except Exception:
+        pass
+
+def _scalp_fetch_one(sym):
+    """Scan one ticker using the cached SPY data. Returns alert dict or None."""
+    import numpy as np
+    try:
+        spy_ret1       = _scalp_spy["ret1"]
+        spy_bull_trend = _scalp_spy["bull_trend"]
+        spy_bear_trend = _scalp_spy["bear_trend"]
+
+        df = yf.Ticker(sym).history(period="1d", interval="1m", prepost=True)
+        if df is None or len(df) < 25:
+            return None
+        df.columns = [c.lower() for c in df.columns]
+        closes  = df["close"].values.astype(float)
+        volumes = df["volume"].values.astype(float)
+        highs   = df["high"].values.astype(float)
+        lows    = df["low"].values.astype(float)
+        last_p  = closes[-1]
+        if last_p <= 0 or last_p < 2.0:
+            return None
+
+        vol_avg20    = float(np.mean(volumes[-21:-1]))
+        est_daily_dv = vol_avg20 * last_p * 390
+        if est_daily_dv < 1_000_000:
+            return None
+
+        # Signal 1: Volume Surge
+        vol_ratio  = float(volumes[-1] / vol_avg20) if vol_avg20 > 0 else 1.0
+        vol_up_dir = closes[-1] > closes[-2]
+        vol_surge  = vol_ratio >= 2.0
+
+        # RVOL (time-of-day relative)
+        rvol_ref  = float(np.mean(volumes[-31:-21])) if len(volumes) >= 31 else vol_avg20
+        rvol      = float(volumes[-1] / rvol_ref) if rvol_ref > 0 else vol_ratio
+        rvol_high = rvol >= 2.5
+
+        # Signal 2: VWAP Cross
+        typical  = (highs + lows + closes) / 3.0
+        vwap_arr = np.cumsum(typical * volumes) / np.where(np.cumsum(volumes) > 0, np.cumsum(volumes), 1.0)
+        vwap_now = float(vwap_arr[-1])
+        cross_up = float(closes[-2]) < float(vwap_arr[-2]) and last_p >= vwap_now
+        cross_dn = float(closes[-2]) > float(vwap_arr[-2]) and last_p <= vwap_now
+        vwap_cross = cross_up or cross_dn
+
+        # Signal 3: Momentum Burst
+        bar_chgs    = np.abs(np.diff(closes[-21:]))
+        avg_bar_chg = float(np.mean(bar_chgs[:-1])) if len(bar_chgs) > 1 else 0.01
+        last_chg    = abs(float(closes[-1] - closes[-2]))
+        mom_burst   = last_chg >= 1.8 * avg_bar_chg and avg_bar_chg > 0
+        mom_up      = closes[-1] > closes[-2]
+
+        # Signal 4: 3-Bar Trend Lock
+        moves      = [closes[i] - closes[i-1] for i in range(-3, 0)]
+        all_up     = all(m > 0 for m in moves)
+        all_dn     = all(m < 0 for m in moves)
+        trend_lock = all_up or all_dn
+        trend_up   = all_up
+
+        # Signal 5: Relative Strength vs SPY
+        sym_ret1  = float((closes[-1] - closes[-2]) / closes[-2] * 100) if closes[-2] > 0 else 0.0
+        rs_strong = abs(sym_ret1) > abs(spy_ret1) * 1.5 and abs(sym_ret1) > 0.15
+        rs_up     = sym_ret1 > 0
+
+        # Signal 6: BB Squeeze
+        bb_squeeze = False
+        bb_up      = last_p >= vwap_now
+        if len(closes) >= 35:
+            std_r = float(np.std(closes[-10:]))
+            std_p = float(np.std(closes[-30:-10]))
+            bb_squeeze = std_r < std_p * 0.65 and std_p > 0
+
+        # Signal 7: NR7
+        nr7    = False
+        nr7_up = last_p >= vwap_now
+        if len(highs) >= 8:
+            rng = highs - lows
+            nr7 = float(rng[-1]) < float(np.min(rng[-8:-1]))
+
+        # Signal 8: Accelerating Volume
+        vol_accel    = False
+        vol_accel_up = closes[-1] > closes[-2]
+        if len(volumes) >= 22:
+            v1 = float(volumes[-3]); v2 = float(volumes[-2]); v3 = float(volumes[-1])
+            va = float(np.mean(volumes[-21:-1]))
+            vol_accel = (v1 < v2 < v3) and v3 > va * 1.2 and v2 > va * 0.8
+
+        pre_move = bb_squeeze or nr7 or vol_accel
+
+        # Signal 9: EMA 9/20 Stack
+        e9  = _scalp_ema(closes, 9)
+        e20 = _scalp_ema(closes, 20)
+        ema_stack_bull = e9 > e20
+        ema_stack_bear = e9 < e20
+
+        # Signal 10: SPY Alignment
+        spy_align_bull = spy_bull_trend and sym_ret1 > 0
+        spy_align_bear = spy_bear_trend and sym_ret1 < 0
+
+        # Signal 11: Multi-timeframe (synthetic 5-min VWAP)
+        mtf_bull = mtf_bear = False
+        if len(closes) >= 15:
+            c5 = [float(np.mean(closes[i:(i+5) or None])) for i in range(-15, 0, 5)]
+            v5 = [float(np.sum(volumes[i:(i+5) or None]))  for i in range(-15, 0, 5)]
+            h5 = [float(np.max(highs[i:(i+5) or None]))    for i in range(-15, 0, 5)]
+            l5 = [float(np.min(lows[i:(i+5) or None]))     for i in range(-15, 0, 5)]
+            if len(c5) >= 2:
+                tp5   = [(h5[i]+l5[i]+c5[i])/3 for i in range(len(c5))]
+                tot_v = max(sum(v5), 1e-9)
+                vwap5 = sum(tp5[i]*v5[i] for i in range(len(c5))) / tot_v
+                mtf_bull = c5[-1] > vwap5 and c5[-1] > c5[-2]
+                mtf_bear = c5[-1] < vwap5 and c5[-1] < c5[-2]
+
+        bull = sum([vol_surge and vol_up_dir, cross_up,
+                    mom_burst and mom_up, trend_lock and trend_up,
+                    rs_strong and rs_up, bb_squeeze and bb_up,
+                    nr7 and nr7_up, vol_accel and vol_accel_up,
+                    ema_stack_bull, spy_align_bull, mtf_bull])
+        bear = sum([vol_surge and not vol_up_dir, cross_dn,
+                    mom_burst and not mom_up, trend_lock and not trend_up,
+                    rs_strong and not rs_up, bb_squeeze and not bb_up,
+                    nr7 and not nr7_up, vol_accel and not vol_accel_up,
+                    ema_stack_bear, spy_align_bear, mtf_bear])
+
+        direction = "up" if bull >= bear else "down"
+
+        # RSI (display only, no score penalty)
+        rsi_val = 50.0
+        if len(closes) >= 16:
+            d   = np.diff(closes[-15:])
+            g   = float(np.mean(np.where(d > 0, d, 0.0)))
+            ls  = float(np.mean(np.where(d < 0, -d, 0.0)))
+            rsi_val = (100.0 - 100.0/(1.0 + g/ls)) if ls > 0 else (100.0 if g > 0 else 50.0)
+
+        score = max(bull, bear)
+        if score < 3:
+            return None
+        grade = "A" if score >= 5 else "B"
+
+        # Cache closes for TFM batch inference
+        _tfm_closes[sym] = closes
+
+        # Bar momentum arrows
+        bar_dirs = ''.join(
+            '↑' if float(closes[i]) >= float(closes[i-1]) else '↓'
+            for i in [-3, -2, -1]
+        ) if len(closes) >= 4 else '—'
+        up_bars = bar_dirs.count('↑')
+        dn_bars = bar_dirs.count('↓')
+        momentum_ok = (direction == "up" and up_bars >= 2) or (direction == "down" and dn_bars >= 2)
+
+        return {
+            "sym":         sym,
+            "price":       round(float(last_p), 2),
+            "direction":   direction,
+            "grade":       grade,
+            "score":       int(score),
+            "chg_pct":     round(float(sym_ret1), 2),
+            "vol_ratio":   round(float(vol_ratio), 1),
+            "rvol":        round(float(rvol), 1),
+            "vwap":        round(float(vwap_now), 2),
+            "vs_vwap":     round(float((last_p - vwap_now) / vwap_now * 100), 2) if vwap_now else 0.0,
+            "rsi":         round(float(rsi_val), 1),
+            "bar_dirs":    bar_dirs,
+            "momentum_ok": bool(momentum_ok),
+            "ema_stack":   bool(ema_stack_bull if direction == "up" else ema_stack_bear),
+            "spy_aligned": bool(spy_align_bull if direction == "up" else spy_align_bear),
+            "mtf":         bool(mtf_bull if direction == "up" else mtf_bear),
+            "pre_move":    bool(pre_move),
+            "tfm_dir":     None,
+            "tfm_delta":   None,
+            "_ts":         time.time(),
+            "signals": {
+                "vol_surge":     bool(vol_surge),
+                "rvol_high":     bool(rvol_high),
+                "vwap_cross":    bool(vwap_cross),
+                "vwap_cross_up": bool(cross_up),
+                "mom_burst":     bool(mom_burst),
+                "trend_lock":    bool(trend_lock),
+                "trend_up":      bool(trend_up),
+                "rs_strong":     bool(rs_strong),
+                "bb_squeeze":    bool(bb_squeeze),
+                "nr7":           bool(nr7),
+                "vol_accel":     bool(vol_accel),
+                "ema_stack":     bool(ema_stack_bull if direction == "up" else ema_stack_bear),
+                "spy_aligned":   bool(spy_align_bull if direction == "up" else spy_align_bear),
+                "mtf":           bool(mtf_bull if direction == "up" else mtf_bear),
+            },
+        }
+    except Exception as e:
+        print(f"[Scalp] {sym}: {e}")
+        return None
+
+
+def _scalp_bg_loop():
+    """Background thread: rotates through 4 buckets, scanning ~250 tickers every 15 s."""
+    import concurrent.futures
+    n   = _SCALP_NUM_BUCKETS
+    sz  = math.ceil(len(_SCALP_UNIVERSE) / n)
+    buckets = [_SCALP_UNIVERSE[i*sz:(i+1)*sz] for i in range(n)]
+    idx = 0
+
+    # Kick off TimesFM load
+    if not _tfm_ready and not _tfm_loading:
+        threading.Thread(target=_tfm_load, daemon=True).start()
+
+    while True:
+        try:
+            bucket = buckets[idx % n]
+
+            # Refresh SPY once per full rotation (every 4 buckets ≈ 60 s)
+            if idx % n == 0:
+                _scalp_refresh_spy()
+
+            # Clear closes cache for this bucket batch
+            _tfm_closes.clear()
+
+            # Scan bucket — 25 threads
+            new_hits = {}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=25) as ex:
+                futures = {ex.submit(_scalp_fetch_one, sym): sym for sym in bucket}
+                for fut in concurrent.futures.as_completed(futures, timeout=35):
+                    try:
+                        res = fut.result()
+                        if res:
+                            new_hits[res["sym"]] = res
+                    except Exception:
+                        pass
+
+            # TFM batch on this bucket's qualifying tickers
+            if _tfm_ready and new_hits:
+                tfm_res = _tfm_batch(list(new_hits.keys()))
+                for sym, (td, tdelta) in tfm_res.items():
+                    if sym in new_hits:
+                        new_hits[sym]["tfm_dir"]   = td
+                        new_hits[sym]["tfm_delta"]  = tdelta
+                print(f"[TFM] bucket {idx%n}: enriched {len(tfm_res)}/{len(new_hits)}")
+
+            # Merge into global results; prune anything older than TTL
+            now = time.time()
+            with _scalp_r_lock:
+                _scalp_results.update(new_hits)
+                stale = [s for s, v in _scalp_results.items()
+                         if now - v.get("_ts", 0) > _SCALP_RESULT_TTL]
+                for s in stale:
+                    del _scalp_results[s]
+                _scalp_stats["bucket"] = idx % n
+                _scalp_stats["ts"]     = int(now)
+
+            print(f"[Scalp] bucket {idx%n} done — {len(new_hits)} hits, "
+                  f"{len(_scalp_results)} live alerts")
+            idx += 1
+
+        except Exception as e:
+            print(f"[Scalp BG] bucket {idx%n} error: {e}")
+            idx += 1
+
+        time.sleep(_SCALP_BUCKET_SECS)
+
+
+def _start_scalp_bg():
+    """Start background scanner once (idempotent)."""
+    global _scalp_bg_started
+    with _scalp_bg_lock:
+        if _scalp_bg_started:
+            return
+        _scalp_bg_started = True
+    t = threading.Thread(target=_scalp_bg_loop, daemon=True)
+    t.start()
+    print(f"[Scalp] Background rotating scanner started "
+          f"({_SCALP_NUM_BUCKETS} buckets × ~{math.ceil(len(_SCALP_UNIVERSE)/_SCALP_NUM_BUCKETS)} tickers, "
+          f"refresh every {_SCALP_BUCKET_SECS}s)")
+
 
 @app.route("/api/scalp/scanner")
 def scalp_scanner():
     try:
-        return _scalp_scanner_inner()
+        _start_scalp_bg()   # idempotent — starts BG thread on first request
+
+        with _scalp_r_lock:
+            alerts = [dict(v) for v in _scalp_results.values()]
+
+        # Strip internal key before serialising
+        for a in alerts:
+            a.pop("_ts", None)
+
+        grade_order = {"A": 0, "B": 1}
+        alerts.sort(key=lambda x: (grade_order.get(x.get("grade","C"), 2),
+                                   -x.get("score", 0),
+                                   -x.get("vol_ratio", 0)))
+
+        payload = {
+            "alerts":   alerts[:25],
+            "total":    len(alerts),
+            "scanned":  len(_SCALP_UNIVERSE),
+            "ts":       _scalp_stats.get("ts", int(time.time())),
+            "spy_ret1": round(_scalp_spy.get("ret1", 0.0), 3),
+        }
+        return jsonify(payload)
     except Exception as e:
         print(f"[Scalp] Fatal: {e}")
         return jsonify({"alerts": [], "total": 0, "scanned": 0,
                         "ts": int(time.time()), "spy_ret1": 0.0,
                         "error": str(e)}), 200
-
-def _scalp_scanner_inner():
-    import numpy as np
-    now = time.time()
-    if _scalp_cache["data"] and now - _scalp_cache["ts"] < _SCALP_TTL:
-        return jsonify(_scalp_cache["data"])
-
-    # Kick off TimesFM model load in background (no-op if already loading/ready)
-    if not _tfm_ready and not _tfm_loading:
-        threading.Thread(target=_tfm_load, daemon=True).start()
-
-    # Clear the closes cache for this scan cycle
-    _tfm_closes.clear()
-
-    # ── EMA helper ────────────────────────────────────────────────────────────
-    def _ema(arr, period):
-        k = 2.0 / (period + 1)
-        e = float(arr[0])
-        for v in arr[1:]:
-            e = float(v) * k + e * (1 - k)
-        return e
-
-    # ── Fetch SPY 1-min for RS baseline + trend direction ─────────────────────
-    spy_ret1     = 0.0
-    spy_bull_trend = False   # SPY 9-EMA > 20-EMA
-    spy_bear_trend = False
-    try:
-        spy_tk  = yf.Ticker("SPY")
-        spy_raw = spy_tk.history(period="1d", interval="1m", prepost=True)
-        if spy_raw is not None and len(spy_raw) >= 25:
-            spy_raw.columns = [c.lower() for c in spy_raw.columns]
-            sc = spy_raw["close"].values.astype(float)
-            spy_ret1 = float((sc[-1] - sc[-2]) / sc[-2] * 100) if sc[-2] > 0 else 0.0
-            spy_ema9  = _ema(sc, 9)
-            spy_ema20 = _ema(sc, 20)
-            spy_bull_trend = spy_ema9 > spy_ema20
-            spy_bear_trend = spy_ema9 < spy_ema20
-    except Exception:
-        pass
-
-    def _fetch_sym(sym):
-        try:
-            tk  = yf.Ticker(sym)
-            df  = tk.history(period="1d", interval="1m", prepost=True)
-            if df is None or len(df) < 25:
-                return None
-            df.columns = [c.lower() for c in df.columns]
-            closes  = df["close"].values.astype(float)
-            volumes = df["volume"].values.astype(float)
-            highs   = df["high"].values.astype(float)
-            lows    = df["low"].values.astype(float)
-            last_p  = closes[-1]
-            if last_p <= 0:
-                return None
-
-            # ── Hard filters (skip noisy/illiquid symbols) ─────────────────
-            if last_p < 2.0:           # ignore sub-$2 stocks
-                return None
-            vol_avg20 = float(np.mean(volumes[-21:-1]))
-            # Estimated daily dollar volume: avg 1-min vol × price × 390 bars/day
-            est_daily_dv = vol_avg20 * last_p * 390
-            if est_daily_dv < 1_000_000:   # require at least $1M/day liquidity
-                return None
-
-            # ── Signal 1: Volume Surge ─────────────────────────────────────
-            vol_ratio  = float(volumes[-1] / vol_avg20) if vol_avg20 > 0 else 1.0
-            vol_up_dir = closes[-1] > closes[-2]
-            vol_surge  = vol_ratio >= 2.0
-
-            # ── NEW — Relative Volume at Time-of-Day (RVOL) ────────────────
-            # Compare current bar volume vs average of same 10 bars earlier
-            # (approx same time-of-day context without needing historical days)
-            rvol_ref  = float(np.mean(volumes[-31:-21])) if len(volumes) >= 31 else vol_avg20
-            rvol      = float(volumes[-1] / rvol_ref) if rvol_ref > 0 else vol_ratio
-            rvol_high = rvol >= 2.5   # stronger threshold vs same-time reference
-
-            # ── Signal 2: VWAP Cross ───────────────────────────────────────
-            typical   = (highs + lows + closes) / 3.0
-            cum_tpv   = np.cumsum(typical * volumes)
-            cum_vol   = np.cumsum(volumes)
-            vwap_arr  = cum_tpv / np.where(cum_vol > 0, cum_vol, 1.0)
-            vwap_now  = float(vwap_arr[-1])
-            cross_up  = float(closes[-2]) < float(vwap_arr[-2]) and last_p >= vwap_now
-            cross_dn  = float(closes[-2]) > float(vwap_arr[-2]) and last_p <= vwap_now
-            vwap_cross = cross_up or cross_dn
-
-            # ── Signal 3: Momentum Burst ───────────────────────────────────
-            bar_chgs    = np.abs(np.diff(closes[-21:]))
-            avg_bar_chg = float(np.mean(bar_chgs[:-1])) if len(bar_chgs) > 1 else 0.01
-            last_chg    = abs(float(closes[-1] - closes[-2]))
-            mom_burst   = last_chg >= 1.8 * avg_bar_chg and avg_bar_chg > 0
-            mom_up      = closes[-1] > closes[-2]
-
-            # ── Signal 4: 3-Bar Trend Lock ────────────────────────────────
-            moves    = [closes[i] - closes[i-1] for i in range(-3, 0)]
-            all_up   = all(m > 0 for m in moves)
-            all_dn   = all(m < 0 for m in moves)
-            trend_lock = all_up or all_dn
-            trend_up   = all_up
-
-            # ── Signal 5: Relative Strength vs SPY ────────────────────────
-            sym_ret1  = float((closes[-1] - closes[-2]) / closes[-2] * 100) if closes[-2] > 0 else 0.0
-            rs_strong = abs(sym_ret1) > abs(spy_ret1) * 1.5 and abs(sym_ret1) > 0.15
-            rs_up     = sym_ret1 > 0
-
-            # ── PRE-MOVE Signal 6: Bollinger Band Squeeze ─────────────────
-            bb_squeeze = False
-            bb_up      = last_p >= vwap_now
-            if len(closes) >= 35:
-                std_recent = float(np.std(closes[-10:]))
-                std_prior  = float(np.std(closes[-30:-10]))
-                bb_squeeze = std_recent < std_prior * 0.65 and std_prior > 0
-
-            # ── PRE-MOVE Signal 7: NR7 ────────────────────────────────────
-            nr7    = False
-            nr7_up = last_p >= vwap_now
-            if len(highs) >= 8:
-                bar_ranges  = highs - lows
-                current_rng = float(bar_ranges[-1])
-                nr7 = current_rng < float(np.min(bar_ranges[-8:-1]))
-
-            # ── PRE-MOVE Signal 8: Accelerating Volume ────────────────────
-            vol_accel    = False
-            vol_accel_up = closes[-1] > closes[-2]
-            if len(volumes) >= 22:
-                v1 = float(volumes[-3])
-                v2 = float(volumes[-2])
-                v3 = float(volumes[-1])
-                vol_avg = float(np.mean(volumes[-21:-1]))
-                vol_accel = (v1 < v2 < v3) and v3 > vol_avg * 1.2 and v2 > vol_avg * 0.8
-
-            pre_move = bb_squeeze or nr7 or vol_accel
-
-            # ── NEW Signal 9: EMA 9/20 Stack ──────────────────────────────
-            # Bull structure: 9-EMA above 20-EMA; bear: 9-EMA below 20-EMA
-            ema9_val       = _ema(closes, 9)
-            ema20_val      = _ema(closes, 20)
-            ema_stack_bull = ema9_val > ema20_val
-            ema_stack_bear = ema9_val < ema20_val
-
-            # ── NEW Signal 10: SPY Trend Alignment ────────────────────────
-            # Stock going up AND SPY in bull EMA structure → confirmed momentum
-            spy_align_bull = spy_bull_trend and sym_ret1 > 0
-            spy_align_bear = spy_bear_trend and sym_ret1 < 0
-
-            # ── NEW Signal 11: Multi-Timeframe (5-min constructed) ────────
-            # Build synthetic 5-min bars from 1-min data; check VWAP position
-            # NOTE: use `i+5 or None` so that when i=-5 the stop becomes None
-            # (= slice to end), not 0 (= empty slice before index 0).
-            mtf_bull = False
-            mtf_bear = False
-            if len(closes) >= 15:
-                c5 = [float(np.mean(closes[i:(i+5) or None])) for i in range(-15, 0, 5)]
-                v5 = [float(np.sum(volumes[i:(i+5) or None]))  for i in range(-15, 0, 5)]
-                h5 = [float(np.max(highs[i:(i+5) or None]))    for i in range(-15, 0, 5)]
-                l5 = [float(np.min(lows[i:(i+5) or None]))     for i in range(-15, 0, 5)]
-                if len(c5) >= 2:
-                    tp5   = [(h5[i]+l5[i]+c5[i])/3 for i in range(len(c5))]
-                    tot_v = max(sum(v5), 1e-9)
-                    vwap5 = sum(tp5[i]*v5[i] for i in range(len(c5))) / tot_v
-                    mtf_bull = c5[-1] > vwap5 and c5[-1] > c5[-2]
-                    mtf_bear = c5[-1] < vwap5 and c5[-1] < c5[-2]
-
-            # ── Directional scoring (11 signals) ──────────────────────────
-            bull = sum([
-                vol_surge       and vol_up_dir,     # 1
-                cross_up,                           # 2
-                mom_burst       and mom_up,         # 3
-                trend_lock      and trend_up,       # 4
-                rs_strong       and rs_up,          # 5
-                bb_squeeze      and bb_up,          # 6
-                nr7             and nr7_up,         # 7
-                vol_accel       and vol_accel_up,   # 8
-                ema_stack_bull,                     # 9 NEW
-                spy_align_bull,                     # 10 NEW
-                mtf_bull,                           # 11 NEW
-            ])
-            bear = sum([
-                vol_surge       and not vol_up_dir, # 1
-                cross_dn,                           # 2
-                mom_burst       and not mom_up,     # 3
-                trend_lock      and not trend_up,   # 4
-                rs_strong       and not rs_up,      # 5
-                bb_squeeze      and not bb_up,      # 6
-                nr7             and not nr7_up,     # 7
-                vol_accel       and not vol_accel_up, # 8
-                ema_stack_bear,                     # 9 NEW
-                spy_align_bear,                     # 10 NEW
-                mtf_bear,                           # 11 NEW
-            ])
-
-            direction = "up" if bull >= bear else "down"
-
-            # ── RSI exhaustion penalty ─────────────────────────────────────
-            # Don't chase overbought bulls or oversold bears
-            rsi_val = 50.0
-            if len(closes) >= 16:
-                deltas = np.diff(closes[-15:])
-                gains  = float(np.mean(np.where(deltas > 0, deltas, 0.0)))
-                losses = float(np.mean(np.where(deltas < 0, -deltas, 0.0)))
-                if losses > 0:
-                    rsi_val = 100.0 - 100.0 / (1.0 + gains / losses)
-                elif gains > 0:
-                    rsi_val = 100.0
-            rsi_exhausted = (direction == "up" and rsi_val > 75) or \
-                            (direction == "down" and rsi_val < 25)
-
-            score = max(bull, bear)
-            # RSI exhaustion shown as a UI warning colour but does NOT reduce score
-            # (removing the penalty so borderline setups still fire)
-
-            if score < 3:          # minimum threshold to appear
-                return None
-
-            # A = 5+/11, B = 3-4/11
-            grade = "A" if score >= 5 else "B"
-
-            # Cache closes for batch TimesFM inference (done after all tickers scanned)
-            _tfm_closes[sym] = closes
-
-            # ── Last 3 bar momentum directions ────────────────────────────────
-            # Shows whether price is still moving in signal direction or stalling
-            bar_dirs = ''.join(
-                '↑' if float(closes[i]) >= float(closes[i - 1]) else '↓'
-                for i in [-3, -2, -1]
-            ) if len(closes) >= 4 else '—'
-
-            # Momentum still aligned with signal direction?
-            # Count how many of the last 3 bars agree with direction
-            up_bars = bar_dirs.count('↑')
-            dn_bars = bar_dirs.count('↓')
-            momentum_ok = (direction == "up"   and up_bars >= 2) or \
-                          (direction == "down"  and dn_bars >= 2)
-
-            return {
-                "sym":        sym,
-                "price":      round(float(last_p), 2),
-                "direction":  direction,
-                "grade":      grade,
-                "score":      int(score),
-                "chg_pct":    round(float(sym_ret1), 2),
-                "vol_ratio":  round(float(vol_ratio), 1),
-                "rvol":       round(float(rvol), 1),
-                "vwap":       round(float(vwap_now), 2),
-                "vs_vwap":    round(float((last_p - vwap_now) / vwap_now * 100), 2) if vwap_now else 0.0,
-                "rsi":        round(float(rsi_val), 1),
-                "bar_dirs":   bar_dirs,
-                "momentum_ok": bool(momentum_ok),
-                "ema_stack":  bool(ema_stack_bull if direction == "up" else ema_stack_bear),
-                "spy_aligned": bool(spy_align_bull if direction == "up" else spy_align_bear),
-                "mtf":        bool(mtf_bull if direction == "up" else mtf_bear),
-                "pre_move":   bool(pre_move),
-                # TimesFM 5-bar forecast — filled in by batch TFM pass below
-                "tfm_dir":    None,
-                "tfm_delta":  None,
-                "signals": {
-                    "vol_surge":    bool(vol_surge),
-                    "rvol_high":    bool(rvol_high),
-                    "vwap_cross":   bool(vwap_cross),
-                    "vwap_cross_up":bool(cross_up),
-                    "mom_burst":    bool(mom_burst),
-                    "trend_lock":   bool(trend_lock),
-                    "trend_up":     bool(trend_up),
-                    "rs_strong":    bool(rs_strong),
-                    "bb_squeeze":   bool(bb_squeeze),
-                    "nr7":          bool(nr7),
-                    "vol_accel":    bool(vol_accel),
-                    "ema_stack":    bool(ema_stack_bull if direction == "up" else ema_stack_bear),
-                    "spy_aligned":  bool(spy_align_bull if direction == "up" else spy_align_bear),
-                    "mtf":          bool(mtf_bull if direction == "up" else mtf_bear),
-                },
-            }
-        except Exception as e:
-            print(f"[Scalp] {sym}: {e}")
-            return None
-
-    # Parallel fetch — 20 threads for speed across large universe
-    import concurrent.futures
-    alerts = []
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as ex:
-            futures = {ex.submit(_fetch_sym, sym): sym for sym in _SCALP_UNIVERSE}
-            for fut in concurrent.futures.as_completed(futures, timeout=30):
-                try:
-                    res = fut.result()
-                    if res:
-                        alerts.append(res)
-                except Exception:
-                    pass
-    except Exception as e:
-        print(f"[Scalp] Batch error: {e}")
-
-    # ── TimesFM batch forecast — runs on all qualifying tickers at once ──────────
-    # Model loads in background on first scan; subsequent scans (60s later) use it.
-    if _tfm_ready and alerts:
-        sym_list   = [a["sym"] for a in alerts]
-        tfm_results = _tfm_batch(sym_list)   # { sym: (direction, delta_pct) }
-        for a in alerts:
-            if a["sym"] in tfm_results:
-                a["tfm_dir"], a["tfm_delta"] = tfm_results[a["sym"]]
-        tfm_count = len(tfm_results)
-        print(f"[TFM] Forecast enriched {tfm_count}/{len(alerts)} alerts")
-
-    # Sort: A grades first, then by score desc, then by vol_ratio desc
-    grade_order = {"A": 0, "B": 1}
-    alerts.sort(key=lambda x: (grade_order.get(x["grade"], 2), -x["score"], -x["vol_ratio"]))
-
-    payload = {
-        "alerts":   alerts[:25],   # show top 25 A/B signals
-        "total":    len(alerts),
-        "scanned":  len(_SCALP_UNIVERSE),
-        "ts":       int(now),
-        "spy_ret1": round(spy_ret1, 3),
-    }
-    _scalp_cache["ts"]   = now
-    _scalp_cache["data"] = payload
-    return jsonify(payload)
 
 
 # ── Contract Award Scanner — USASpending.gov ─────────────────────────────────
