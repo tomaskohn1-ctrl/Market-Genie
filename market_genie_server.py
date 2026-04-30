@@ -4204,6 +4204,74 @@ def kronos_scanner():
     return jsonify(set_cache(key, payload))
 
 
+# ── TimesFM — lazy-loaded Google foundation model for 5-bar price forecast ─────
+_tfm_model   = None          # singleton — loaded once, reused forever
+_tfm_ready   = False
+_tfm_loading = False
+_tfm_lock    = threading.Lock()
+_tfm_closes  = {}            # { sym: np.ndarray } populated during scalp scan
+
+def _tfm_load():
+    """Download + compile TimesFM 2.5 in a background thread (called once)."""
+    global _tfm_model, _tfm_ready, _tfm_loading
+    with _tfm_lock:
+        if _tfm_ready or _tfm_loading:
+            return
+        _tfm_loading = True
+    try:
+        print("[TFM] Loading TimesFM 2.5-200M …")
+        import timesfm
+        m = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
+            "google/timesfm-2.5-200m-pytorch"
+        )
+        m.compile(timesfm.ForecastConfig(
+            max_context=512,
+            max_horizon=10,
+            normalize_inputs=True,
+            use_continuous_quantile_head=False,  # point-only for speed
+        ))
+        with _tfm_lock:
+            _tfm_model   = m
+            _tfm_ready   = True
+            _tfm_loading = False
+        print("[TFM] Model ready ✓")
+    except Exception as e:
+        print(f"[TFM] Load failed — TFM signals disabled: {e}")
+        with _tfm_lock:
+            _tfm_loading = False
+
+def _tfm_batch(sym_list):
+    """
+    Run TFM on a batch of symbols whose closes are in _tfm_closes.
+    Returns { sym: (direction, delta_pct) } for symbols that succeed.
+    """
+    if not _tfm_ready or _tfm_model is None:
+        return {}
+    results = {}
+    try:
+        import numpy as np
+        valid = [s for s in sym_list if s in _tfm_closes]
+        if not valid:
+            return {}
+        inputs = [np.array(_tfm_closes[s][-60:], dtype=np.float32) for s in valid]
+        with _tfm_lock:
+            pt_fc, _ = _tfm_model.forecast(horizon=5, inputs=inputs)
+        # pt_fc shape: (n, 5)
+        for i, sym in enumerate(valid):
+            current = float(_tfm_closes[sym][-1])
+            if current <= 0:
+                continue
+            pred_mean  = float(np.mean(pt_fc[i]))
+            delta_pct  = (pred_mean - current) / current * 100
+            results[sym] = (
+                "up" if delta_pct > 0 else "down",
+                round(delta_pct, 3)
+            )
+    except Exception as e:
+        print(f"[TFM] Batch forecast error: {e}")
+    return results
+
+
 # ── Scalp Alert Scanner — 5-10 min momentum/volume/VWAP signals ───────────────
 _scalp_cache = {"ts": 0, "data": None}
 _SCALP_TTL   = 30   # 30-second cache for fresher signals
@@ -4257,6 +4325,13 @@ def _scalp_scanner_inner():
     now = time.time()
     if _scalp_cache["data"] and now - _scalp_cache["ts"] < _SCALP_TTL:
         return jsonify(_scalp_cache["data"])
+
+    # Kick off TimesFM model load in background (no-op if already loading/ready)
+    if not _tfm_ready and not _tfm_loading:
+        threading.Thread(target=_tfm_load, daemon=True).start()
+
+    # Clear the closes cache for this scan cycle
+    _tfm_closes.clear()
 
     # ── EMA helper ────────────────────────────────────────────────────────────
     def _ema(arr, period):
@@ -4461,6 +4536,9 @@ def _scalp_scanner_inner():
             # A = 5+/11, B = 3-4/11
             grade = "A" if score >= 5 else "B"
 
+            # Cache closes for batch TimesFM inference (done after all tickers scanned)
+            _tfm_closes[sym] = closes
+
             # ── Last 3 bar momentum directions ────────────────────────────────
             # Shows whether price is still moving in signal direction or stalling
             bar_dirs = ''.join(
@@ -4493,6 +4571,9 @@ def _scalp_scanner_inner():
                 "spy_aligned": bool(spy_align_bull if direction == "up" else spy_align_bear),
                 "mtf":        bool(mtf_bull if direction == "up" else mtf_bear),
                 "pre_move":   bool(pre_move),
+                # TimesFM 5-bar forecast — filled in by batch TFM pass below
+                "tfm_dir":    None,
+                "tfm_delta":  None,
                 "signals": {
                     "vol_surge":    bool(vol_surge),
                     "rvol_high":    bool(rvol_high),
@@ -4529,6 +4610,17 @@ def _scalp_scanner_inner():
                     pass
     except Exception as e:
         print(f"[Scalp] Batch error: {e}")
+
+    # ── TimesFM batch forecast — runs on all qualifying tickers at once ──────────
+    # Model loads in background on first scan; subsequent scans (60s later) use it.
+    if _tfm_ready and alerts:
+        sym_list   = [a["sym"] for a in alerts]
+        tfm_results = _tfm_batch(sym_list)   # { sym: (direction, delta_pct) }
+        for a in alerts:
+            if a["sym"] in tfm_results:
+                a["tfm_dir"], a["tfm_delta"] = tfm_results[a["sym"]]
+        tfm_count = len(tfm_results)
+        print(f"[TFM] Forecast enriched {tfm_count}/{len(alerts)} alerts")
 
     # Sort: A grades first, then by score desc, then by vol_ratio desc
     grade_order = {"A": 0, "B": 1}
