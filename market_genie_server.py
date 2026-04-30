@@ -4253,15 +4253,29 @@ def _scalp_scanner_inner():
     if _scalp_cache["data"] and now - _scalp_cache["ts"] < _SCALP_TTL:
         return jsonify(_scalp_cache["data"])
 
-    # ── Fetch SPY 1-min for relative-strength baseline ─────────────────────
-    spy_ret1 = 0.0
+    # ── EMA helper ────────────────────────────────────────────────────────────
+    def _ema(arr, period):
+        k = 2.0 / (period + 1)
+        e = float(arr[0])
+        for v in arr[1:]:
+            e = float(v) * k + e * (1 - k)
+        return e
+
+    # ── Fetch SPY 1-min for RS baseline + trend direction ─────────────────────
+    spy_ret1     = 0.0
+    spy_bull_trend = False   # SPY 9-EMA > 20-EMA
+    spy_bear_trend = False
     try:
         spy_tk  = yf.Ticker("SPY")
         spy_raw = spy_tk.history(period="1d", interval="1m", prepost=True)
-        if spy_raw is not None and len(spy_raw) >= 3:
+        if spy_raw is not None and len(spy_raw) >= 25:
             spy_raw.columns = [c.lower() for c in spy_raw.columns]
             sc = spy_raw["close"].values.astype(float)
             spy_ret1 = float((sc[-1] - sc[-2]) / sc[-2] * 100) if sc[-2] > 0 else 0.0
+            spy_ema9  = _ema(sc, 9)
+            spy_ema20 = _ema(sc, 20)
+            spy_bull_trend = spy_ema9 > spy_ema20
+            spy_bear_trend = spy_ema9 < spy_ema20
     except Exception:
         pass
 
@@ -4280,11 +4294,26 @@ def _scalp_scanner_inner():
             if last_p <= 0:
                 return None
 
+            # ── Hard filters (skip noisy/illiquid symbols) ─────────────────
+            if last_p < 2.0:           # ignore sub-$2 stocks
+                return None
+            vol_avg20 = float(np.mean(volumes[-21:-1]))
+            # Estimated daily dollar volume: avg 1-min vol × price × 390 bars/day
+            est_daily_dv = vol_avg20 * last_p * 390
+            if est_daily_dv < 1_000_000:   # require at least $1M/day liquidity
+                return None
+
             # ── Signal 1: Volume Surge ─────────────────────────────────────
-            vol_avg20  = float(np.mean(volumes[-21:-1]))
             vol_ratio  = float(volumes[-1] / vol_avg20) if vol_avg20 > 0 else 1.0
             vol_up_dir = closes[-1] > closes[-2]
             vol_surge  = vol_ratio >= 2.0
+
+            # ── NEW — Relative Volume at Time-of-Day (RVOL) ────────────────
+            # Compare current bar volume vs average of same 10 bars earlier
+            # (approx same time-of-day context without needing historical days)
+            rvol_ref  = float(np.mean(volumes[-31:-21])) if len(volumes) >= 31 else vol_avg20
+            rvol      = float(volumes[-1] / rvol_ref) if rvol_ref > 0 else vol_ratio
+            rvol_high = rvol >= 2.5   # stronger threshold vs same-time reference
 
             # ── Signal 2: VWAP Cross ───────────────────────────────────────
             typical   = (highs + lows + closes) / 3.0
@@ -4304,9 +4333,9 @@ def _scalp_scanner_inner():
             mom_up      = closes[-1] > closes[-2]
 
             # ── Signal 4: 3-Bar Trend Lock ────────────────────────────────
-            moves = [closes[i] - closes[i-1] for i in range(-3, 0)]
-            all_up = all(m > 0 for m in moves)
-            all_dn = all(m < 0 for m in moves)
+            moves    = [closes[i] - closes[i-1] for i in range(-3, 0)]
+            all_up   = all(m > 0 for m in moves)
+            all_dn   = all(m < 0 for m in moves)
             trend_lock = all_up or all_dn
             trend_up   = all_up
 
@@ -4316,16 +4345,14 @@ def _scalp_scanner_inner():
             rs_up     = sym_ret1 > 0
 
             # ── PRE-MOVE Signal 6: Bollinger Band Squeeze ─────────────────
-            # Bands tightening = energy coiling before a breakout
             bb_squeeze = False
-            bb_up      = last_p >= vwap_now   # direction follows VWAP position
+            bb_up      = last_p >= vwap_now
             if len(closes) >= 35:
                 std_recent = float(np.std(closes[-10:]))
                 std_prior  = float(np.std(closes[-30:-10]))
                 bb_squeeze = std_recent < std_prior * 0.65 and std_prior > 0
 
-            # ── PRE-MOVE Signal 7: NR7 — Narrowest Range in 7 Bars ───────
-            # Compression before explosion — price coiling tightly
+            # ── PRE-MOVE Signal 7: NR7 ────────────────────────────────────
             nr7    = False
             nr7_up = last_p >= vwap_now
             if len(highs) >= 8:
@@ -4334,7 +4361,6 @@ def _scalp_scanner_inner():
                 nr7 = current_rng < float(np.min(bar_ranges[-8:-1]))
 
             # ── PRE-MOVE Signal 8: Accelerating Volume ────────────────────
-            # Volume building across 3 bars BEFORE the surge — early pressure
             vol_accel    = False
             vol_accel_up = closes[-1] > closes[-2]
             if len(volumes) >= 22:
@@ -4346,33 +4372,87 @@ def _scalp_scanner_inner():
 
             pre_move = bb_squeeze or nr7 or vol_accel
 
-            # ── Directional scoring (8 signals total) ─────────────────────
+            # ── NEW Signal 9: EMA 9/20 Stack ──────────────────────────────
+            # Bull structure: 9-EMA above 20-EMA; bear: 9-EMA below 20-EMA
+            ema9_val       = _ema(closes, 9)
+            ema20_val      = _ema(closes, 20)
+            ema_stack_bull = ema9_val > ema20_val
+            ema_stack_bear = ema9_val < ema20_val
+
+            # ── NEW Signal 10: SPY Trend Alignment ────────────────────────
+            # Stock going up AND SPY in bull EMA structure → confirmed momentum
+            spy_align_bull = spy_bull_trend and sym_ret1 > 0
+            spy_align_bear = spy_bear_trend and sym_ret1 < 0
+
+            # ── NEW Signal 11: Multi-Timeframe (5-min constructed) ────────
+            # Build synthetic 5-min bars from 1-min data; check VWAP position
+            mtf_bull = False
+            mtf_bear = False
+            if len(closes) >= 15:
+                c5 = [float(np.mean(closes[i:i+5])) for i in range(-15, 0, 5)]
+                v5 = [float(np.sum(volumes[i:i+5]))  for i in range(-15, 0, 5)]
+                h5 = [float(np.max(highs[i:i+5]))    for i in range(-15, 0, 5)]
+                l5 = [float(np.min(lows[i:i+5]))     for i in range(-15, 0, 5)]
+                if len(c5) >= 2:
+                    tp5   = [(h5[i]+l5[i]+c5[i])/3 for i in range(len(c5))]
+                    tot_v = max(sum(v5), 1e-9)
+                    vwap5 = sum(tp5[i]*v5[i] for i in range(len(c5))) / tot_v
+                    mtf_bull = c5[-1] > vwap5 and c5[-1] > c5[-2]
+                    mtf_bear = c5[-1] < vwap5 and c5[-1] < c5[-2]
+
+            # ── Directional scoring (11 signals) ──────────────────────────
             bull = sum([
-                vol_surge    and vol_up_dir,
-                cross_up,
-                mom_burst    and mom_up,
-                trend_lock   and trend_up,
-                rs_strong    and rs_up,
-                bb_squeeze   and bb_up,
-                nr7          and nr7_up,
-                vol_accel    and vol_accel_up,
+                vol_surge       and vol_up_dir,     # 1
+                cross_up,                           # 2
+                mom_burst       and mom_up,         # 3
+                trend_lock      and trend_up,       # 4
+                rs_strong       and rs_up,          # 5
+                bb_squeeze      and bb_up,          # 6
+                nr7             and nr7_up,         # 7
+                vol_accel       and vol_accel_up,   # 8
+                ema_stack_bull,                     # 9 NEW
+                spy_align_bull,                     # 10 NEW
+                mtf_bull,                           # 11 NEW
             ])
             bear = sum([
-                vol_surge    and not vol_up_dir,
-                cross_dn,
-                mom_burst    and not mom_up,
-                trend_lock   and not trend_up,
-                rs_strong    and not rs_up,
-                bb_squeeze   and not bb_up,
-                nr7          and not nr7_up,
-                vol_accel    and not vol_accel_up,
+                vol_surge       and not vol_up_dir, # 1
+                cross_dn,                           # 2
+                mom_burst       and not mom_up,     # 3
+                trend_lock      and not trend_up,   # 4
+                rs_strong       and not rs_up,      # 5
+                bb_squeeze      and not bb_up,      # 6
+                nr7             and not nr7_up,     # 7
+                vol_accel       and not vol_accel_up, # 8
+                ema_stack_bear,                     # 9 NEW
+                spy_align_bear,                     # 10 NEW
+                mtf_bear,                           # 11 NEW
             ])
-            score = max(bull, bear)
-            if score < 3:
-                return None
 
             direction = "up" if bull >= bear else "down"
-            grade     = "A" if score >= 5 else "B"   # A=5+/8, B=3-4/8
+
+            # ── RSI exhaustion penalty ─────────────────────────────────────
+            # Don't chase overbought bulls or oversold bears
+            rsi_val = 50.0
+            if len(closes) >= 16:
+                deltas = np.diff(closes[-15:])
+                gains  = float(np.mean(np.where(deltas > 0, deltas, 0.0)))
+                losses = float(np.mean(np.where(deltas < 0, -deltas, 0.0)))
+                if losses > 0:
+                    rsi_val = 100.0 - 100.0 / (1.0 + gains / losses)
+                elif gains > 0:
+                    rsi_val = 100.0
+            rsi_exhausted = (direction == "up" and rsi_val > 75) or \
+                            (direction == "down" and rsi_val < 25)
+
+            score = max(bull, bear)
+            if rsi_exhausted:
+                score = max(score - 1, 0)   # penalise chasing exhausted moves
+
+            if score < 4:          # minimum threshold to appear (raised from 3)
+                return None
+
+            # A = 7+/11, B = 5-6/11  (proportionally same as old A=5+/8)
+            grade = "A" if score >= 7 else "B"
 
             return {
                 "sym":        sym,
@@ -4382,20 +4462,29 @@ def _scalp_scanner_inner():
                 "score":      int(score),
                 "chg_pct":    round(float(sym_ret1), 2),
                 "vol_ratio":  round(float(vol_ratio), 1),
+                "rvol":       round(float(rvol), 1),
                 "vwap":       round(float(vwap_now), 2),
                 "vs_vwap":    round(float((last_p - vwap_now) / vwap_now * 100), 2) if vwap_now else 0.0,
+                "rsi":        round(float(rsi_val), 1),
+                "ema_stack":  bool(ema_stack_bull if direction == "up" else ema_stack_bear),
+                "spy_aligned": bool(spy_align_bull if direction == "up" else spy_align_bear),
+                "mtf":        bool(mtf_bull if direction == "up" else mtf_bear),
                 "pre_move":   bool(pre_move),
                 "signals": {
-                    "vol_surge":   bool(vol_surge),
-                    "vwap_cross":  bool(vwap_cross),
-                    "vwap_cross_up": bool(cross_up),
-                    "mom_burst":   bool(mom_burst),
-                    "trend_lock":  bool(trend_lock),
-                    "trend_up":    bool(trend_up),
-                    "rs_strong":   bool(rs_strong),
-                    "bb_squeeze":  bool(bb_squeeze),
-                    "nr7":         bool(nr7),
-                    "vol_accel":   bool(vol_accel),
+                    "vol_surge":    bool(vol_surge),
+                    "rvol_high":    bool(rvol_high),
+                    "vwap_cross":   bool(vwap_cross),
+                    "vwap_cross_up":bool(cross_up),
+                    "mom_burst":    bool(mom_burst),
+                    "trend_lock":   bool(trend_lock),
+                    "trend_up":     bool(trend_up),
+                    "rs_strong":    bool(rs_strong),
+                    "bb_squeeze":   bool(bb_squeeze),
+                    "nr7":          bool(nr7),
+                    "vol_accel":    bool(vol_accel),
+                    "ema_stack":    bool(ema_stack_bull if direction == "up" else ema_stack_bear),
+                    "spy_aligned":  bool(spy_align_bull if direction == "up" else spy_align_bear),
+                    "mtf":          bool(mtf_bull if direction == "up" else mtf_bear),
                 },
             }
         except Exception as e:

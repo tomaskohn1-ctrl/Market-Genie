@@ -2509,7 +2509,7 @@
     </div>
     <div class="card-body" style="padding:0">
       <div style="padding:10px 14px 6px;font-size:10px;color:var(--muted)">
-        Real-time signals: <strong style="color:var(--text-hi)">Volume Surge · VWAP Cross · Momentum Burst · Trend Lock · Rel. Strength</strong> · Pre-move: <strong style="color:#ff66ff">BB Squeeze · NR7 · Vol Accel</strong> · Auto-refreshes every 60s
+        Signals (11): <strong style="color:var(--text-hi)">Vol Surge · RVOL · VWAP Cross · Momentum · Trend Lock · Rel. Strength</strong> · New: <strong style="color:#00ccff">EMA Stack · SPY Align · 5M Confirm</strong> · Pre-move: <strong style="color:#ff66ff">BB Squeeze · NR7 · VACC</strong> · A=7+/11 · Auto-refreshes every 60s
       </div>
       <div id="scalpBody">
         <div style="padding:20px 14px;text-align:center;color:var(--muted);font-size:12px">
@@ -5173,25 +5173,34 @@ function renderScalpAlerts() {
   }
 
   const rows = d.alerts.map(a => {
-    const gs  = _GRADE_STYLE[a.grade] || _GRADE_STYLE.C;
-    const dir = a.direction;
-    const sigs = a.signals || {};
+    const gs      = _GRADE_STYLE[a.grade] || _GRADE_STYLE.C;
+    const dir     = a.direction;
+    const sigs    = a.signals || {};
     const isPreMove = !!a.pre_move;
 
-    // Reactive signal badges
+    // RSI colour
+    const rsiVal  = a.rsi || 50;
+    const rsiClr  = rsiVal > 70 ? '#ff4455' : rsiVal < 30 ? '#00e676' : '#718096';
+    const rsiStr  = `RSI ${rsiVal}`;
+
+    // Core signal badges
     const badges = [
-      sigs.vol_surge   ? `<span style="background:#ff880033;color:#ff8800;padding:1px 5px;border-radius:3px;font-size:9px">VOL ${a.vol_ratio}x</span>` : '',
-      sigs.vwap_cross  ? `<span style="background:#aa44ff33;color:#aa44ff;padding:1px 5px;border-radius:3px;font-size:9px">VWAP✗</span>` : '',
-      sigs.mom_burst   ? `<span style="background:#00aaff33;color:#00aaff;padding:1px 5px;border-radius:3px;font-size:9px">MOM</span>` : '',
-      sigs.trend_lock  ? `<span style="background:#00e67633;color:#00e676;padding:1px 5px;border-radius:3px;font-size:9px">TREND</span>` : '',
-      sigs.rs_strong   ? `<span style="background:#ffbb0033;color:#ffbb00;padding:1px 5px;border-radius:3px;font-size:9px">RS</span>` : '',
-      // Pre-move leading indicator badges
-      sigs.bb_squeeze  ? `<span style="background:#ff00ff22;color:#ff66ff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">BB SQZ</span>` : '',
-      sigs.nr7         ? `<span style="background:#ff00ff22;color:#ff66ff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">NR7</span>` : '',
-      sigs.vol_accel   ? `<span style="background:#ff00ff22;color:#ff66ff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">VACC</span>` : '',
+      sigs.vol_surge    ? `<span style="background:#ff880033;color:#ff8800;padding:1px 5px;border-radius:3px;font-size:9px">VOL ${a.vol_ratio}x</span>` : '',
+      sigs.rvol_high    ? `<span style="background:#ff660033;color:#ff6600;padding:1px 5px;border-radius:3px;font-size:9px">RVOL</span>` : '',
+      sigs.vwap_cross   ? `<span style="background:#aa44ff33;color:#aa44ff;padding:1px 5px;border-radius:3px;font-size:9px">VWAP✗</span>` : '',
+      sigs.mom_burst    ? `<span style="background:#00aaff33;color:#00aaff;padding:1px 5px;border-radius:3px;font-size:9px">MOM</span>` : '',
+      sigs.trend_lock   ? `<span style="background:#00e67633;color:#00e676;padding:1px 5px;border-radius:3px;font-size:9px">TREND</span>` : '',
+      sigs.rs_strong    ? `<span style="background:#ffbb0033;color:#ffbb00;padding:1px 5px;border-radius:3px;font-size:9px">RS</span>` : '',
+      // Accuracy boosters (new)
+      sigs.ema_stack    ? `<span style="background:#00ccff22;color:#00ccff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">EMA✓</span>` : '',
+      sigs.spy_aligned  ? `<span style="background:#44ff8833;color:#44ff88;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">SPY✓</span>` : '',
+      sigs.mtf          ? `<span style="background:#ffffff15;color:#aaaaff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">5M✓</span>` : '',
+      // Pre-move signals
+      sigs.bb_squeeze   ? `<span style="background:#ff00ff22;color:#ff66ff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">BB SQZ</span>` : '',
+      sigs.nr7          ? `<span style="background:#ff00ff22;color:#ff66ff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">NR7</span>` : '',
+      sigs.vol_accel    ? `<span style="background:#ff00ff22;color:#ff66ff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">VACC</span>` : '',
     ].filter(Boolean).join(' ');
 
-    // Pre-move rows get a subtle purple glow border to stand out
     const rowStyle = isPreMove
       ? `display:grid;grid-template-columns:28px 60px 1fr auto;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--border);border-left:3px solid #ff66ff;background:rgba(255,0,255,0.04)`
       : `display:grid;grid-template-columns:28px 60px 1fr auto;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--border)`;
@@ -5200,7 +5209,7 @@ function renderScalpAlerts() {
       ? `<span style="background:#ff00ff22;color:#ff66ff;padding:1px 5px;border-radius:3px;font-size:8px;font-weight:700;letter-spacing:0.5px">⚡ PRE-MOVE</span> `
       : '';
 
-    return `<div style="${rowStyle}">
+    return `<div style="${rowStyle}" onclick="loadTicker('${a.sym}')" title="Click to scan ${a.sym}">
       <div style="background:${gs.bg};color:${gs.clr};border:1px solid ${gs.clr}55;border-radius:4px;text-align:center;font-size:11px;font-weight:700;padding:2px 0">${gs.label}</div>
       <div>
         <div style="font-size:13px;font-weight:700;color:var(--text-hi)">${a.sym}</div>
@@ -5212,13 +5221,16 @@ function renderScalpAlerts() {
       </div>
       <div style="text-align:right">
         <div style="font-size:12px;font-weight:600;color:${a.chg_pct >= 0 ? '#00e676' : '#ff4455'}">${a.chg_pct >= 0 ? '+' : ''}${a.chg_pct}%</div>
-        <div style="font-size:9px;color:var(--muted)">${a.score}/8 sigs</div>
+        <div style="font-size:9px;color:var(--muted)">${a.score}/11 sigs</div>
+        <div style="font-size:9px;color:${rsiClr}">${rsiStr}</div>
       </div>
     </div>`;
   }).join('');
 
-  const spyLine = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);border-bottom:1px solid var(--border)">
-    SPY ${d.spy_ret1 >= 0 ? '+' : ''}${d.spy_ret1}% · ${d.scanned} stocks scanned · ${new Date(d.ts * 1000).toLocaleTimeString()}
+  const spyTrend = d.spy_ret1 >= 0.1 ? '▲ BULL' : d.spy_ret1 <= -0.1 ? '▼ BEAR' : '— FLAT';
+  const spyClr   = d.spy_ret1 >= 0.1 ? '#00e676' : d.spy_ret1 <= -0.1 ? '#ff4455' : '#718096';
+  const spyLine  = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);border-bottom:1px solid var(--border)">
+    SPY <span style="color:${spyClr};font-weight:700">${spyTrend}</span> ${d.spy_ret1 >= 0 ? '+' : ''}${d.spy_ret1}% · ${d.scanned} scanned · ${new Date(d.ts * 1000).toLocaleTimeString()}
   </div>`;
 
   body.innerHTML = spyLine + rows;
