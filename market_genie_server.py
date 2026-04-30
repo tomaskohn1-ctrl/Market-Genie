@@ -18,6 +18,7 @@ import time
 import json
 import math
 import threading
+import warnings
 import webbrowser
 import requests
 import yfinance as yf
@@ -27,6 +28,10 @@ from email.utils import parsedate_to_datetime
 from flask import Flask, jsonify, send_from_directory, request
 from flask_cors import CORS
 from dotenv import load_dotenv
+
+# Suppress numpy RuntimeWarnings (empty-slice means, NaN divides) that are
+# expected during pre-market / low-volume windows and pollute Railway logs.
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="numpy")
 
 load_dotenv()
 
@@ -4386,13 +4391,15 @@ def _scalp_scanner_inner():
 
             # ── NEW Signal 11: Multi-Timeframe (5-min constructed) ────────
             # Build synthetic 5-min bars from 1-min data; check VWAP position
+            # NOTE: use `i+5 or None` so that when i=-5 the stop becomes None
+            # (= slice to end), not 0 (= empty slice before index 0).
             mtf_bull = False
             mtf_bear = False
             if len(closes) >= 15:
-                c5 = [float(np.mean(closes[i:i+5])) for i in range(-15, 0, 5)]
-                v5 = [float(np.sum(volumes[i:i+5]))  for i in range(-15, 0, 5)]
-                h5 = [float(np.max(highs[i:i+5]))    for i in range(-15, 0, 5)]
-                l5 = [float(np.min(lows[i:i+5]))     for i in range(-15, 0, 5)]
+                c5 = [float(np.mean(closes[i:(i+5) or None])) for i in range(-15, 0, 5)]
+                v5 = [float(np.sum(volumes[i:(i+5) or None]))  for i in range(-15, 0, 5)]
+                h5 = [float(np.max(highs[i:(i+5) or None]))    for i in range(-15, 0, 5)]
+                l5 = [float(np.min(lows[i:(i+5) or None]))     for i in range(-15, 0, 5)]
                 if len(c5) >= 2:
                     tp5   = [(h5[i]+l5[i]+c5[i])/3 for i in range(len(c5))]
                     tot_v = max(sum(v5), 1e-9)
