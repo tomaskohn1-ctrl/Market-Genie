@@ -5043,6 +5043,57 @@ let _scalpScanTime      = null;
 let _scalpInterval      = null;
 let _scalpCountdownTick = null;
 let _scalpNotifsOn      = false;
+let _scalpFirstSeen     = {};       // { sym: epochMs } — persists across scans
+let _scalpAgeTimer      = null;     // setInterval handle for live age tickers
+
+// Freshness thresholds (ms)
+const SCALP_FRESH_MS  = 30_000;   //  0-30s  → bright green border
+const SCALP_WARM_MS   = 90_000;   // 30-90s  → amber
+const SCALP_STALE_MS  = 150_000;  // 90-150s → dim
+// > 150s → STALE overlay
+
+function _scalpAgeLabel(ms) {
+  if (ms < 60000) return Math.floor(ms / 1000) + 's';
+  const m = Math.floor(ms / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  return `${m}m ${s}s`;
+}
+
+function _scalpAgeBorderClr(ms) {
+  if (ms < SCALP_FRESH_MS) return '#00e676';   // green
+  if (ms < SCALP_WARM_MS)  return '#ffbb00';   // amber
+  if (ms < SCALP_STALE_MS) return '#ff6600';   // orange
+  return '#ff3d57';                              // red / stale
+}
+
+// Live age ticker — runs every second, updates age spans + row opacity
+function _startScalpAgeTimer() {
+  if (_scalpAgeTimer) clearInterval(_scalpAgeTimer);
+  _scalpAgeTimer = setInterval(() => {
+    const now = Date.now();
+    document.querySelectorAll('[data-scalp-sym]').forEach(row => {
+      const sym  = row.getAttribute('data-scalp-sym');
+      const seen = _scalpFirstSeen[sym];
+      if (!seen) return;
+      const age  = now - seen;
+      const ageEl = row.querySelector('.scalp-age');
+      if (ageEl) ageEl.textContent = _scalpAgeLabel(age);
+      // Border left = freshness colour
+      const clr = _scalpAgeBorderClr(age);
+      row.style.borderLeft = `3px solid ${clr}`;
+      // Fade stale rows
+      if (age > SCALP_STALE_MS) {
+        row.style.opacity = '0.45';
+        const staleEl = row.querySelector('.scalp-stale-tag');
+        if (staleEl) staleEl.style.display = 'inline';
+      } else {
+        row.style.opacity = '1';
+        const staleEl = row.querySelector('.scalp-stale-tag');
+        if (staleEl) staleEl.style.display = 'none';
+      }
+    });
+  }, 1000);
+}
 
 const _GRADE_STYLE = {
   A: { bg:'#00e67622', clr:'#00e676', label:'A' },
@@ -5108,9 +5159,22 @@ async function loadScalpAlerts(force = false) {
     _scalpPrev     = _scalpData;
     _scalpData     = await resp.json();
     _scalpScanTime = Date.now();
+
+    // Record first-seen time for each alert (never overwrite an existing entry)
+    const now = Date.now();
+    (_scalpData.alerts || []).forEach(a => {
+      if (!_scalpFirstSeen[a.sym]) _scalpFirstSeen[a.sym] = now;
+    });
+    // Prune symbols that are no longer in any recent scan (keep 10 min max)
+    const cutoff = now - 10 * 60_000;
+    Object.keys(_scalpFirstSeen).forEach(s => {
+      if (_scalpFirstSeen[s] < cutoff) delete _scalpFirstSeen[s];
+    });
+
     _checkScalpAGrade(_scalpData.alerts);
     renderScalpAlerts();
     _startScalpAutoRefresh();
+    _startScalpAgeTimer();
   } catch(e) {
     if (badge) { badge.textContent = 'Error'; badge.className = 'card-tag tag-bear'; }
     if (body)  { body.innerHTML = `<div style="padding:20px;text-align:center;color:#ff4455;font-size:12px">Error: ${e.message}</div>`; }
@@ -5136,8 +5200,8 @@ function renderScalpAlerts() {
   const prevSyms = new Set((_scalpPrev?.alerts || []).map(a => a.sym));
 
   // Column header
-  const header = `<div style="display:grid;grid-template-columns:26px 62px 58px 1fr 54px;gap:6px;padding:5px 14px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">
-    <div></div><div>TICKER</div><div>DIR</div><div>SIGNALS</div><div style="text-align:right">STATS</div>
+  const header = `<div style="display:grid;grid-template-columns:26px 62px 58px 1fr 66px;gap:6px;padding:5px 14px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">
+    <div></div><div>TICKER</div><div>DIR / BARS</div><div>SIGNALS</div><div style="text-align:right">AGE / CHG</div>
   </div>`;
 
   // Build rows — A grades first (already sorted server-side by score desc)
@@ -5161,6 +5225,19 @@ function renderScalpAlerts() {
     const scorePct = Math.round(a.score / 11 * 100);
     const barClr   = dir === 'up' ? '#00e676' : '#ff4455';
 
+    // Age since first seen
+    const firstSeen = _scalpFirstSeen[a.sym] || Date.now();
+    const ageMs     = Date.now() - firstSeen;
+    const ageLbl    = _scalpAgeLabel(ageMs);
+    const ageBdrClr = _scalpAgeBorderClr(ageMs);
+    const isStale   = ageMs > SCALP_STALE_MS;
+
+    // Bar direction arrows + momentum health
+    const barDirs   = a.bar_dirs || '—';
+    const momOk     = a.momentum_ok !== false;  // true = still moving in direction
+    const momClr    = momOk ? '#00e676' : '#ff6600';
+    const momTip    = momOk ? 'Momentum continuing' : 'Momentum stalling';
+
     // RSI — only show if extreme
     const rsi     = a.rsi || 50;
     const rsiHtml = rsi > 70
@@ -5175,7 +5252,6 @@ function renderScalpAlerts() {
       : '';
 
     // Key active signal badges — condensed, no wrap
-    // Priority: accuracy signals first, then volume/momentum
     const sigBadges = [
       isNew        ? `<span style="background:rgba(91,127,255,0.2);color:#7b9bff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">NEW</span>` : '',
       isPreMove    ? `<span style="background:rgba(255,0,255,0.12);color:#ff66ff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">⚡PRE</span>` : '',
@@ -5192,10 +5268,11 @@ function renderScalpAlerts() {
       sigs.nr7         ? `<span style="background:rgba(255,0,255,0.12);color:#ff66ff;padding:1px 5px;border-radius:3px;font-size:9px">NR7</span>` : '',
     ].filter(Boolean).join(' ');
 
-    const rowBorderLeft = isPreMove ? 'border-left:3px solid #ff66ff' : '';
-    const rowBg         = isPreMove ? 'rgba(255,0,255,0.03)' : 'transparent';
+    const rowBg = isPreMove ? 'rgba(255,0,255,0.03)' : 'transparent';
 
-    const row = `<div style="display:grid;grid-template-columns:26px 62px 58px 1fr 54px;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid rgba(255,255,255,0.04);${rowBorderLeft};background:${rowBg};cursor:pointer;transition:background 0.12s"
+    const row = `<div
+      data-scalp-sym="${a.sym}"
+      style="display:grid;grid-template-columns:26px 62px 58px 1fr 66px;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid rgba(255,255,255,0.04);border-left:3px solid ${ageBdrClr};background:${rowBg};cursor:pointer;transition:background 0.12s;opacity:${isStale ? '0.45' : '1'}"
       onmouseover="this.style.background='rgba(255,255,255,0.04)'"
       onmouseout="this.style.background='${rowBg}'"
       onclick="loadTicker('${a.sym}')" title="Click to deep-scan ${a.sym}">
@@ -5209,9 +5286,10 @@ function renderScalpAlerts() {
         <div style="font-size:10px;color:var(--muted)">$${a.price}</div>
       </div>
 
-      <!-- Direction box -->
+      <!-- Direction box + bar directions -->
       <div style="text-align:center;padding:3px 4px;border-radius:5px;background:${dirClr}18;border:1px solid ${dirClr}44">
         <div style="font-size:11px;font-weight:800;color:${dirClr}">${_DIR_ARROW[dir]} ${dir === 'up' ? 'BULL' : 'BEAR'}</div>
+        <div style="font-size:10px;letter-spacing:1px;color:${momClr};margin-top:1px" title="${momTip}">${barDirs}</div>
       </div>
 
       <!-- Score bar + signal badges -->
@@ -5225,9 +5303,13 @@ function renderScalpAlerts() {
         </div>
       </div>
 
-      <!-- Stats: chg%, vs_vwap, RSI warning -->
+      <!-- Age + stats -->
       <div style="text-align:right">
-        <div style="font-size:12px;font-weight:700;color:${a.chg_pct >= 0 ? '#00e676' : '#ff4455'};font-family:'JetBrains Mono',monospace">${a.chg_pct >= 0 ? '+' : ''}${a.chg_pct}%</div>
+        <div style="font-size:11px;font-weight:700;color:${ageBdrClr};font-family:'JetBrains Mono',monospace">
+          <span class="scalp-age">${ageLbl}</span>
+          <span class="scalp-stale-tag" style="display:${isStale ? 'inline' : 'none'};font-size:8px;background:rgba(255,61,87,0.2);color:#ff3d57;padding:1px 3px;border-radius:2px;margin-left:2px">STALE</span>
+        </div>
+        <div style="font-size:11px;font-weight:700;color:${a.chg_pct >= 0 ? '#00e676' : '#ff4455'};font-family:'JetBrains Mono',monospace">${a.chg_pct >= 0 ? '+' : ''}${a.chg_pct}%</div>
         ${vwapStr ? `<div style="margin-top:1px">${vwapStr}</div>` : ''}
         ${rsiHtml ? `<div style="margin-top:1px">${rsiHtml}</div>` : ''}
       </div>

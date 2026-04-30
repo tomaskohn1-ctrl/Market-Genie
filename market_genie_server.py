@@ -4461,6 +4461,20 @@ def _scalp_scanner_inner():
             # A = 5+/11, B = 3-4/11
             grade = "A" if score >= 5 else "B"
 
+            # ── Last 3 bar momentum directions ────────────────────────────────
+            # Shows whether price is still moving in signal direction or stalling
+            bar_dirs = ''.join(
+                '↑' if float(closes[i]) >= float(closes[i - 1]) else '↓'
+                for i in [-3, -2, -1]
+            ) if len(closes) >= 4 else '—'
+
+            # Momentum still aligned with signal direction?
+            # Count how many of the last 3 bars agree with direction
+            up_bars = bar_dirs.count('↑')
+            dn_bars = bar_dirs.count('↓')
+            momentum_ok = (direction == "up"   and up_bars >= 2) or \
+                          (direction == "down"  and dn_bars >= 2)
+
             return {
                 "sym":        sym,
                 "price":      round(float(last_p), 2),
@@ -4473,6 +4487,8 @@ def _scalp_scanner_inner():
                 "vwap":       round(float(vwap_now), 2),
                 "vs_vwap":    round(float((last_p - vwap_now) / vwap_now * 100), 2) if vwap_now else 0.0,
                 "rsi":        round(float(rsi_val), 1),
+                "bar_dirs":   bar_dirs,
+                "momentum_ok": bool(momentum_ok),
                 "ema_stack":  bool(ema_stack_bull if direction == "up" else ema_stack_bear),
                 "spy_aligned": bool(spy_align_bull if direction == "up" else spy_align_bear),
                 "mtf":        bool(mtf_bull if direction == "up" else mtf_bear),
