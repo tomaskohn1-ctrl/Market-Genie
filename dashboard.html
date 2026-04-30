@@ -6354,9 +6354,15 @@ function hideServerError() {
   if (el) el.style.display = 'none';
 }
 
-// Check immediately on load, then poll every 15s
-checkServerConnection();
-setInterval(checkServerConnection, 15000);
+// If page loaded from a real server (not file://), show LIVE immediately.
+// Background ping still runs to detect server going down mid-session.
+if (SERVER_MODE) {
+  setServerStatus(true, 'LIVE');
+  hideServerError();
+}
+// Verify with a background ping, then poll every 30s
+setTimeout(checkServerConnection, 1500);
+setInterval(checkServerConnection, 30000);
 
 // ── Presidential Watch ─────────────────────────────────────────────────────────
 async function refreshPresWatch(force = false) {
