@@ -530,6 +530,37 @@ def _ws_build_sub_list():
     return combined
 
 
+def _ws_seed_history():
+    """
+    Pre-populate _ws_minute_hist from Massive REST API right after WS auth.
+    This eliminates the 2-minute cold-start: the very first live AM bar can
+    immediately be compared against a real volume baseline.
+    Runs in a background thread — skipped if no MASSIVE_KEY or market closed.
+    """
+    if not MASSIVE_KEY:
+        return
+    tickers = list(dict.fromkeys(list(_PREDICT_WATCHLIST) + _EXT_UNIVERSE[:40]))[:80]
+    seeded = 0
+    print(f"[WS/Seed] Pre-seeding volume history for {len(tickers)} tickers…")
+    for sym in tickers:
+        try:
+            res = massive_1min_bars(sym, minutes_back=30)
+            if res is None:
+                continue
+            _, _, _, _, volumes = res
+            # Use last 8 completed bars (exclude any in-progress current bar)
+            hist_vols = [int(v) for v in volumes[-9:-1] if v > 0]
+            if len(hist_vols) >= 2:
+                with _ws_lock:
+                    h = _ws_minute_hist.setdefault(sym, _deque(maxlen=8))
+                    for v in hist_vols:
+                        h.append(v)
+                seeded += 1
+        except Exception as e:
+            pass  # Skip individual ticker failures silently
+    print(f"[WS/Seed] Done — seeded {seeded}/{len(tickers)} tickers. Surges will fire on first spike.")
+
+
 def _ws_handle_second_bar(m, now):
     """
     Process an A.* (per-second) bar message.
@@ -621,6 +652,8 @@ def _ws_on_message(ws, raw):
                     print("[WS] Authenticated — subscribing to AM + A feeds")
                     ws.send(json.dumps({"action": "subscribe", "params": _ws_build_sub_list()}))
                     _ws_status["connected"] = True
+                    # Pre-seed volume history so first live bar can immediately fire a surge
+                    threading.Thread(target=_ws_seed_history, daemon=True).start()
                 elif st == "connected":
                     print("[WS] Connected — sending auth")
                     ws.send(json.dumps({"action": "auth", "params": MASSIVE_KEY}))

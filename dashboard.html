@@ -5480,9 +5480,9 @@ async function pollLiveSurges() {
                     `<span style="color:#ffd740">Surges fire when a ticker's completed-minute volume hits 2× its recent average.</span>`;
         } else {
           const tickerNote = liveTix > 0
-            ? `${liveTix} tickers connected.`
-            : `Waiting for first minute boundary after deploy.`;
-          modeMsg = `⏳ Accumulating baseline… ${tickerNote} First surge fires after 2 completed minute bars per ticker.`;
+            ? `${liveTix} tickers connected — seeding volume history from REST API.`
+            : `Connecting… volume history will be pre-loaded from REST API.`;
+          modeMsg = `⏳ Loading volume baselines… ${tickerNote} Surges will fire on the first spike above 2× average.`;
         }
 
         // Near-miss section — shows proof of life even before a 2× spike
