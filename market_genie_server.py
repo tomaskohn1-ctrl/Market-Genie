@@ -476,77 +476,202 @@ def massive_daily_summary(date_str=None):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ── Massive WebSocket — real-time per-minute bar feed (AM.* channel) ──────────
-# Connects to wss://socket.massive.com/stocks, authenticates, subscribes to
-# AM.{sym} for all watchlist + scalp universe tickers.
-# Each AM message: {ev,sym,v,o,c,h,l,a(vwap),s(start_ms),e(end_ms)}
-# Updates _ws_live cache used by get_quote() and the scalp scanner.
+# ── Massive WebSocket — AM.* minute bars + A.* second bars ────────────────────
+#
+# AM.* (per-minute OHLCV): updates _ws_live → used by get_quote() + scalp scanner
+# A.*  (per-second OHLCV): accumulates into current minute → detects MID-BAR
+#       volume surges before the minute closes (pace ≥ 3× avg baseline = surge)
+#
+# Surge detection formula:
+#   pace_ratio = (accumulated_vol / elapsed_seconds * 60) / avg_min_vol_baseline
+#   threshold  = 3.0   (3× average minute volume pace)
+#   min_elapsed = 10s  (need at least 10 seconds of data before firing)
+#
+# Data structures:
+#   _ws_live         { SYM: {c,o,h,l,v,a,ts,chg_pct} }  — latest completed bar
+#   _ws_second_bars  { SYM: {vol, elapsed, min_start} }  — current minute accumulator
+#   _ws_minute_hist  { SYM: deque([vol, vol, ...], 5) }  — last 5 completed minute vols
+#   _ws_surges       { SYM: {ratio, vol, avg, ts, dir} } — active surge alerts
 # ══════════════════════════════════════════════════════════════════════════════
 
-_ws_live   = {}          # { SYM: {c,o,h,l,v,a,ts,chg_pct} }
-_ws_lock   = threading.Lock()
-_ws_status = {"connected": False, "ts": 0, "bars": 0}
-_WS_URL    = "wss://socket.massive.com/stocks"
+from collections import deque as _deque
+
+_ws_live         = {}          # { SYM: {c,o,h,l,v,a,ts,chg_pct} }
+_ws_second_bars  = {}          # { SYM: {vol, elapsed, min_start, last_close} }
+_ws_minute_hist  = {}          # { SYM: deque([vol, ...], maxlen=8) }
+_ws_surges       = {}          # { SYM: {ratio, vol, avg, ts, dir, price} }
+_ws_lock         = threading.Lock()
+_ws_status       = {"connected": False, "ts": 0, "bars": 0, "second_bars": 0}
+_WS_URL          = "wss://socket.massive.com/stocks"
+
+# Surge tuning constants
+_SURGE_RATIO_MIN    = 3.0   # 3× average minute volume pace
+_SURGE_ELAPSED_MIN  = 10    # require ≥10 seconds before signalling
+_SURGE_TTL          = 90    # keep surge visible for 90 seconds
 
 def _ws_build_sub_list():
-    """Return comma-separated AM.SYM subscription string for all key tickers."""
-    core = list(dict.fromkeys(
+    """
+    Return comma-separated subscription string.
+    AM.* for all tickers (completed minute bars — price feed + scanner baseline).
+    A.*  for scalp universe only (per-second bars — mid-bar surge detection).
+    Regime tickers (SPY/QQQ/VXX) get AM only to conserve bandwidth.
+    """
+    am_tickers = list(dict.fromkeys(
         list(_PREDICT_WATCHLIST) + _EXT_UNIVERSE[:40]
-    ))
-    return ",".join(f"AM.{s}" for s in core[:100])   # cap at 100 to avoid overload
+    ))[:100]
+    # Per-second A.* — only scalp universe (not regime tickers) to reduce load
+    a_tickers = [s for s in _EXT_UNIVERSE[:50] if s not in ("SPY","QQQ","VXX","IWM")][:50]
+
+    am_subs = ",".join(f"AM.{s}" for s in am_tickers)
+    a_subs  = ",".join(f"A.{s}"  for s in a_tickers)
+    combined = f"{am_subs},{a_subs}" if a_subs else am_subs
+    return combined
+
+
+def _ws_handle_second_bar(m, now):
+    """
+    Process an A.* (per-second) bar message.
+    Accumulates volume within the current minute bucket and checks for surge.
+    """
+    sym   = m.get("sym", "")
+    vol   = int(m.get("v") or 0)
+    close = float(m.get("c") or 0)
+    s_ms  = int(m.get("s") or (now * 1000))   # bar start epoch ms
+    if not sym or vol == 0:
+        return
+
+    min_bucket = s_ms // 60000   # which minute this second belongs to
+
+    with _ws_lock:
+        acc = _ws_second_bars.get(sym)
+        if acc is None or acc["min_bucket"] != min_bucket:
+            # New minute — before discarding old accumulator, save its vol to history
+            if acc is not None and acc["vol"] > 0:
+                hist = _ws_minute_hist.setdefault(sym, _deque(maxlen=8))
+                hist.append(acc["vol"])
+            _ws_second_bars[sym] = {
+                "vol":        vol,
+                "elapsed":    1,
+                "min_bucket": min_bucket,
+                "min_start":  now,
+                "last_close": close,
+            }
+            acc = _ws_second_bars[sym]
+        else:
+            acc["vol"]        += vol
+            acc["elapsed"]    += 1
+            acc["last_close"]  = close
+
+        # Compute pace ratio once we have enough elapsed seconds
+        elapsed  = acc["elapsed"]
+        cur_vol  = acc["vol"]
+        if elapsed < _SURGE_ELAPSED_MIN:
+            return
+
+        hist = _ws_minute_hist.get(sym)
+        if not hist or len(hist) < 2:
+            # No baseline yet — seed from AM bars if available
+            am_bar = _ws_live.get(sym)
+            if am_bar and am_bar.get("v", 0) > 0:
+                avg_vol = am_bar["v"]
+            else:
+                return
+        else:
+            avg_vol = sum(hist) / len(hist)
+
+        if avg_vol <= 0:
+            return
+
+        pace     = cur_vol / elapsed * 60      # annualise to per-minute pace
+        ratio    = pace / avg_vol
+
+        if ratio >= _SURGE_RATIO_MIN:
+            # Determine direction from last two AM bars or current second close
+            am_bar  = _ws_live.get(sym, {})
+            am_open = am_bar.get("o", close)
+            dirn    = "bull" if close >= am_open else "bear"
+            _ws_surges[sym] = {
+                "ratio":   round(ratio, 1),
+                "vol":     cur_vol,
+                "avg":     round(avg_vol),
+                "elapsed": elapsed,
+                "ts":      now,
+                "dir":     dirn,
+                "price":   close,
+            }
+        else:
+            # Clear stale surge if ratio drops below threshold
+            if sym in _ws_surges and (now - _ws_surges[sym]["ts"]) > _SURGE_TTL:
+                del _ws_surges[sym]
+
+    _ws_status["second_bars"] += 1
+
 
 def _ws_on_message(ws, raw):
     try:
-        import json
         msgs = json.loads(raw)
         now  = time.time()
         for m in msgs:
             ev = m.get("ev")
             if ev == "status":
-                st = m.get("status","")
+                st = m.get("status", "")
                 if st == "auth_success":
-                    print("[WS] Authenticated — subscribing to AM feeds")
-                    ws.send(json.dumps({"action":"subscribe","params":_ws_build_sub_list()}))
+                    print("[WS] Authenticated — subscribing to AM + A feeds")
+                    ws.send(json.dumps({"action": "subscribe", "params": _ws_build_sub_list()}))
                     _ws_status["connected"] = True
                 elif st == "connected":
                     print("[WS] Connected — sending auth")
-                    ws.send(json.dumps({"action":"auth","params":MASSIVE_KEY}))
+                    ws.send(json.dumps({"action": "auth", "params": MASSIVE_KEY}))
+
             elif ev == "AM":
-                sym   = m.get("sym","")
+                # Completed minute bar — update live price cache
+                sym   = m.get("sym", "")
                 close = float(m.get("c") or 0)
                 if sym and close > 0:
-                    prev_c = (_ws_live.get(sym,{}).get("c") or close)
+                    prev_c  = (_ws_live.get(sym, {}).get("c") or close)
                     chg_pct = round((close - prev_c) / prev_c * 100, 3) if prev_c else 0.0
+                    bar_vol = int(m.get("v") or 0)
                     with _ws_lock:
                         _ws_live[sym] = {
                             "c":       close,
                             "o":       float(m.get("o") or close),
                             "h":       float(m.get("h") or close),
                             "l":       float(m.get("l") or close),
-                            "v":       int(m.get("v") or 0),
+                            "v":       bar_vol,
                             "a":       float(m.get("a") or close),  # vwap
                             "ts":      now,
                             "chg_pct": chg_pct,
                         }
+                        # Also feed completed minute vol into history baseline
+                        if bar_vol > 0:
+                            hist = _ws_minute_hist.setdefault(sym, _deque(maxlen=8))
+                            hist.append(bar_vol)
                     _ws_status["bars"] += 1
                     _ws_status["ts"]    = int(now)
+
+            elif ev == "A":
+                # Per-second bar — accumulate for mid-bar surge detection
+                _ws_handle_second_bar(m, now)
+
     except Exception as e:
         print(f"[WS] message error: {e}")
+
 
 def _ws_on_error(ws, err):
     print(f"[WS] error: {err}")
     _ws_status["connected"] = False
 
+
 def _ws_on_close(ws, code, msg):
     print(f"[WS] closed ({code}) — will reconnect in 15s")
     _ws_status["connected"] = False
+
 
 def _ws_runner():
     """Background thread: connects and auto-reconnects WebSocket."""
     if not MASSIVE_KEY:
         print("[WS] No MASSIVE_KEY — WebSocket disabled")
         return
-    import json
     while True:
         try:
             import websocket
@@ -562,8 +687,10 @@ def _ws_runner():
             print(f"[WS] runner error: {e}")
         time.sleep(15)   # wait before reconnect
 
+
 # Start WebSocket thread on module load
 threading.Thread(target=_ws_runner, daemon=True).start()
+
 
 @app.route("/api/live/prices")
 def api_live_prices():
@@ -571,11 +698,34 @@ def api_live_prices():
     with _ws_lock:
         data = dict(_ws_live)
     return jsonify({
-        "prices":    data,
-        "connected": _ws_status["connected"],
-        "bars":      _ws_status["bars"],
-        "ts":        _ws_status["ts"],
-        "count":     len(data),
+        "prices":       data,
+        "connected":    _ws_status["connected"],
+        "bars":         _ws_status["bars"],
+        "second_bars":  _ws_status["second_bars"],
+        "ts":           _ws_status["ts"],
+        "count":        len(data),
+    })
+
+
+@app.route("/api/live/surges")
+def api_live_surges():
+    """Return active mid-bar volume surge alerts from second-bar accumulator."""
+    now = time.time()
+    with _ws_lock:
+        # Only return surges seen within the last SURGE_TTL seconds
+        active = {
+            sym: surge
+            for sym, surge in _ws_surges.items()
+            if (now - surge["ts"]) <= _SURGE_TTL
+        }
+    # Sort by ratio descending
+    ranked = sorted(active.items(), key=lambda x: x[1]["ratio"], reverse=True)
+    return jsonify({
+        "surges":     [{"sym": sym, **data} for sym, data in ranked],
+        "count":      len(ranked),
+        "connected":  _ws_status["connected"],
+        "second_bars": _ws_status["second_bars"],
+        "ts":         int(now),
     })
 
 

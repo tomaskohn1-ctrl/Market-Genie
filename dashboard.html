@@ -2474,6 +2474,22 @@
     </div>
   </div>
 
+  <!-- ══ LIVE SURGES ══ -->
+  <div class="card" data-tab="signal" id="surgeCard" style="border-color:rgba(255,200,0,0.35);box-shadow:0 0 18px rgba(255,200,0,0.08)">
+    <div class="card-header" style="background:linear-gradient(135deg,rgba(255,180,0,0.10),rgba(255,80,0,0.07))">
+      <div class="card-title"><span class="card-icon">⚡</span> Live Surges <span style="font-size:10px;font-weight:400;color:var(--muted)">mid-bar volume spike detection</span></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="surgeBadge" class="card-tag" style="background:rgba(255,180,0,0.15);color:#ffd740;border:1px solid rgba(255,180,0,0.3)">Waiting…</span>
+        <span id="surgeSecondBars" style="font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace"></span>
+      </div>
+    </div>
+    <div class="card-body" style="padding:0">
+      <div id="surgeBody" style="padding:10px 14px;font-size:11px;color:var(--muted)">
+        <div style="text-align:center;padding:12px">⚡ Listening for second-level volume surges (A.* WebSocket)…<br><span style="font-size:10px">Fires when current-minute volume pace ≥ 3× the average. Refreshes every 3s.</span></div>
+      </div>
+    </div>
+  </div>
+
   <div class="card" data-tab="signal" id="scalpAlertCard">
     <div class="card-header">
       <div class="card-title"><span class="card-icon">⚡</span> Scalp Alerts <span style="font-size:10px;font-weight:400;color:var(--muted)">5-10 min</span></div>
@@ -5330,6 +5346,118 @@ async function pollLivePrices() {
 // Poll every 5 seconds
 setInterval(pollLivePrices, 5000);
 setTimeout(pollLivePrices, 2000);
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── LIVE SURGES — second-bar mid-bar volume spike feed ────────────────────────
+// Polls /api/live/surges every 3s and renders a mini alert card.
+// A surge fires when current-minute volume pace ≥ 3× the 8-bar average.
+// ══════════════════════════════════════════════════════════════════════════════
+let _surgeHistory = [];  // keep last 10 unique surge events for display
+
+async function pollLiveSurges() {
+  if (!SERVER_MODE) return;
+  try {
+    const r = await fetch('/api/live/surges');
+    const d = await r.json();
+
+    const badge   = document.getElementById('surgeBadge');
+    const secEl   = document.getElementById('surgeSecondBars');
+    const body    = document.getElementById('surgeBody');
+    if (!badge || !body) return;
+
+    // Update second-bar counter
+    if (secEl && d.second_bars > 0) {
+      secEl.textContent = `${d.second_bars.toLocaleString()} A-bars`;
+    }
+
+    const surges = d.surges || [];
+
+    // Badge
+    if (!d.connected) {
+      badge.textContent = '🔴 WS OFF';
+      badge.style.background = 'rgba(255,68,85,0.15)';
+      badge.style.color = '#ff4455';
+      badge.style.borderColor = 'rgba(255,68,85,0.3)';
+    } else if (surges.length === 0) {
+      badge.textContent = '📡 Live';
+      badge.style.background = 'rgba(255,180,0,0.12)';
+      badge.style.color = '#ffd740';
+      badge.style.borderColor = 'rgba(255,180,0,0.3)';
+    } else {
+      badge.textContent = `🔥 ${surges.length} SURGE${surges.length > 1 ? 'S' : ''}`;
+      badge.style.background = 'rgba(255,80,0,0.20)';
+      badge.style.color = '#ff6d00';
+      badge.style.borderColor = 'rgba(255,80,0,0.4)';
+    }
+
+    if (surges.length === 0) {
+      if (d.connected) {
+        body.innerHTML = `<div style="text-align:center;padding:14px;color:var(--muted);font-size:11px">
+          📡 Monitoring ${d.second_bars > 0 ? d.second_bars.toLocaleString() + ' second bars processed' : 'second-level bars'}…
+          No volume surges detected right now.
+        </div>`;
+      }
+      return;
+    }
+
+    // Merge new surges into history (dedupe by sym, keep freshest)
+    surges.forEach(s => {
+      const idx = _surgeHistory.findIndex(h => h.sym === s.sym);
+      if (idx >= 0) _surgeHistory[idx] = s;
+      else _surgeHistory.unshift(s);
+    });
+    _surgeHistory = _surgeHistory.slice(0, 12);  // keep up to 12
+
+    // Render active surges prominently, history below
+    const nowTs = Date.now() / 1000;
+    const activeSyms = new Set(surges.map(s => s.sym));
+
+    const rows = _surgeHistory.map(s => {
+      const isActive  = activeSyms.has(s.sym);
+      const age       = Math.round(nowTs - s.ts);
+      const ageStr    = age < 60 ? `${age}s ago` : `${Math.round(age/60)}m ago`;
+      const isBull    = s.dir === 'bull';
+      const dirColor  = isBull ? '#00e676' : '#ff4455';
+      const dirIcon   = isBull ? '▲' : '▼';
+      const glowStyle = isActive ? ';box-shadow:0 0 8px rgba(255,160,0,0.35)' : '';
+      const opacity   = isActive ? '1' : '0.45';
+      const ratioBar  = Math.min(100, (s.ratio / 10) * 100);  // scale 0-10× → 0-100%
+
+      return `<div data-surge-sym="${s.sym}" style="
+          display:flex;align-items:center;gap:10px;
+          padding:8px 14px;border-bottom:1px solid var(--border);
+          opacity:${opacity};transition:opacity 0.4s${glowStyle}">
+        <div style="width:52px;font-weight:700;font-size:13px;font-family:'JetBrains Mono',monospace;color:var(--text-hi)">${s.sym}</div>
+        <div style="color:${dirColor};font-size:13px;font-weight:700">${dirIcon} $${(s.price||0).toFixed(2)}</div>
+        <div style="flex:1">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+            <span style="
+              background:rgba(255,160,0,0.18);color:#ffd740;
+              border:1px solid rgba(255,160,0,0.35);
+              border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;
+              font-family:'JetBrains Mono',monospace">⚡ ${s.ratio}×</span>
+            <span style="font-size:10px;color:var(--muted)">${s.vol.toLocaleString()} vol / ${s.avg.toLocaleString()} avg</span>
+          </div>
+          <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden">
+            <div style="height:100%;width:${ratioBar}%;background:linear-gradient(90deg,#ffd740,#ff6d00);border-radius:2px;transition:width 0.6s"></div>
+          </div>
+        </div>
+        <div style="font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace;text-align:right">
+          ${isActive ? '<span style="color:#ffd740">● LIVE</span>' : ageStr}<br>
+          ${s.elapsed || ''}s into min
+        </div>
+      </div>`;
+    });
+
+    body.innerHTML = rows.join('');
+
+  } catch(e) { /* silent */ }
+}
+
+// Poll every 3 seconds — faster than price feed to catch surges early
+setInterval(pollLiveSurges, 3000);
+setTimeout(pollLiveSurges, 3500);
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ══════════════════════════════════════════════════════════════════════════════
