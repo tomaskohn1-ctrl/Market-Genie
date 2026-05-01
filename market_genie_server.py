@@ -319,6 +319,110 @@ def massive_snapshot(ticker):
     return None
 
 
+# Options flow cache: { sym: (ts, result) }  — 2-min TTL per ticker
+_opt_flow_cache = {}
+_opt_flow_lock  = threading.Lock()
+_OPT_FLOW_TTL   = 120   # seconds
+
+def massive_options_flow(sym):
+    """Detect unusual options activity for a ticker using Massive/Polygon options snapshot.
+
+    Returns dict:
+        { "signal": "bull"|"bear"|None,
+          "label":  "CALL SWEEP"|"PUT SWEEP"|"CALL FLOW"|"PUT FLOW"|None,
+          "premium": float,      # total unusual premium in $
+          "vol_oi":  float,      # best vol/OI ratio seen
+          "detail":  str }       # human-readable description
+    Returns None if Massive key missing or endpoint not accessible.
+    """
+    if not MASSIVE_KEY:
+        return None
+    now = time.time()
+    with _opt_flow_lock:
+        cached_entry = _opt_flow_cache.get(sym)
+        if cached_entry and (now - cached_entry[0]) < _OPT_FLOW_TTL:
+            return cached_entry[1]
+
+    try:
+        # Polygon/Massive options snapshot endpoint
+        data = massive_get(f"/v3/snapshot/options/{sym}",
+                           {"limit": "50", "sort": "day.volume", "order": "desc"})
+        if not data or not data.get("results"):
+            with _opt_flow_lock:
+                _opt_flow_cache[sym] = (now, None)
+            return None
+
+        results = data["results"]
+
+        call_premium = 0.0
+        put_premium  = 0.0
+        call_vol_oi  = 0.0
+        put_vol_oi   = 0.0
+        call_sweeps  = 0
+        put_sweeps   = 0
+
+        for contract in results:
+            details = contract.get("details", {})
+            day     = contract.get("day", {})
+            opt_type = details.get("contract_type", "").lower()   # "call" or "put"
+            volume   = float(day.get("volume", 0) or 0)
+            oi       = float(contract.get("open_interest", 1) or 1)
+            vwap     = float(day.get("vwap", 0) or 0)
+            premium  = volume * vwap * 100  # notional premium
+
+            vol_oi = volume / oi if oi > 0 else 0.0
+            is_sweep = vol_oi >= 3.0 and premium >= 25_000  # significant sweep
+
+            if opt_type == "call":
+                call_premium += premium
+                call_vol_oi   = max(call_vol_oi, vol_oi)
+                if is_sweep:
+                    call_sweeps += 1
+            elif opt_type == "put":
+                put_premium += premium
+                put_vol_oi   = max(put_vol_oi, vol_oi)
+                if is_sweep:
+                    put_sweeps += 1
+
+        # Classify signal
+        signal = None
+        label  = None
+        total_premium = call_premium + put_premium
+        best_vol_oi   = max(call_vol_oi, put_vol_oi)
+
+        if call_sweeps >= 2 or (call_premium > put_premium * 2 and call_vol_oi >= 3):
+            signal = "bull"
+            label  = "CALL SWEEP" if call_sweeps >= 2 else "CALL FLOW"
+        elif put_sweeps >= 2 or (put_premium > call_premium * 2 and put_vol_oi >= 3):
+            signal = "bear"
+            label  = "PUT SWEEP" if put_sweeps >= 2 else "PUT FLOW"
+        elif call_premium > put_premium * 1.5 and call_vol_oi >= 2:
+            signal = "bull"
+            label  = "CALL FLOW"
+        elif put_premium > call_premium * 1.5 and put_vol_oi >= 2:
+            signal = "bear"
+            label  = "PUT FLOW"
+
+        detail = (f"C${call_premium/1000:.0f}k / P${put_premium/1000:.0f}k "
+                  f"| vol/OI {best_vol_oi:.1f}x"
+                  + (f" | {call_sweeps}c {put_sweeps}p sweeps" if call_sweeps+put_sweeps else ""))
+
+        result = {
+            "signal":  signal,
+            "label":   label,
+            "premium": round(total_premium, 0),
+            "vol_oi":  round(best_vol_oi, 1),
+            "detail":  detail,
+        }
+    except Exception as e:
+        print(f"[Options] {sym}: {e}")
+        result = None
+
+    with _opt_flow_lock:
+        _opt_flow_cache[sym] = (now, result)
+    return result
+
+
 def massive_1min_bars(ticker, minutes_back=120):
     """Fetch up to `minutes_back` 1-minute OHLCV bars from Massive.
     Includes pre/post-market data. Returns (closes, opens, highs, lows, volumes) or None."""
@@ -4929,6 +5033,15 @@ def _scalp_fetch_one(sym):
         dn_bars = bar_dirs.count('↓')
         momentum_ok = (direction == "up" and up_bars >= 2) or (direction == "down" and dn_bars >= 2)
 
+        # ── Options flow signal (Massive/Polygon, non-blocking) ──────────────
+        opt_flow = massive_options_flow(sym)
+        opt_signal = opt_flow["signal"] if opt_flow else None
+        opt_label  = opt_flow["label"]  if opt_flow else None
+        opt_detail = opt_flow["detail"] if opt_flow else None
+        # Options agreement bonus: if options and price agree, boost grade
+        opt_agrees = (opt_signal == "bull" and direction == "up") or \
+                     (opt_signal == "bear" and direction == "down")
+
         return {
             "sym":         sym,
             "price":       round(float(last_p), 2),
@@ -4949,6 +5062,10 @@ def _scalp_fetch_one(sym):
             "pre_move":    bool(pre_move),
             "tfm_dir":     None,
             "tfm_delta":   None,
+            "opt_signal":  opt_signal,
+            "opt_label":   opt_label,
+            "opt_detail":  opt_detail,
+            "opt_agrees":  bool(opt_agrees),
             "_ts":         time.time(),
             "signals": {
                 "vol_surge":     bool(vol_surge),
@@ -4965,6 +5082,9 @@ def _scalp_fetch_one(sym):
                 "ema_stack":     bool(ema_stack_bull if direction == "up" else ema_stack_bear),
                 "spy_aligned":   bool(spy_align_bull if direction == "up" else spy_align_bear),
                 "mtf":           bool(mtf_bull if direction == "up" else mtf_bear),
+                "opt_bull":      bool(opt_signal == "bull"),
+                "opt_bear":      bool(opt_signal == "bear"),
+                "opt_agrees":    bool(opt_agrees),
             },
         }
     except Exception as e:
