@@ -23,7 +23,8 @@ import webbrowser
 import requests
 import yfinance as yf
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+import datetime as _datetime_module
+from datetime import datetime, timedelta, time as dtime
 from email.utils import parsedate_to_datetime
 from flask import Flask, jsonify, send_from_directory, request
 from flask_cors import CORS
@@ -4422,19 +4423,25 @@ def _scalp_fetch_one(sym):
         if last_p <= 0 or last_p < 2.0:
             return None
 
-        vol_avg20    = float(np.mean(volumes[-21:-1]))
+        # Use non-zero bars for vol_avg — pre-market has many 0-volume gaps
+        nz_vols   = volumes[volumes > 0]
+        if len(nz_vols) < 3:
+            return None   # truly no activity at all
+        vol_avg20    = float(np.mean(nz_vols[-20:]))
         est_daily_dv = vol_avg20 * last_p * 390
         if est_daily_dv < 1_000_000:
             return None
 
-        # Signal 1: Volume Surge
-        vol_ratio  = float(volumes[-1] / vol_avg20) if vol_avg20 > 0 else 1.0
+        # Signal 1: Volume Surge — compare current bar to non-zero avg
+        cur_vol    = float(volumes[-1]) if volumes[-1] > 0 else float(np.mean(nz_vols[-3:]))
+        vol_ratio  = cur_vol / vol_avg20 if vol_avg20 > 0 else 1.0
         vol_up_dir = closes[-1] > closes[-2]
         vol_surge  = vol_ratio >= 2.0
 
-        # RVOL (time-of-day relative)
-        rvol_ref  = float(np.mean(volumes[-31:-21])) if len(volumes) >= 31 else vol_avg20
-        rvol      = float(volumes[-1] / rvol_ref) if rvol_ref > 0 else vol_ratio
+        # RVOL (time-of-day relative, also non-zero based)
+        nz_older  = volumes[-31:-1][volumes[-31:-1] > 0] if len(volumes) >= 31 else nz_vols
+        rvol_ref  = float(np.mean(nz_older[-10:])) if len(nz_older) >= 3 else vol_avg20
+        rvol      = cur_vol / rvol_ref if rvol_ref > 0 else vol_ratio
         rvol_high = rvol >= 2.5
 
         # Signal 2: VWAP Cross
@@ -4482,9 +4489,9 @@ def _scalp_fetch_one(sym):
         # Signal 8: Accelerating Volume
         vol_accel    = False
         vol_accel_up = closes[-1] > closes[-2]
-        if len(volumes) >= 22:
-            v1 = float(volumes[-3]); v2 = float(volumes[-2]); v3 = float(volumes[-1])
-            va = float(np.mean(volumes[-21:-1]))
+        if len(nz_vols) >= 5:
+            v1 = float(nz_vols[-3]); v2 = float(nz_vols[-2]); v3 = float(nz_vols[-1])
+            va = vol_avg20
             vol_accel = (v1 < v2 < v3) and v3 > va * 1.2 and v2 > va * 0.8
 
         pre_move = bb_squeeze or nr7 or vol_accel
@@ -4676,6 +4683,26 @@ def _start_scalp_bg():
           f"refresh every {_SCALP_BUCKET_SECS}s)")
 
 
+def _is_market_hours():
+    """True during regular US equity trading hours (9:30 AM – 4:00 PM ET, Mon-Fri)."""
+    import pytz
+    et  = pytz.timezone("America/New_York")
+    now = datetime.now(et)
+    if now.weekday() >= 5:
+        return False
+    t = now.time()
+    return dtime(9, 30) <= t <= dtime(16, 0)
+
+def _minutes_to_open():
+    """Minutes until next market open (for display)."""
+    import pytz
+    et  = pytz.timezone("America/New_York")
+    now = datetime.now(et)
+    open_today = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    if now < open_today:
+        return int((open_today - now).total_seconds() / 60)
+    return 0
+
 @app.route("/api/scalp/scanner")
 def scalp_scanner():
     try:
@@ -4693,8 +4720,12 @@ def scalp_scanner():
                                    -x.get("score", 0),
                                    -x.get("vol_ratio", 0)))
 
-        last_ts = _scalp_stats.get("ts", 0)
-        if last_ts == 0:
+        last_ts    = _scalp_stats.get("ts", 0)
+        mkt_open   = _is_market_hours()
+        mins_away  = _minutes_to_open() if not mkt_open else 0
+        if not mkt_open:
+            status = "closed"
+        elif last_ts == 0:
             status = "warming_up"
         elif time.time() - last_ts > 180:
             status = "stale"
@@ -4702,13 +4733,15 @@ def scalp_scanner():
             status = "live"
 
         payload = {
-            "alerts":   alerts[:25],
-            "total":    len(alerts),
-            "scanned":  len(_SCALP_UNIVERSE),
-            "ts":       last_ts if last_ts else int(time.time()),
-            "spy_ret1": round(_scalp_spy.get("ret1", 0.0), 3),
-            "status":   status,
-            "bucket":   _scalp_stats.get("bucket", -1),
+            "alerts":      alerts[:25],
+            "total":       len(alerts),
+            "scanned":     len(_SCALP_UNIVERSE),
+            "ts":          last_ts if last_ts else int(time.time()),
+            "spy_ret1":    round(_scalp_spy.get("ret1", 0.0), 3),
+            "status":      status,
+            "market_open": mkt_open,
+            "mins_to_open": mins_away,
+            "bucket":      _scalp_stats.get("bucket", -1),
         }
         return jsonify(payload)
     except Exception as e:

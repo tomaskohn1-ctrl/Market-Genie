@@ -5192,12 +5192,21 @@ function renderScalpAlerts() {
   badge.className   = aCount > 0 ? 'card-tag tag-bull' : (d.total > 0 ? 'card-tag tag-neutral' : 'card-tag tag-neutral');
 
   if (!d.alerts.length) {
-    const warmMsg = d.status === 'warming_up'
-      ? '⏳ Scanner warming up — first pass takes ~60s…'
-      : d.status === 'stale'
-      ? '⚠️ Scanner may be restarting — check back in 30s.'
-      : '🔍 Market quiet right now — no setups meet criteria. Auto-retrying in 60s.';
-    body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">${warmMsg}</div>`;
+    let warmMsg;
+    if (d.status === 'closed') {
+      const minsAway = d.mins_to_open || 0;
+      const timeStr  = minsAway > 0
+        ? `Opens in ${minsAway >= 60 ? Math.floor(minsAway/60)+'h '+(minsAway%60)+'m' : minsAway+'m'}`
+        : 'Market closed';
+      warmMsg = `🕐 Volume scanner requires regular market hours (9:30 AM – 4:00 PM ET). ${timeStr}. Pre/after-market data has no volume — signals can't fire.`;
+    } else if (d.status === 'warming_up') {
+      warmMsg = '⏳ Scanner warming up — first pass takes ~60s…';
+    } else if (d.status === 'stale') {
+      warmMsg = '⚠️ Scanner may be restarting — check back in 30s.';
+    } else {
+      warmMsg = '🔍 No setups meet criteria right now — market is calm. Auto-retrying in 60s.';
+    }
+    body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px;line-height:1.6">${warmMsg}</div>`;
     return;
   }
 
