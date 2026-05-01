@@ -4698,46 +4698,51 @@ def _scalp_refresh_spy():
 
 def _scalp_fetch_one(sym):
     """Scan one ticker using the cached SPY data. Returns alert dict or None.
-    Regular hours → yfinance (578 tickers, fast).
-    Extended hours → Finnhub candles (80-ticker universe, provides real volume)."""
+    Regular hours  → yfinance period=1d (fast, real volume).
+    Extended hours → yfinance period=5d prepost=True (yesterday vol for avg,
+                     today pre/post prices for signals).  Finnhub candles
+                     removed — free tier blocks the candle endpoint."""
     import numpy as np
     try:
         spy_ret1       = _scalp_spy["ret1"]
         spy_bull_trend = _scalp_spy["bull_trend"]
         spy_bear_trend = _scalp_spy["bear_trend"]
 
-        if _is_market_hours():
-            # ── Regular hours: yfinance ────────────────────────────────────
+        extended_hours = not _is_market_hours()
+
+        if not extended_hours:
+            # ── Regular hours: fast 1-day fetch ───────────────────────────
             df = yf.Ticker(sym).history(period="1d", interval="1m", prepost=True)
             if df is None or len(df) < 25:
                 return None
-            df.columns = [c.lower() for c in df.columns]
-            closes  = df["close"].values.astype(float)
-            volumes = df["volume"].values.astype(float)
-            highs   = df["high"].values.astype(float)
-            lows    = df["low"].values.astype(float)
         else:
-            # ── Extended hours: Finnhub candles (real volume!) ─────────────
+            # ── Extended hours: 5-day fetch gives yesterday's real volume ──
+            # and today's pre/post-market price bars.
             if sym not in _EXT_UNIVERSE:
-                return None      # only scan the focused extended-hours universe
-            result = _finnhub_candles_ext(sym, minutes_back=120)
-            if result is None:
+                return None   # focus on the curated extended-hours universe
+            df = yf.Ticker(sym).history(period="5d", interval="1m", prepost=True)
+            if df is None or len(df) < 30:
                 return None
-            closes, _opens, highs, lows, volumes = result
-            if len(closes) < 15:
-                return None
+
+        df.columns = [c.lower() for c in df.columns]
+        closes  = df["close"].values.astype(float)
+        volumes = df["volume"].values.astype(float)
+        highs   = df["high"].values.astype(float)
+        lows    = df["low"].values.astype(float)
 
         last_p  = closes[-1]
         if last_p <= 0 or last_p < 2.0:
             return None
 
-        # Use non-zero bars for vol_avg — pre-market has many 0-volume gaps
+        # Use non-zero bars for vol_avg — pre/post-market bars are often 0-volume
         nz_vols   = volumes[volumes > 0]
         if len(nz_vols) < 3:
             return None   # truly no activity at all
         vol_avg20    = float(np.mean(nz_vols[-20:]))
         est_daily_dv = vol_avg20 * last_p * 390
-        if est_daily_dv < 1_000_000:
+        # Lower DV threshold for extended hours (pre/post volume is ~5-10× lower)
+        dv_min = 200_000 if extended_hours else 1_000_000
+        if est_daily_dv < dv_min:
             return None
 
         # Signal 1: Volume Surge — compare current bar to non-zero avg
@@ -4850,8 +4855,14 @@ def _scalp_fetch_one(sym):
             rsi_val = (100.0 - 100.0/(1.0 + g/ls)) if ls > 0 else (100.0 if g > 0 else 50.0)
 
         score = max(bull, bear)
-        # Require score >= 3 normally; allow score >= 2 if vol_ratio is elevated (pre-market movers)
-        min_score = 2 if vol_ratio >= 1.5 else 3
+        # Require score >= 3 normally; lower bar for extended hours (no volume data)
+        # and when vol_ratio is elevated (clear momentum movers)
+        if extended_hours:
+            min_score = 2
+        elif vol_ratio >= 1.5:
+            min_score = 2
+        else:
+            min_score = 3
         if score < min_score:
             return None
         grade = "A" if score >= 5 else ("B" if score >= 3 else "C")
