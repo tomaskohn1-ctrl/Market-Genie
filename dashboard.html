@@ -5285,7 +5285,8 @@ function renderPredictions() {
   const alphaCount = (d.alpha_bull_total || alphaBulls.length) + (d.alpha_bear_total || alphaBears.length);
   const totalScanned = d.total || 0;
 
-  // Badge shows alpha count
+  // Badge — updated after filtering to confirmed count
+  // (will be overwritten below once confirmedBulls/Bears are computed)
   badge.textContent = `🏆 ${alphaCount} Alpha · ${totalScanned} scanned`;
   badge.style.background = alphaCount > 0 ? 'rgba(255,215,0,0.15)' : 'rgba(138,43,226,0.15)';
   badge.style.color = alphaCount > 0 ? '#ffd700' : '#c084fc';
@@ -5304,19 +5305,19 @@ function renderPredictions() {
   }
 
   // ── Column header ─────────────────────────────────────────────────────────
-  const hdr = `<div style="display:grid;grid-template-columns:70px 56px 80px 56px 1fr 1fr;gap:4px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">
-    <div>TICKER</div><div>DIR</div><div>TIER · 88% WR</div><div>CONF</div><div>KRONOS</div><div>TIMESFM</div>
+  const hdr = `<div style="display:grid;grid-template-columns:70px 56px 90px 56px 1fr 1fr;gap:4px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">
+    <div>TICKER</div><div>DIR</div><div>TIER · MOM</div><div>CONF</div><div>KRONOS</div><div>TIMESFM</div>
   </div>`;
 
   function renderAlphaRow(r) {
-    const tier       = r.alpha_tier || 'SOLID';
-    const ts_        = tierStyle(tier);
-    const dir        = (r.consensus_dir || r.direction || '').toUpperCase();
-    const isBull     = dir === 'BULL';
-    const dirClr     = isBull ? '#00e676' : '#ff4455';
-    const dirBg      = isBull ? 'rgba(0,230,118,0.12)' : 'rgba(255,68,85,0.12)';
-    const confBar    = Math.round(r.confidence || 0);
-    const streakCount= r.streak_count || 1;
+    const tier        = r.alpha_tier || 'SOLID';
+    const ts_         = tierStyle(tier);
+    const dir         = (r.consensus_dir || r.direction || '').toUpperCase();
+    const isBull      = dir === 'BULL';
+    const dirClr      = isBull ? '#00e676' : '#ff4455';
+    const dirBg       = isBull ? 'rgba(0,230,118,0.12)' : 'rgba(255,68,85,0.12)';
+    const confBar     = Math.round(r.confidence || 0);
+    const streakCount = r.streak_count || 1;
 
     const kDir  = r.kronos_dir;
     const kPct  = r.kronos_pct != null ? (r.kronos_pct >= 0 ? '+' : '') + r.kronos_pct.toFixed(2) + '%' : '—';
@@ -5327,10 +5328,18 @@ function renderPredictions() {
     const tClr  = tDir === 'bull' ? '#00e676' : tDir === 'bear' ? '#ff4455' : '#718096';
     const tArrow= tDir === 'bull' ? '▲' : tDir === 'bear' ? '▼' : '—';
 
-    // streak badge
-    const streakTier = streakCount >= 7 ? 'fire' : streakCount >= 4 ? 'hot' : streakCount >= 2 ? 'warm' : 'new';
-    const streakClr  = streakTier === 'fire' ? '#00e676' : streakTier === 'hot' ? '#ff9800' : streakTier === 'warm' ? '#ffd740' : 'rgba(255,255,255,0.35)';
-    const streakIcon = streakTier === 'fire' ? '🔥' : streakTier === 'hot' ? '▲' : streakTier === 'warm' ? '↑' : '·';
+    // streak badge — always ≥2 here since we pre-filtered
+    const streakTier = streakCount >= 7 ? 'fire' : streakCount >= 4 ? 'hot' : 'warm';
+    const streakClr  = streakTier === 'fire' ? '#00e676' : streakTier === 'hot' ? '#ff9800' : '#ffd740';
+    const streakIcon = streakTier === 'fire' ? '🔥' : streakTier === 'hot' ? '▲' : '↑';
+
+    // ── Momentum confirmation — does price action back the model? ─────────────
+    // recent_momentum_ok = last 5 price bars are NOT strongly contradicting model
+    // null/undefined = field not present (older result) → treat as ok
+    const momOk  = r.recent_momentum_ok !== false;
+    const momTag = momOk
+      ? `<span title="Price momentum confirms model direction" style="font-size:8px;font-weight:700;color:#00e676;background:rgba(0,230,118,0.12);border:1px solid rgba(0,230,118,0.3);padding:1px 4px;border-radius:3px">✓ MOM</span>`
+      : `<span title="Last 5 bars contradict model — price moving against signal" style="font-size:8px;font-weight:700;color:#ffa000;background:rgba(255,160,0,0.12);border:1px solid rgba(255,160,0,0.3);padding:1px 4px;border-radius:3px">⚠ MOM</span>`;
 
     // data source pill
     const src = r.data_source || '';
@@ -5338,9 +5347,13 @@ function renderPredictions() {
     const srcLabel= src === 'ws_live' ? '⚡' : src === 'massive' ? '📡' : src === 'yfinance' ? '🕐' : '';
     const srcPill = srcLabel ? `<span title="${src}" style="font-size:8px;color:${srcClr};background:${srcClr}18;border:1px solid ${srcClr}33;padding:1px 3px;border-radius:2px">${srcLabel}</span>` : '';
 
-    return `<div style="display:grid;grid-template-columns:70px 56px 80px 56px 1fr 1fr;gap:4px;padding:8px 14px;border-bottom:1px solid rgba(255,255,255,0.04);border-left:3px solid ${ts_.leftBorder};align-items:center;cursor:pointer;transition:background 0.15s;background:${ts_.rowBg}"
+    // Row background: dim slightly if momentum is diverging
+    const rowBg = momOk ? ts_.rowBg : 'rgba(255,160,0,0.02)';
+    const leftBorder = momOk ? ts_.leftBorder : '#ffa000';
+
+    return `<div style="display:grid;grid-template-columns:70px 56px 90px 56px 1fr 1fr;gap:4px;padding:8px 14px;border-bottom:1px solid rgba(255,255,255,0.04);border-left:3px solid ${leftBorder};align-items:center;cursor:pointer;transition:background 0.15s;background:${rowBg}"
       onmouseenter="this.style.background='rgba(255,255,255,0.06)'"
-      onmouseleave="this.style.background='${ts_.rowBg}'"
+      onmouseleave="this.style.background='${rowBg}'"
       onclick="openTickerChart('${r.sym}')">
       <div style="display:flex;flex-direction:column;gap:2px">
         <span style="font-size:13px;font-weight:700;color:var(--text-hi)">${r.sym}</span>
@@ -5352,8 +5365,9 @@ function renderPredictions() {
       <div>
         <span style="font-size:12px;font-weight:800;color:${dirClr};background:${dirBg};padding:2px 6px;border-radius:4px;display:inline-block;letter-spacing:0.5px">${dir}</span>
       </div>
-      <div>
+      <div style="display:flex;flex-direction:column;gap:3px">
         <span title="${ts_.title}" style="font-size:9px;font-weight:800;background:${ts_.bg};color:${ts_.clr};padding:2px 6px;border-radius:4px;border:1px solid ${ts_.border};letter-spacing:0.3px;white-space:nowrap">${ts_.label}</span>
+        ${momTag}
       </div>
       <div>
         <div style="font-size:11px;font-weight:700;color:${dirClr};font-family:'JetBrains Mono',monospace">${confBar}%</div>
@@ -5366,48 +5380,67 @@ function renderPredictions() {
     </div>`;
   }
 
-  // ── Sort alpha signals: ELITE first, then PRIME, then SOLID; within tier sort by confidence desc
+  // ── Sort alpha signals: ELITE first, then PRIME, then SOLID
+  // Within tier: momentum-confirmed first, then by confidence desc
   function sortAlpha(arr) {
     return [...arr].sort((a, b) => {
       const ta = TIER_ORDER[a.alpha_tier] ?? 3;
       const tb = TIER_ORDER[b.alpha_tier] ?? 3;
       if (ta !== tb) return ta - tb;
+      // momentum-confirmed before diverging
+      const ma = a.recent_momentum_ok !== false ? 0 : 1;
+      const mb = b.recent_momentum_ok !== false ? 0 : 1;
+      if (ma !== mb) return ma - mb;
       return (b.confidence || 0) - (a.confidence || 0);
     });
   }
 
-  const sortedAlphaBulls = sortAlpha(alphaBulls);
-  const sortedAlphaBears = sortAlpha(alphaBears);
+  // ── Filter: only show streak ≥ 2 (confirmed signals) ─────────────────────
+  // Streak = 1 = first time models agreed this cycle, not yet confirmed
+  // The win-rate tracker still logs streak=1 for data, but display hides them
+  const confirmedBulls = alphaBulls.filter(r => (r.streak_count || 1) >= 2);
+  const confirmedBears = alphaBears.filter(r => (r.streak_count || 1) >= 2);
+  const pendingBulls   = alphaBulls.length - confirmedBulls.length;
+  const pendingBears   = alphaBears.length - confirmedBears.length;
+  const pendingTotal   = pendingBulls + pendingBears;
+
+  const sortedAlphaBulls = sortAlpha(confirmedBulls);
+  const sortedAlphaBears = sortAlpha(confirmedBears);
 
   // ── Section separators ────────────────────────────────────────────────────
-  const alphaBullTotal = d.alpha_bull_total || alphaBulls.length;
-  const alphaBearTotal = d.alpha_bear_total || alphaBears.length;
-
   const bullSep = sortedAlphaBulls.length
     ? `<div style="padding:5px 14px;font-size:9px;font-weight:700;color:#00e676;letter-spacing:0.6px;background:rgba(0,230,118,0.05);border-bottom:1px solid rgba(0,230,118,0.12)">
-        ── 🐂 BULLISH ALPHA (${alphaBullTotal}) ──
-        <span style="color:rgba(255,255,255,0.3);font-weight:400;margin-left:6px">both models agree · 88% win rate</span>
+        ── 🐂 BULLISH ALPHA (${sortedAlphaBulls.length}) ──
+        <span style="color:rgba(255,255,255,0.3);font-weight:400;margin-left:6px">streak ≥2 confirmed · 88% win rate</span>
       </div>`
     : '';
   const bearSep = sortedAlphaBears.length
     ? `<div style="padding:5px 14px;font-size:9px;font-weight:700;color:#ff4455;letter-spacing:0.6px;background:rgba(255,68,85,0.05);border-top:1px solid rgba(255,68,85,0.10);border-bottom:1px solid rgba(255,68,85,0.12)">
-        ── 🐻 BEARISH ALPHA (${alphaBearTotal}) ──
-        <span style="color:rgba(255,255,255,0.3);font-weight:400;margin-left:6px">both models agree · 88% win rate</span>
+        ── 🐻 BEARISH ALPHA (${sortedAlphaBears.length}) ──
+        <span style="color:rgba(255,255,255,0.3);font-weight:400;margin-left:6px">streak ≥2 confirmed · 88% win rate</span>
       </div>`
     : '';
 
-  // ── No-alpha state ─────────────────────────────────────────────────────────
+  // Pending pill — how many streak=1 are warming up
+  const pendingPill = pendingTotal > 0
+    ? `<span style="font-size:9px;color:rgba(255,255,255,0.3);background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);padding:1px 7px;border-radius:10px;white-space:nowrap">
+        ⏳ ${pendingTotal} warming up (streak=1)
+      </span>`
+    : '';
+
+  // ── No confirmed signals yet ───────────────────────────────────────────────
   if (!sortedAlphaBulls.length && !sortedAlphaBears.length) {
     const totalBulls = d.bull_total || 0;
     const totalBears = d.bear_total || 0;
+    const warmingMsg = pendingTotal > 0
+      ? `<div style="font-size:11px;color:#ffd740;margin-top:6px">⏳ ${pendingTotal} alpha signal${pendingTotal > 1 ? 's' : ''} warming up — needs one more scan to confirm</div>`
+      : `<div style="font-size:11px;color:rgba(255,255,255,0.3)">waiting for Kronos + TimesFM to agree across 2 consecutive scans</div>`;
     body.innerHTML = `
       <div style="padding:24px 16px;text-align:center">
         <div style="font-size:13px;color:var(--muted);margin-bottom:6px">
-          🔍 No alpha signals yet — models still diverging on direction
+          🔍 No confirmed alpha signals — ${totalBulls + totalBears} both_agree signals scanned
         </div>
-        <div style="font-size:11px;color:rgba(255,255,255,0.3)">
-          ${totalBulls} bull / ${totalBears} bear signals scanned · ${totalScanned} total · waiting for Kronos + TimesFM to agree
-        </div>
+        ${warmingMsg}
         <div style="font-size:10px;color:rgba(255,255,255,0.2);margin-top:8px">
           ${d.model || ''} · Updated ${ts}${bucketInfo}
         </div>
@@ -5415,20 +5448,31 @@ function renderPredictions() {
     return;
   }
 
+  // Update badge to confirmed count
+  const confirmedCount = sortedAlphaBulls.length + sortedAlphaBears.length;
+  badge.textContent = confirmedCount > 0
+    ? `🏆 ${confirmedCount} confirmed${pendingTotal > 0 ? ` · ${pendingTotal} warming` : ''}`
+    : `⏳ ${pendingTotal} warming up`;
+  badge.style.background = confirmedCount > 0 ? 'rgba(255,215,0,0.15)' : 'rgba(255,255,255,0.06)';
+  badge.style.color      = confirmedCount > 0 ? '#ffd700' : 'var(--muted)';
+  badge.style.border     = `1px solid ${confirmedCount > 0 ? 'rgba(255,215,0,0.4)' : 'rgba(255,255,255,0.12)'}`;
+
   const bullRows = sortedAlphaBulls.map(renderAlphaRow).join('');
   const bearRows = sortedAlphaBears.map(renderAlphaRow).join('');
 
   // ── WR legend bar ─────────────────────────────────────────────────────────
-  const legendBar = `<div style="display:flex;gap:12px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,0.06);flex-wrap:wrap">
-    <span style="font-size:9px;font-weight:700;color:#ffd700;background:rgba(255,215,0,0.12);padding:2px 7px;border-radius:4px;border:1px solid rgba(255,215,0,0.35)">⚡ ELITE — conf ≥80 · ~100% WR</span>
-    <span style="font-size:9px;font-weight:700;color:#c084fc;background:rgba(192,132,252,0.12);padding:2px 7px;border-radius:4px;border:1px solid rgba(192,132,252,0.35)">🔷 PRIME — conf 70-80 · ~90% WR</span>
-    <span style="font-size:9px;font-weight:700;color:#40c4ff;background:rgba(64,196,255,0.10);padding:2px 7px;border-radius:4px;border:1px solid rgba(64,196,255,0.30)">◆ SOLID — conf 60-70 · ~83% WR</span>
-    <span style="font-size:9px;color:rgba(255,255,255,0.3);margin-left:auto;align-self:center">All = Kronos + TFM agree · data from live win-rate tracker</span>
+  const legendBar = `<div style="display:flex;gap:10px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,0.06);flex-wrap:wrap;align-items:center">
+    <span style="font-size:9px;font-weight:700;color:#ffd700;background:rgba(255,215,0,0.12);padding:2px 7px;border-radius:4px;border:1px solid rgba(255,215,0,0.35)">⚡ ELITE · conf ≥80 · ~100% WR</span>
+    <span style="font-size:9px;font-weight:700;color:#c084fc;background:rgba(192,132,252,0.12);padding:2px 7px;border-radius:4px;border:1px solid rgba(192,132,252,0.35)">🔷 PRIME · conf 70-80 · ~90% WR</span>
+    <span style="font-size:9px;font-weight:700;color:#40c4ff;background:rgba(64,196,255,0.10);padding:2px 7px;border-radius:4px;border:1px solid rgba(64,196,255,0.30)">◆ SOLID · conf 60-70 · ~83% WR</span>
+    <span style="font-size:9px;font-weight:700;color:#00e676;background:rgba(0,230,118,0.10);padding:2px 7px;border-radius:4px;border:1px solid rgba(0,230,118,0.25)">✓ MOM — price confirms</span>
+    <span style="font-size:9px;font-weight:700;color:#ffa000;background:rgba(255,160,0,0.10);padding:2px 7px;border-radius:4px;border:1px solid rgba(255,160,0,0.25)">⚠ MOM — price diverging</span>
+    ${pendingPill}
   </div>`;
 
   const footer = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);text-align:center;border-top:1px solid rgba(255,255,255,0.04)">
     🏆 ${d.model || 'Loading'} · ${totalScanned} of ${d.watchlist} scanned${bucketInfo} · Updated ${ts}
-    <span style="margin-left:6px;opacity:0.6">· 🔥 streak ≥7 · ▲ streak 4-6 · ↑ streak 2-3</span>
+    <span style="margin-left:6px;opacity:0.6">· streak ≥2 required · 🔥≥7 · ▲4-6 · ↑2-3 · ✓MOM = price backing model</span>
   </div>`;
 
   body.innerHTML = hdr + legendBar + bullSep + bullRows + bearSep + bearRows + footer;
