@@ -4644,8 +4644,8 @@ _predict_bg_on    = False
 _predict_bg_lock  = threading.Lock()
 _predict_stats    = {"ts": 0, "model": "loading", "bucket": 0, "bucket_total": 0}
 _PREDICT_RESULT_TTL    = 900   # 15 min — covers 2+ full rotations; stale results auto-expire
-_PREDICT_BUCKET_SECS   = 60    # one bucket every 60s
-_PREDICT_NUM_BUCKETS   = 7     # 350 tickers ÷ 7 = 50/bucket → full rotation ~7 min
+_PREDICT_BUCKET_SECS   = 30    # one bucket every 30s
+_PREDICT_NUM_BUCKETS   = 14    # 350 tickers ÷ 14 = 25/bucket → full rotation ~7 min, ~10s per bucket with 6 workers
 
 # ── Direction streak / hysteresis ────────────────────────────────────────────
 # Prevents rapid bull↔bear flips from noisy single-bar readings.
@@ -4863,11 +4863,22 @@ def _predict_apply_streak(sym, res):
     return res
 
 
+def _predict_one_safe(sym):
+    """Thread-safe wrapper for _predict_one — returns (sym, result) or (sym, None)."""
+    try:
+        res = _predict_one(sym)
+        return sym, res
+    except Exception:
+        return sym, None
+
+
 def _predict_bg_loop():
     """Background thread: rotates through _PREDICT_NUM_BUCKETS, one bucket per 60s.
-    With 350 tickers in 7 buckets the full universe cycles every ~7 minutes.
+    Each bucket runs in parallel (6 workers) so 50 tickers complete in ~15s
+    instead of ~150s serial. Full 350-ticker cycle every ~7 minutes.
     Results accumulate in _predict_results; stale entries expire after _PREDICT_RESULT_TTL.
     """
+    import concurrent.futures
     # Wait (max 60s) for Kronos neural model — then proceed with linreg regardless
     for _ in range(30):
         if _kronos_predictor is not None:
@@ -4884,20 +4895,17 @@ def _predict_bg_loop():
             bucket   = buckets[bucket_idx % n]
 
             bucket_results = {}
-            for sym in bucket:
-                try:
-                    res = _predict_one(sym)
+            # Run predictions in parallel — 6 workers keeps Massive API happy
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+                for sym, res in pool.map(_predict_one_safe, bucket):
                     if res:
                         res["_ts"] = time.time()
                         _predict_apply_streak(sym, res)
                         bucket_results[sym] = res
-                        # Log to win rate tracker (quality-gated inside _wr_log_signal)
                         try:
                             _wr_log_signal(res)
                         except Exception:
                             pass
-                except Exception:
-                    pass
 
             now = time.time()
             with _predict_lock:

@@ -5263,9 +5263,11 @@ function renderPredictions() {
     } else if (elapsedSec < 20) {
       msg = '⏳ Starting prediction engine — Kronos model initializing…';
     } else if (elapsedSec < 60) {
-      msg = `⏳ Loading Kronos model… (${elapsedSec}s) — first scan starts within 60s.`;
+      msg = `⏳ Kronos ready — first bucket scanning now… (${elapsedSec}s)`;
+    } else if (elapsedSec < 120) {
+      msg = `⏳ First results incoming… (${elapsedSec}s) — parallel scanning 25 tickers per bucket.`;
     } else {
-      msg = `⏳ First scan in progress… (${elapsedSec}s) — fetching price data for all watchlist tickers.`;
+      msg = `⏳ Still scanning… (${elapsedSec}s) — if this persists past 3 min, check Railway logs.`;
     }
     body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px;line-height:1.8">${msg}</div>`;
     badge.textContent = elapsedSec > 0 ? `Loading… ${elapsedSec}s` : 'Loading…';
