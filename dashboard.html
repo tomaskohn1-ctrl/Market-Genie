@@ -2496,6 +2496,11 @@
       <div style="display:flex;align-items:center;gap:8px">
         <span id="scalpBadge" class="card-tag tag-neutral">Ready</span>
         <span id="scalpCountdown" style="font-size:10px;color:var(--accent);font-family:'JetBrains Mono',monospace;display:none"></span>
+        <button id="scalpConfirmBtn" onclick="toggleConfirmedFilter()"
+          title="Show only alerts where TFM forecast AND price bars both agree with direction"
+          style="padding:3px 9px;font-size:10px;font-weight:700;border-radius:5px;cursor:pointer;
+                 border:1px solid rgba(0,230,118,0.5);background:rgba(0,230,118,0.15);
+                 color:#00e676;transition:all 0.2s">🎯 Confirmed</button>
         <button id="scalpNotifBtn" class="btn secondary" style="padding:4px 8px;font-size:11px;opacity:0.5" onclick="toggleScalpNotifs()" title="Enable A-grade alerts">🔔</button>
         <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="loadScalpAlerts(true)">▶ Scan</button>
       </div>
@@ -5072,6 +5077,7 @@ function renderContractAlerts() {
 const SCALP_REFRESH_MS  = 60_000;   // 60-second auto-refresh
 let _scalpData          = null;
 let _scalpPrev          = null;
+let _scalpConfirmedOnly = true;   // default ON: show only TFM+bars confirmed alerts
 let _scalpScanTime      = null;
 let _scalpInterval      = null;
 let _scalpCountdownTick = null;
@@ -5135,6 +5141,25 @@ const _GRADE_STYLE = {
 };
 const _DIR_ARROW = { up:'▲', down:'▼' };
 const _DIR_CLR   = { up:'#00e676', down:'#ff4455' };
+
+function toggleConfirmedFilter() {
+  _scalpConfirmedOnly = !_scalpConfirmedOnly;
+  const btn = document.getElementById('scalpConfirmBtn');
+  if (btn) {
+    if (_scalpConfirmedOnly) {
+      btn.style.background    = 'rgba(0,230,118,0.15)';
+      btn.style.color         = '#00e676';
+      btn.style.borderColor   = 'rgba(0,230,118,0.5)';
+      btn.title = 'Showing only alerts where TFM forecast AND price bars both agree — click to show all';
+    } else {
+      btn.style.background    = 'rgba(255,255,255,0.05)';
+      btn.style.color         = 'var(--muted)';
+      btn.style.borderColor   = 'rgba(255,255,255,0.12)';
+      btn.title = 'Showing all alerts — click to filter to confirmed only';
+    }
+  }
+  renderScalpAlerts();
+}
 
 function toggleScalpNotifs() {
   if (!('Notification' in window)) return;
@@ -5516,11 +5541,24 @@ function renderScalpAlerts() {
   const body  = document.getElementById('scalpBody');
   if (!d || !body) return;
 
-  const aCount = d.alerts.filter(a => a.grade === 'A').length;
-  badge.textContent = `${d.total} ALERTS · ${aCount} A-GRADE`;
-  badge.className   = aCount > 0 ? 'card-tag tag-bull' : (d.total > 0 ? 'card-tag tag-neutral' : 'card-tag tag-neutral');
+  // Choose which set to display based on filter toggle
+  const allAlerts       = d.alerts || [];
+  const confirmedAlerts = (d.confirmed || allAlerts.filter(a => a.tfm_agrees && a.momentum_ok));
+  const displayAlerts   = _scalpConfirmedOnly ? confirmedAlerts : allAlerts;
 
-  if (!d.alerts.length) {
+  // Badge — show confirmed count vs total
+  const aCount     = displayAlerts.filter(a => a.grade === 'A').length;
+  const totalShown = displayAlerts.length;
+  const totalAll   = d.total || allAlerts.length;
+  if (_scalpConfirmedOnly) {
+    badge.textContent = `${totalShown} CONFIRMED · ${aCount} A-GRADE`;
+    badge.className   = aCount > 0 ? 'card-tag tag-bull' : (totalShown > 0 ? 'card-tag tag-neutral' : 'card-tag tag-neutral');
+  } else {
+    badge.textContent = `${totalAll} ALERTS · ${aCount} A-GRADE`;
+    badge.className   = aCount > 0 ? 'card-tag tag-bull' : (totalAll > 0 ? 'card-tag tag-neutral' : 'card-tag tag-neutral');
+  }
+
+  if (!displayAlerts.length) {
     let warmMsg;
     if (d.status === 'warming_up') {
       const sessionNote = d.session === 'extended' ? ' (Extended hours — Finnhub data, 80 tickers)' : '';
@@ -5532,21 +5570,38 @@ function renderScalpAlerts() {
     } else {
       warmMsg = '🔍 No setups meet criteria right now — market is calm. Auto-retrying in 60s.';
     }
-    body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px;line-height:1.6">${warmMsg}</div>`;
+    // If confirmed filter is on and no confirmed alerts exist, show helpful note
+    const noConfirmNote = _scalpConfirmedOnly && allAlerts.length > 0
+      ? `<div style="margin-top:8px;font-size:10px;color:var(--muted)">
+           ${allAlerts.length} unconfirmed alerts hidden — TFM still loading, or bars not yet aligned.
+           <span style="cursor:pointer;color:#00ccff;text-decoration:underline" onclick="toggleConfirmedFilter()">Show all ${allAlerts.length}</span>
+         </div>`
+      : '';
+    body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px;line-height:1.6">${warmMsg}${noConfirmNote}</div>`;
     return;
   }
 
   // Set of symbols from previous scan — for NEW tag
   const prevSyms = new Set((_scalpPrev?.alerts || []).map(a => a.sym));
 
-  // Column header
+  // Column header — show filter note if confirmed mode
+  const filterNote = _scalpConfirmedOnly
+    ? `<div style="padding:4px 14px 2px;font-size:10px;color:rgba(0,230,118,0.7);font-weight:600">
+        🎯 Confirmed only: TFM forecast + price bars both agree ·
+        <span style="cursor:pointer;color:#00ccff;text-decoration:underline" onclick="toggleConfirmedFilter()">show all ${d.total}</span>
+       </div>`
+    : `<div style="padding:4px 14px 2px;font-size:10px;color:var(--muted)">
+        Showing all alerts ·
+        <span style="cursor:pointer;color:#00e676;text-decoration:underline" onclick="toggleConfirmedFilter()">🎯 confirmed only (${d.confirmed_count || 0})</span>
+       </div>`;
+
   const header = `<div style="display:grid;grid-template-columns:26px 62px 58px 1fr 66px;gap:6px;padding:5px 14px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">
     <div></div><div>TICKER</div><div>DIR / BARS</div><div>SIGNALS</div><div style="text-align:right">AGE / CHG</div>
   </div>`;
 
   // Build rows — A grades first (already sorted server-side by score desc)
   let lastGrade = null;
-  const rows = d.alerts.map(a => {
+  const rows = displayAlerts.map(a => {
     const gs       = _GRADE_STYLE[a.grade] || _GRADE_STYLE.C;
     const dir      = a.direction;
     const dirClr   = _DIR_CLR[dir];
@@ -5704,7 +5759,7 @@ function renderScalpAlerts() {
     ${statusDot}${sessionTag} Auto-refreshes every 60s · A=5+/11 · B=3-4/11 · TFM▲▼ = AI forecast · <span id="wsStatusDot" style="color:var(--muted)">🔴 WS OFF</span>
   </div>`;
 
-  body.innerHTML = spyBar + header + rows + footer;
+  body.innerHTML = filterNote + spyBar + header + rows + footer;
 }
 
 // ── Kronos Top Signals Scanner ────────────────────────────────────────────────

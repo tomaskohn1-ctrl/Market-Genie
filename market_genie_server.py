@@ -5606,12 +5606,18 @@ def scalp_scanner():
         with _scalp_r_lock:
             alerts = [dict(v) for v in _scalp_results.values()]
 
-        # Strip internal key before serialising
+        # Strip internal key + compute derived fields before serialising
         for a in alerts:
             a.pop("_ts", None)
+            # tfm_agrees: TFM forecast direction matches scalp direction
+            # momentum_ok already in the dict; tfm_dir is "up"/"down" or None
+            td = a.get("tfm_dir")
+            a["tfm_agrees"] = bool(td and td == a.get("direction"))
 
         grade_order = {"A": 0, "B": 1, "C": 2}
+        # Confirmed alerts (both agree) sort above same-grade unconfirmed
         alerts.sort(key=lambda x: (grade_order.get(x.get("grade","C"), 2),
+                                   0 if x.get("tfm_agrees") else 1,
                                    -x.get("score", 0),
                                    -x.get("vol_ratio", 0)))
 
@@ -5626,15 +5632,18 @@ def scalp_scanner():
         else:
             status = "live"
 
+        confirmed = [a for a in alerts if a.get("tfm_agrees") and a.get("momentum_ok")]
         payload = {
-            "alerts":   alerts[:25],
-            "total":    len(alerts),
-            "scanned":  len(universe),
-            "ts":       last_ts if last_ts else int(time.time()),
-            "spy_ret1": round(_scalp_spy.get("ret1", 0.0), 3),
-            "status":   status,
-            "session":  session,
-            "bucket":   _scalp_stats.get("bucket", -1),
+            "alerts":    alerts[:25],
+            "confirmed": confirmed[:25],  # pre-filtered: TFM + bars both agree
+            "total":     len(alerts),
+            "confirmed_count": len(confirmed),
+            "scanned":   len(universe),
+            "ts":        last_ts if last_ts else int(time.time()),
+            "spy_ret1":  round(_scalp_spy.get("ret1", 0.0), 3),
+            "status":    status,
+            "session":   session,
+            "bucket":    _scalp_stats.get("bucket", -1),
         }
         return jsonify(payload)
     except Exception as e:
