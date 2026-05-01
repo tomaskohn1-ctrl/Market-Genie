@@ -505,9 +505,10 @@ _ws_status       = {"connected": False, "ts": 0, "bars": 0, "second_bars": 0}
 _WS_URL          = "wss://socket.massive.com/stocks"
 
 # Surge tuning constants
-_SURGE_RATIO_MIN    = 3.0   # 3× average minute volume pace
-_SURGE_ELAPSED_MIN  = 10    # require ≥10 seconds before signalling
-_SURGE_TTL          = 90    # keep surge visible for 90 seconds
+_SURGE_RATIO_MIN     = 3.0   # 3× pace for A.* per-second bars (short burst detection)
+_SURGE_RATIO_MIN_AM  = 2.0   # 2× for AM.* completed minute bars (smoothed — harder to hit 3×)
+_SURGE_ELAPSED_MIN   = 10    # require ≥10 seconds before signalling (A.* only)
+_SURGE_TTL           = 120   # keep surge visible for 120 seconds
 
 def _ws_build_sub_list():
     """
@@ -643,35 +644,42 @@ def _ws_on_message(ws, raw):
                             "chg_pct": chg_pct,
                         }
                         # Feed completed minute vol into history baseline
+                        hist = _ws_minute_hist.setdefault(sym, _deque(maxlen=8))
                         if bar_vol > 0:
-                            hist = _ws_minute_hist.setdefault(sym, _deque(maxlen=8))
                             hist.append(bar_vol)
                             # ── AM-based volume surge fallback ──────────────────
                             # Used when A.* per-second channel is unavailable.
-                            # Compares this completed minute's volume to the 8-bar
-                            # average. Fires at same 3× threshold as second-bar path.
-                            if len(hist) >= 3:
-                                avg_vol = sum(list(hist)[:-1]) / (len(hist) - 1)
+                            # Lower threshold (2×) because a full completed minute
+                            # is naturally averaged — per-second bursts can hit 3×
+                            # easily but minute-level 3× is extreme. 2× is still
+                            # meaningful and catches real unusual activity.
+                            # Need ≥2 prior bars to have a valid baseline.
+                            if len(hist) >= 2:
+                                # Use all bars EXCEPT the one just appended as baseline
+                                prior = list(hist)[:-1]
+                                avg_vol = sum(prior) / len(prior)
                                 if avg_vol > 0:
                                     ratio = bar_vol / avg_vol
-                                    if ratio >= _SURGE_RATIO_MIN:
+                                    if ratio >= _SURGE_RATIO_MIN_AM:
                                         am_open = float(m.get("o") or close)
                                         dirn    = "bull" if close >= am_open else "bear"
                                         _ws_surges[sym] = {
                                             "ratio":   round(ratio, 1),
                                             "vol":     bar_vol,
                                             "avg":     round(avg_vol),
-                                            "elapsed": 60,       # full minute bar
+                                            "elapsed": 60,
                                             "ts":      now,
                                             "dir":     dirn,
                                             "price":   close,
-                                            "source":  "AM",     # distinguish from A.* source
+                                            "source":  "AM",
                                         }
+                                        print(f"[Surge/AM] {sym} {ratio:.1f}× vol={bar_vol} avg={avg_vol:.0f}")
                                     else:
-                                        # Clear stale AM surge if ratio drops below threshold
+                                        # Clear stale AM surge once ratio normalises
                                         if sym in _ws_surges and _ws_surges[sym].get("source") == "AM":
                                             if (now - _ws_surges[sym]["ts"]) > _SURGE_TTL:
                                                 del _ws_surges[sym]
+                    # Count bar regardless of volume (zero-vol bars still happened)
                     _ws_status["bars"] += 1
                     _ws_status["ts"]    = int(now)
 

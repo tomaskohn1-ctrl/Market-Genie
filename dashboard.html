@@ -5453,7 +5453,11 @@ async function pollLiveSurges() {
           modeMsg = `📊 Minute-bar mode: watching ${liveTix} tickers via AM.* feed (${amBars.toLocaleString()} bars). ` +
                     `<span style="color:#ffd740">A.* per-second channel not active on this plan — surges fire on completed minute spikes instead.</span>`;
         } else {
-          modeMsg = `⏳ Waiting for first bars… WebSocket connected, accumulating history.`;
+          // WebSocket connected but no bars yet — show live ticker count as proof it's working
+          const tickerNote = liveTix > 0
+            ? `${liveTix} tickers live via WebSocket.`
+            : `No tickers yet — waiting for first minute boundary after deploy.`;
+          modeMsg = `⏳ Accumulating baseline… ${tickerNote} First surge will fire after 2 completed minutes per ticker.`;
         }
         body.innerHTML = `<div style="text-align:center;padding:14px;color:var(--muted);font-size:11px;line-height:1.7">
           ${modeMsg}<br>No volume surges (3× avg) detected right now.
@@ -5498,6 +5502,7 @@ async function pollLiveSurges() {
               border:1px solid rgba(255,160,0,0.35);
               border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;
               font-family:'JetBrains Mono',monospace">⚡ ${s.ratio}×</span>
+            <span style="font-size:9px;color:var(--muted);background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:3px">${s.source === 'AM' ? 'MIN-BAR' : 'SEC-BAR'}</span>
             <span style="font-size:10px;color:var(--muted)">${s.vol.toLocaleString()} vol / ${s.avg.toLocaleString()} avg</span>
           </div>
           <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden">
