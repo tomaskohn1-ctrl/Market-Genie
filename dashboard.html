@@ -5290,10 +5290,14 @@ function renderPredictions() {
     const tClr  = tDir === 'bull' ? '#00e676' : tDir === 'bear' ? '#ff4455' : '#718096';
     const tArrow= tDir === 'bull' ? '▲' : tDir === 'bear' ? '▼' : '—';
 
-    const bothAgree = kDir && tDir && kDir === tDir;
-    const agreeBadge = bothAgree
+    const bothAgree      = kDir && tDir && kDir === tDir;
+    const momOkPredict   = r.recent_momentum_ok !== false;  // false = last 5 bars contradict model
+    // Suppress BOTH AGREE if price momentum contradicts the model — model is lagging a reversal
+    const agreeBadge = (bothAgree && momOkPredict)
       ? `<span style="font-size:8px;font-weight:700;background:${convBg};color:${convClr};padding:1px 4px;border-radius:3px;border:1px solid ${convClr}44">BOTH AGREE</span>`
-      : '';
+      : (!momOkPredict && (kDir || tDir))
+        ? `<span title="Last 5 price bars contradict model direction — possible lag or reversal in progress" style="font-size:8px;font-weight:700;background:rgba(255,160,0,0.15);color:#ffa000;padding:1px 4px;border-radius:3px;border:1px solid rgba(255,160,0,0.4)">⚠️ DIVERGING</span>`
+        : '';
 
     return `<div style="display:grid;grid-template-columns:70px 90px 70px 1fr 1fr;gap:4px;padding:7px 14px;border-bottom:1px solid rgba(255,255,255,0.04);align-items:center;cursor:pointer;transition:background 0.15s" onmouseenter="this.style.background='rgba(255,255,255,0.03)'" onmouseleave="this.style.background=''" onclick="openTickerChart('${r.sym}')">
       <div style="font-size:13px;font-weight:700;color:var(--text-hi)">${r.sym}</div>

@@ -4751,9 +4751,13 @@ def _predict_one(sym):
             import numpy as np
             arr = np.array(closes, dtype=np.float32)
             if _tfm_model == "fallback":
-                # Linear-regression fallback
-                x = np.arange(len(arr[-30:]))
-                slope, intercept = np.polyfit(x, arr[-30:].astype(np.float64), 1)
+                # Linear-regression fallback — use 10-bar window so it responds
+                # to recent reversals rather than being dominated by prior moves.
+                # 30-bar window was too slow: a 20-bar drop + 10-bar recovery
+                # still predicted BEAR even as the stock was actively climbing.
+                recent = arr[-10:]
+                x = np.arange(len(recent))
+                slope, intercept = np.polyfit(x, recent.astype(np.float64), 1)
                 pred_mean = slope * (len(x) - 1 + _TFM_HORIZON) + intercept
             else:
                 inp = [arr]
@@ -4764,6 +4768,24 @@ def _predict_one(sym):
             tfm_dir = "bull" if tfm_pct > 0 else "bear"
     except Exception as e:
         print(f"[Predict] TFM {sym}: {e}")
+
+    # ── Recent momentum check — last 5 bars must not contradict model ─────────
+    # If the last 5 price bars are moving strongly against the model direction,
+    # the model is lagging a reversal and "BOTH AGREE" would be misleading.
+    recent_momentum_ok = True
+    try:
+        import numpy as np
+        if len(closes) >= 6:
+            last5 = closes[-5:]
+            up_bars = sum(1 for i in range(1, len(last5)) if last5[i] > last5[i-1])
+            dn_bars = 5 - up_bars
+            # Flag divergence if bars overwhelmingly contradict model direction
+            if (kronos_dir == "bear" or tfm_dir == "bear") and up_bars >= 4:
+                recent_momentum_ok = False   # last 5 bars mostly up but model says bear
+            if (kronos_dir == "bull" or tfm_dir == "bull") and dn_bars >= 4:
+                recent_momentum_ok = False   # last 5 bars mostly down but model says bull
+    except Exception:
+        pass
 
     # ── Combine signals ───────────────────────────────────────────────────────
     signals = []
@@ -4802,18 +4824,19 @@ def _predict_one(sym):
     confidence = round(mag_score + agr_score, 1)
 
     return {
-        "sym":          sym,
-        "direction":    direction,
-        "conviction":   conviction,
-        "confidence":   confidence,
-        "avg_pct":      avg_pct,
-        "price":        round(last_p, 2),
-        "kronos_dir":   kronos_dir,
-        "kronos_pct":   kronos_pct,
-        "kronos_prob":  kronos_prob,
-        "tfm_dir":      tfm_dir,
-        "tfm_pct":      tfm_pct,
-        "_ts":          time.time(),
+        "sym":                sym,
+        "direction":          direction,
+        "conviction":         conviction,
+        "confidence":         confidence,
+        "avg_pct":            avg_pct,
+        "price":              round(last_p, 2),
+        "kronos_dir":         kronos_dir,
+        "kronos_pct":         kronos_pct,
+        "kronos_prob":        kronos_prob,
+        "tfm_dir":            tfm_dir,
+        "tfm_pct":            tfm_pct,
+        "recent_momentum_ok": recent_momentum_ok,  # False = price bars contradict model
+        "_ts":                time.time(),
     }
 
 def _predict_bg_loop():
@@ -5018,7 +5041,10 @@ def _tfm_batch(sym_list):
         # ── Fallback: linear regression forecast ──────────────────────────
         if _tfm_model == "fallback":
             for sym in valid:
-                closes = np.array(_tfm_closes[sym][-30:], dtype=np.float64)
+                # Use 10-bar window — responsive to reversals without overfitting noise.
+                # 30-bar window caused lag: prior trend dominated even after reversal.
+                all_c  = np.array(_tfm_closes[sym], dtype=np.float64)
+                closes = all_c[-10:]
                 if len(closes) < 5:
                     continue
                 current = float(closes[-1])
@@ -5026,7 +5052,6 @@ def _tfm_batch(sym_list):
                     continue
                 x = np.arange(len(closes))
                 slope, intercept = np.polyfit(x, closes, 1)
-                # Project 5 bars ahead using slope
                 pred = slope * (len(closes) - 1 + _TFM_HORIZON) + intercept
                 delta_pct = (pred - current) / current * 100
                 results[sym] = (
