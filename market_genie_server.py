@@ -6501,4 +6501,3 @@ confidence is an integer 1-10. Be honest — use 5 for neutral/unclear setups, n
         return jsonify(set_cache(cache_key, thesis))
     except Exception as e:
         return jsonify({"ok": False, "error": str(e), "ticker": ticker}), 200
-�
