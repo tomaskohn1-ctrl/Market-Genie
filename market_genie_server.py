@@ -4755,9 +4755,11 @@ def _predict_one(sym):
 def _predict_bg_loop():
     """Background thread: re-runs predictions every 60s."""
     import concurrent.futures
-    # Wait for at least one model to be ready before first scan
-    for _ in range(120):
-        if _kronos_predictor is not None or _tfm_ready:
+    # Linear regression is ready immediately (_tfm_ready=True at startup).
+    # Optionally wait for Kronos neural model to load (max 60s), then proceed
+    # — predictions run even if Kronos hasn't finished loading yet.
+    for _ in range(30):
+        if _kronos_predictor is not None:
             break
         time.sleep(2)
 
@@ -4893,25 +4895,30 @@ def predict_scan():
 # ── TimesFM — lazy-loaded Google foundation model for 5-bar price forecast ─────
 # Uses timesfm 1.x PyPI API (TimesFmHparams / TimesFmCheckpoint / .forecast())
 # Model: google/timesfm-1.0-200m-pytorch (~800MB, downloaded once to HF cache)
-_tfm_model   = None          # singleton — loaded once, reused forever
-_tfm_ready   = False
+_tfm_model   = "fallback"    # start in linear-regression mode immediately — no download needed
+_tfm_ready   = True          # ready from the first prediction cycle
 _tfm_loading = False
 _tfm_lock    = threading.Lock()
 _tfm_closes  = {}            # { sym: np.ndarray } populated during scalp scan
 
 _TFM_HORIZON = 5             # predict next 5 one-minute bars
 
-_TFM_LOAD_TIMEOUT = 180   # seconds — force fallback if model hasn't loaded by then
+# TimesFM neural model is opt-in: set ENABLE_TIMESFM=true in Railway Variables to enable.
+# Default is linear-regression (fast, starts immediately, good accuracy on 10-bar windows).
+_ENABLE_TIMESFM   = os.getenv("ENABLE_TIMESFM", "false").lower() == "true"
+_TFM_LOAD_TIMEOUT = 180   # seconds — force fallback if neural model hasn't loaded by then
 
 def _tfm_load():
-    """Download TimesFM 1.0-200M (PyTorch) in a background thread (called once).
-    Falls back gracefully to a lightweight linear-regression forecast if model
-    fails to load (memory limit, download timeout, hang, etc.).
-    Hard timeout: if loading takes > _TFM_LOAD_TIMEOUT seconds, force fallback."""
+    """Optionally load TimesFM 1.0-200M neural model (only if ENABLE_TIMESFM=true).
+    Default: linear-regression mode is already active at startup — no download needed.
+    To enable neural mode: set ENABLE_TIMESFM=true in Railway Variables."""
     global _tfm_model, _tfm_ready, _tfm_loading
+    if not _ENABLE_TIMESFM:
+        # Neural mode not enabled — linear regression is already active
+        return
     with _tfm_lock:
-        if _tfm_ready or _tfm_loading:
-            return
+        if _tfm_model not in (None, "fallback") or _tfm_loading:
+            return   # already loaded or loading
         _tfm_loading = True
 
     load_start = time.time()

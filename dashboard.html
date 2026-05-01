@@ -5244,14 +5244,12 @@ function renderPredictions() {
     if (!d.loading) {
       window._predictLoadStart = null;
       msg = '🔍 No predictions yet — auto-retrying in 60s';
-    } else if (elapsedSec < 30) {
-      msg = '⏳ Models loading — Kronos + TimesFM initializing (1-2 min first run)…';
-    } else if (elapsedSec < 120) {
-      msg = `⏳ Still loading… (${elapsedSec}s) — downloading 800MB TimesFM model on first deploy. Hang tight.`;
-    } else if (elapsedSec < 180) {
-      msg = `⏳ Almost there… (${elapsedSec}s) — model nearly loaded or switching to fast fallback shortly.`;
+    } else if (elapsedSec < 20) {
+      msg = '⏳ Starting prediction engine — Kronos model initializing…';
+    } else if (elapsedSec < 60) {
+      msg = `⏳ Loading Kronos model… (${elapsedSec}s) — first scan starts within 60s.`;
     } else {
-      msg = `⚡ Switching to fast linear-regression mode (${elapsedSec}s elapsed) — predictions will appear very soon.`;
+      msg = `⏳ First scan in progress… (${elapsedSec}s) — fetching price data for all watchlist tickers.`;
     }
     body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px;line-height:1.8">${msg}</div>`;
     badge.textContent = elapsedSec > 0 ? `Loading… ${elapsedSec}s` : 'Loading…';
