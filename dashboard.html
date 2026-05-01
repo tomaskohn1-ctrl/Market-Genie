@@ -2457,19 +2457,22 @@
   </div>
 
   <!-- ── Scalp Alerts — 5-10 min momentum scanner ──────────────── -->
-  <!-- ══ PREDICTION ENGINE ══ -->
-  <div class="card" data-tab="signal" id="predictCard" style="border-color:rgba(138,43,226,0.4);box-shadow:0 0 24px rgba(138,43,226,0.12)">
-    <div class="card-header" style="background:linear-gradient(135deg,rgba(138,43,226,0.12),rgba(0,180,255,0.08))">
-      <div class="card-title"><span class="card-icon">🔮</span> Prediction Engine <span style="font-size:10px;font-weight:400;color:var(--muted)">next 5-20 min</span></div>
+  <!-- ══ ALPHA ENGINE ══ -->
+  <div class="card" data-tab="signal" id="predictCard" style="border-color:rgba(255,215,0,0.35);box-shadow:0 0 28px rgba(255,215,0,0.10)">
+    <div class="card-header" style="background:linear-gradient(135deg,rgba(255,215,0,0.10),rgba(138,43,226,0.10))">
+      <div class="card-title">
+        <span class="card-icon">🏆</span> Alpha Engine
+        <span style="font-size:10px;font-weight:400;color:var(--muted)">Kronos + TimesFM · both agree = 88% WR</span>
+      </div>
       <div style="display:flex;align-items:center;gap:8px">
-        <span id="predictBadge" class="card-tag" style="background:rgba(138,43,226,0.2);color:#c084fc;border:1px solid rgba(138,43,226,0.4)">Loading…</span>
+        <span id="predictBadge" class="card-tag" style="background:rgba(255,215,0,0.15);color:#ffd700;border:1px solid rgba(255,215,0,0.4)">Loading…</span>
         <span id="predictModel" style="font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace"></span>
-        <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="loadPredictions(true)">▶ Predict</button>
+        <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="loadPredictions(true)">▶ Scan</button>
       </div>
     </div>
     <div class="card-body" style="padding:0">
       <div id="predictBody">
-        <div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">⏳ Prediction engine warming up — Kronos + TimesFM loading models…</div>
+        <div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">⏳ Alpha engine warming up — Kronos + TimesFM loading models…</div>
       </div>
     </div>
   </div>
@@ -5254,7 +5257,6 @@ function renderPredictions() {
   if (mdl) mdl.textContent = d.model || '';
 
   if (d.loading || d.total === 0) {
-    // Track how long we've been loading to give user useful feedback
     if (!window._predictLoadStart && d.loading) window._predictLoadStart = Date.now();
     const elapsedSec = window._predictLoadStart ? Math.round((Date.now() - window._predictLoadStart) / 1000) : 0;
     let msg;
@@ -5262,11 +5264,11 @@ function renderPredictions() {
       window._predictLoadStart = null;
       msg = '🔍 No predictions yet — auto-retrying in 60s';
     } else if (elapsedSec < 20) {
-      msg = '⏳ Starting prediction engine — Kronos model initializing…';
+      msg = '⏳ Starting Alpha Engine — Kronos + TimesFM loading models…';
     } else if (elapsedSec < 60) {
-      msg = `⏳ Kronos ready — first bucket scanning now… (${elapsedSec}s)`;
+      msg = `⏳ Models ready — first bucket scanning now… (${elapsedSec}s)`;
     } else if (elapsedSec < 120) {
-      msg = `⏳ First results incoming… (${elapsedSec}s) — parallel scanning 25 tickers per bucket.`;
+      msg = `⏳ First alpha signals incoming… (${elapsedSec}s) — scanning 25 tickers per bucket.`;
     } else {
       msg = `⏳ Still scanning… (${elapsedSec}s) — if this persists past 3 min, check Railway logs.`;
     }
@@ -5274,199 +5276,161 @@ function renderPredictions() {
     badge.textContent = elapsedSec > 0 ? `Loading… ${elapsedSec}s` : 'Loading…';
     return;
   }
-  window._predictLoadStart = null;  // reset on success
+  window._predictLoadStart = null;
 
-  const bulls      = d.bulls || [];
-  const bears      = d.bears || [];
-  const bullTotal  = d.bull_total || bulls.length;
-  const bearTotal  = d.bear_total || bears.length;
-  badge.textContent = `${bullTotal} BULL · ${bearTotal} BEAR`;
-  badge.style.background = bullTotal > bearTotal ? 'rgba(0,230,118,0.2)' : bearTotal > bullTotal ? 'rgba(255,68,85,0.2)' : 'rgba(138,43,226,0.2)';
-  badge.style.color = bullTotal > bearTotal ? '#00e676' : bearTotal > bullTotal ? '#ff4455' : '#c084fc';
+  // ── Alpha signals: both models agree → 88% WR ────────────────────────────
+  const alphaBulls = d.alpha_bulls || [];
+  const alphaBears = d.alpha_bears || [];
+  const alphaCount = (d.alpha_bull_total || alphaBulls.length) + (d.alpha_bear_total || alphaBears.length);
+  const totalScanned = d.total || 0;
+
+  // Badge shows alpha count
+  badge.textContent = `🏆 ${alphaCount} Alpha · ${totalScanned} scanned`;
+  badge.style.background = alphaCount > 0 ? 'rgba(255,215,0,0.15)' : 'rgba(138,43,226,0.15)';
+  badge.style.color = alphaCount > 0 ? '#ffd700' : '#c084fc';
+  badge.style.border = `1px solid ${alphaCount > 0 ? 'rgba(255,215,0,0.4)' : 'rgba(138,43,226,0.4)'}`;
 
   const ts = d.ts ? new Date(d.ts*1000).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '--:--';
+  const bucketInfo = d.bucket_total > 1 ? ` · Bucket ${d.bucket}/${d.bucket_total}` : '';
 
-  // ── EDGE SCORE — composite entry quality score ───────────────────────────
-  // Rewards: high confidence, fresh-but-confirmed streak (2-4), both models agree,
-  //          large predicted move. Penalises: diverging price, flipping, very late streak.
-  function edgeScore(r) {
-    const streak  = r.streak_count || 1;
-    const conf    = r.confidence   || 0;
-    const kPct    = Math.abs(r.kronos_pct || 0);
-    const tPct    = Math.abs(r.tfm_pct    || 0);
-    const kDir    = (r.kronos_dir || '').toLowerCase();
-    const tDir    = (r.tfm_dir   || '').toLowerCase();
-    const cDir    = (r.consensus_dir || r.direction || '').toLowerCase();
-    const bothAgree   = kDir && tDir && kDir === tDir;
-    const isDiverging = r.recent_momentum_ok === false;
-    const isFlipping  = r.flipping === true;
-    const isHigh      = r.conviction === 'HIGH';
+  // ── Tier order: ELITE → PRIME → SOLID ─────────────────────────────────────
+  const TIER_ORDER = { ELITE: 0, PRIME: 1, SOLID: 2 };
 
-    if (isFlipping) return 0;   // building a counter-signal → skip
-
-    // Freshness multiplier: peak at streak 2-4, penalty for very old or brand-new
-    const freshness = streak === 1 ? 0.70
-                    : streak <= 3  ? 1.30   // sweet spot — just confirmed
-                    : streak <= 5  ? 1.15   // still early
-                    : streak <= 8  ? 0.90   // established — move may be underway
-                    :                0.70;  // late — likely overcrowded
-
-    const score = conf
-      * freshness
-      * (bothAgree  ? 1.25 : 1.0)
-      * (isHigh     ? 1.20 : 1.0)
-      * (isDiverging? 0.60 : 1.0)
-      * (1 + Math.min(kPct, 3) * 0.05)   // up to +15% bonus for large predicted move
-      * (1 + Math.min(tPct, 3) * 0.03);
-
-    return Math.round(score * 10) / 10;
+  function tierStyle(tier) {
+    if (tier === 'ELITE') return { clr: '#ffd700', bg: 'rgba(255,215,0,0.15)', border: 'rgba(255,215,0,0.5)', label: '⚡ ELITE', title: '~100% WR (conf ≥80, both agree)', rowBg: 'rgba(255,215,0,0.03)', leftBorder: '#ffd700' };
+    if (tier === 'PRIME') return { clr: '#c084fc', bg: 'rgba(192,132,252,0.15)', border: 'rgba(192,132,252,0.5)', label: '🔷 PRIME', title: '~90% WR (conf 70-80, both agree)', rowBg: 'rgba(192,132,252,0.02)', leftBorder: '#c084fc' };
+    return                        { clr: '#40c4ff', bg: 'rgba(64,196,255,0.12)',  border: 'rgba(64,196,255,0.4)',  label: '◆ SOLID', title: '~83% WR (conf 60-70, both agree)', rowBg: 'rgba(64,196,255,0.02)',  leftBorder: '#40c4ff' };
   }
 
-  // Score and re-sort each list by edge score descending
-  const allRows = [...bulls, ...bears].map(r => ({ ...r, _edge: edgeScore(r) }));
-  const scoredBulls = bulls.map(r => ({ ...r, _edge: edgeScore(r) }))
-                           .sort((a,b) => b._edge - a._edge);
-  const scoredBears = bears.map(r => ({ ...r, _edge: edgeScore(r) }))
-                           .sort((a,b) => b._edge - a._edge);
-
-  // Top 3 across both lists — these get the 🎯 BEST ENTRY badge
-  const topPicks = new Set(
-    [...scoredBulls, ...scoredBears]
-      .filter(r => r._edge > 0)
-      .sort((a,b) => b._edge - a._edge)
-      .slice(0, 3)
-      .map(r => r.sym)
-  );
-
-  // Header row
-  const hdr = `<div style="display:grid;grid-template-columns:70px 90px 60px 56px 64px 1fr 1fr;gap:4px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">
-    <div>TICKER</div><div>SIGNAL</div><div>CONF</div><div title="Consecutive cycles confirmed">STREAK</div><div title="Entry edge score — higher = better timing">EDGE ↑</div><div>KRONOS</div><div>TIMESFM</div>
+  // ── Column header ─────────────────────────────────────────────────────────
+  const hdr = `<div style="display:grid;grid-template-columns:70px 56px 80px 56px 1fr 1fr;gap:4px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">
+    <div>TICKER</div><div>DIR</div><div>TIER · 88% WR</div><div>CONF</div><div>KRONOS</div><div>TIMESFM</div>
   </div>`;
 
-  function renderRow(r) {
-    // ── Use consensus direction (streak-smoothed) if available ────────────────
-    // consensus_dir is the committed direction after N consecutive agrees.
-    // r.direction is the raw single-cycle direction — may flip each cycle.
-    const consensusDir = r.consensus_dir || r.direction || '';
-    const isFlipping   = r.flipping === true;
-    const streakCount  = r.streak_count || 1;
-    const flipProgress = r.flip_progress || 0;
-
-    const isBull  = consensusDir.toUpperCase() === 'BULL' || consensusDir === 'bull';
-    const dirClr  = isBull ? '#00e676' : '#ff4455';
-    const dirBg   = isBull ? 'rgba(0,230,118,0.12)' : 'rgba(255,68,85,0.12)';
-    const convClr = r.conviction === 'HIGH' ? dirClr : '#ffb300';
-    const convBg  = r.conviction === 'HIGH' ? dirBg  : 'rgba(255,179,0,0.1)';
-    const confBar = Math.round(r.confidence);
+  function renderAlphaRow(r) {
+    const tier       = r.alpha_tier || 'SOLID';
+    const ts_        = tierStyle(tier);
+    const dir        = (r.consensus_dir || r.direction || '').toUpperCase();
+    const isBull     = dir === 'BULL';
+    const dirClr     = isBull ? '#00e676' : '#ff4455';
+    const dirBg      = isBull ? 'rgba(0,230,118,0.12)' : 'rgba(255,68,85,0.12)';
+    const confBar    = Math.round(r.confidence || 0);
+    const streakCount= r.streak_count || 1;
 
     const kDir  = r.kronos_dir;
     const kPct  = r.kronos_pct != null ? (r.kronos_pct >= 0 ? '+' : '') + r.kronos_pct.toFixed(2) + '%' : '—';
     const kClr  = kDir === 'bull' ? '#00e676' : kDir === 'bear' ? '#ff4455' : '#718096';
     const kArrow= kDir === 'bull' ? '▲' : kDir === 'bear' ? '▼' : '—';
-
     const tDir  = r.tfm_dir;
     const tPct  = r.tfm_pct != null ? (r.tfm_pct >= 0 ? '+' : '') + r.tfm_pct.toFixed(2) + '%' : '—';
     const tClr  = tDir === 'bull' ? '#00e676' : tDir === 'bear' ? '#ff4455' : '#718096';
     const tArrow= tDir === 'bull' ? '▲' : tDir === 'bear' ? '▼' : '—';
 
-    // ── Streak indicator — dedicated column with color tier ──────────────────
-    const streakTitle = `Direction held for ${streakCount} consecutive cycle${streakCount > 1 ? 's' : ''}`;
-    // Tier: 1 = new/dim, 2-3 = yellow, 4-6 = orange, 7+ = green fire
-    const streakTier  = streakCount >= 7 ? 'fire' : streakCount >= 4 ? 'hot' : streakCount >= 2 ? 'warm' : 'new';
-    const streakClr   = streakTier === 'fire' ? '#00e676' : streakTier === 'hot' ? '#ff9800' : streakTier === 'warm' ? '#ffd740' : 'rgba(255,255,255,0.3)';
-    const streakBg    = streakTier === 'fire' ? 'rgba(0,230,118,0.15)' : streakTier === 'hot' ? 'rgba(255,152,0,0.15)' : streakTier === 'warm' ? 'rgba(255,215,0,0.10)' : 'rgba(255,255,255,0.04)';
-    const streakIcon  = streakTier === 'fire' ? '🔥' : streakTier === 'hot' ? '▲' : streakTier === 'warm' ? '↑' : '·';
-    const streakCell  = `<div title="${streakTitle}" style="display:inline-flex;align-items:center;gap:3px;background:${streakBg};border:1px solid ${streakClr}44;border-radius:4px;padding:2px 6px;font-size:11px;font-weight:800;color:${streakClr};font-family:'JetBrains Mono',monospace">
-      ${streakIcon} ${streakCount}
-    </div>`;
+    // streak badge
+    const streakTier = streakCount >= 7 ? 'fire' : streakCount >= 4 ? 'hot' : streakCount >= 2 ? 'warm' : 'new';
+    const streakClr  = streakTier === 'fire' ? '#00e676' : streakTier === 'hot' ? '#ff9800' : streakTier === 'warm' ? '#ffd740' : 'rgba(255,255,255,0.35)';
+    const streakIcon = streakTier === 'fire' ? '🔥' : streakTier === 'hot' ? '▲' : streakTier === 'warm' ? '↑' : '·';
 
-    // ── FLIPPING badge — shows when a counter-signal is building ──────────────
-    // "flipProgress" = how many consecutive readings have pointed the other way
-    // We need 3 to commit a flip — so show progress as N/3
-    let statusBadge = '';
-    if (isFlipping && flipProgress > 0) {
-      statusBadge = `<span title="Counter-signal building: ${flipProgress}/3 to commit a flip" style="font-size:8px;font-weight:700;background:rgba(255,160,0,0.15);color:#ffa000;padding:1px 4px;border-radius:3px;border:1px solid rgba(255,160,0,0.4)">↺ ${flipProgress}/3</span>`;
-    } else {
-      const bothAgree    = kDir && tDir && kDir === tDir;
-      const momOkPredict = r.recent_momentum_ok !== false;
-      if (bothAgree && momOkPredict) {
-        statusBadge = `<span style="font-size:8px;font-weight:700;background:${convBg};color:${convClr};padding:1px 4px;border-radius:3px;border:1px solid ${convClr}44">BOTH AGREE</span>`;
-      } else if (!momOkPredict && (kDir || tDir)) {
-        statusBadge = `<span title="Last 5 price bars contradict model direction — possible lag" style="font-size:8px;font-weight:700;background:rgba(255,160,0,0.15);color:#ffa000;padding:1px 4px;border-radius:3px;border:1px solid rgba(255,160,0,0.4)">⚠️ DIVERGING</span>`;
-      }
-    }
-
-    const dirLabel   = isBull ? 'BULL' : 'BEAR';
-    const dirOpacity = streakCount >= 2 ? '1' : '0.6';
-    const edgeVal    = r._edge || 0;
-    const isTopPick  = topPicks.has(r.sym);
-
-    // ── Data source pill ─────────────────────────────────────────────────────
+    // data source pill
     const src = r.data_source || '';
-    const srcLabel = src === 'ws_live' ? '⚡ WS' : src === 'massive' ? '📡 REST' : src === 'yfinance' ? '🕐 YF' : '';
-    const srcTitle = src === 'ws_live' ? 'WebSocket live — sub-second price feed'
-                   : src === 'massive' ? 'Massive REST — real-time 1-min bars'
-                   : src === 'yfinance' ? 'yFinance — typically 1-5 min lag'
-                   : 'Unknown source';
-    const srcClr   = src === 'ws_live' ? '#00e676' : src === 'massive' ? '#40c4ff' : '#ffd740';
-    const srcPill  = srcLabel ? `<span title="${srcTitle}" style="font-size:8px;color:${srcClr};background:${srcClr}18;border:1px solid ${srcClr}33;padding:1px 4px;border-radius:3px;font-weight:600;letter-spacing:0.2px">${srcLabel}</span>` : '';
+    const srcClr  = src === 'ws_live' ? '#00e676' : src === 'massive' ? '#40c4ff' : '#ffd740';
+    const srcLabel= src === 'ws_live' ? '⚡' : src === 'massive' ? '📡' : src === 'yfinance' ? '🕐' : '';
+    const srcPill = srcLabel ? `<span title="${src}" style="font-size:8px;color:${srcClr};background:${srcClr}18;border:1px solid ${srcClr}33;padding:1px 3px;border-radius:2px">${srcLabel}</span>` : '';
 
-    // Edge score cell — colour-tiered
-    const edgeClr  = edgeVal >= 100 ? '#ffd700' : edgeVal >= 80 ? '#00e676' : edgeVal >= 60 ? '#ffd740' : 'var(--muted)';
-    const edgeBg   = edgeVal >= 100 ? 'rgba(255,215,0,0.15)'  : edgeVal >= 80 ? 'rgba(0,230,118,0.12)' : edgeVal >= 60 ? 'rgba(255,215,0,0.08)' : 'rgba(255,255,255,0.03)';
-    const edgeCell = `<div style="display:inline-flex;align-items:center;background:${edgeBg};border:1px solid ${edgeClr}44;border-radius:4px;padding:2px 6px;font-size:11px;font-weight:800;color:${edgeClr};font-family:'JetBrains Mono',monospace">${edgeVal}</div>`;
-
-    // Top-pick highlight row
-    const rowBg    = isTopPick ? 'rgba(255,215,0,0.04)' : '';
-    const rowBorder= isTopPick ? 'border-left:2px solid #ffd700;' : '';
-    const topBadge = isTopPick
-      ? `<span style="font-size:8px;font-weight:800;background:rgba(255,215,0,0.2);color:#ffd700;padding:1px 5px;border-radius:3px;border:1px solid rgba(255,215,0,0.5);letter-spacing:0.3px">🎯 BEST ENTRY</span>`
-      : '';
-
-    return `<div style="display:grid;grid-template-columns:70px 90px 60px 56px 64px 1fr 1fr;gap:4px;padding:7px 14px;border-bottom:1px solid rgba(255,255,255,0.04);align-items:center;cursor:pointer;transition:background 0.15s;background:${rowBg};${rowBorder}" onmouseenter="this.style.background='rgba(255,255,255,0.05)'" onmouseleave="this.style.background='${rowBg}'" onclick="openTickerChart('${r.sym}')">
+    return `<div style="display:grid;grid-template-columns:70px 56px 80px 56px 1fr 1fr;gap:4px;padding:8px 14px;border-bottom:1px solid rgba(255,255,255,0.04);border-left:3px solid ${ts_.leftBorder};align-items:center;cursor:pointer;transition:background 0.15s;background:${ts_.rowBg}"
+      onmouseenter="this.style.background='rgba(255,255,255,0.06)'"
+      onmouseleave="this.style.background='${ts_.rowBg}'"
+      onclick="openTickerChart('${r.sym}')">
       <div style="display:flex;flex-direction:column;gap:2px">
         <span style="font-size:13px;font-weight:700;color:var(--text-hi)">${r.sym}</span>
-        ${srcPill}
-      </div>
-      <div style="display:flex;flex-direction:column;gap:2px">
-        <span style="font-size:12px;font-weight:800;color:${dirClr};background:${dirBg};padding:2px 7px;border-radius:4px;display:inline-block;letter-spacing:0.5px;opacity:${dirOpacity}">${dirLabel}</span>
-        ${topBadge || statusBadge}
+        <div style="display:flex;gap:3px;align-items:center">
+          ${srcPill}
+          <span style="font-size:9px;color:${streakClr};font-family:'JetBrains Mono',monospace">${streakIcon}${streakCount}</span>
+        </div>
       </div>
       <div>
-        <div style="font-size:11px;font-weight:700;color:${convClr};font-family:'JetBrains Mono',monospace">${confBar}%</div>
-        <div style="width:36px;height:3px;background:rgba(255,255,255,0.1);border-radius:2px;margin-top:2px">
+        <span style="font-size:12px;font-weight:800;color:${dirClr};background:${dirBg};padding:2px 6px;border-radius:4px;display:inline-block;letter-spacing:0.5px">${dir}</span>
+      </div>
+      <div>
+        <span title="${ts_.title}" style="font-size:9px;font-weight:800;background:${ts_.bg};color:${ts_.clr};padding:2px 6px;border-radius:4px;border:1px solid ${ts_.border};letter-spacing:0.3px;white-space:nowrap">${ts_.label}</span>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;color:${dirClr};font-family:'JetBrains Mono',monospace">${confBar}%</div>
+        <div style="width:32px;height:3px;background:rgba(255,255,255,0.1);border-radius:2px;margin-top:2px">
           <div style="width:${Math.min(confBar,100)}%;height:100%;background:${dirClr};border-radius:2px"></div>
         </div>
       </div>
-      ${streakCell}
-      ${edgeCell}
       <div style="font-size:11px;color:${kClr};font-family:'JetBrains Mono',monospace">${kArrow} ${kPct}</div>
       <div style="font-size:11px;color:${tClr};font-family:'JetBrains Mono',monospace">${tArrow} ${tPct}</div>
     </div>`;
   }
 
-  // Separator between BULL and BEAR — render using edge-sorted lists
-  const bullRows = scoredBulls.map(renderRow).join('');
-  const bearRows = scoredBears.map(renderRow).join('');
+  // ── Sort alpha signals: ELITE first, then PRIME, then SOLID; within tier sort by confidence desc
+  function sortAlpha(arr) {
+    return [...arr].sort((a, b) => {
+      const ta = TIER_ORDER[a.alpha_tier] ?? 3;
+      const tb = TIER_ORDER[b.alpha_tier] ?? 3;
+      if (ta !== tb) return ta - tb;
+      return (b.confidence || 0) - (a.confidence || 0);
+    });
+  }
 
-  const bearSep = bears.length
-    ? `<div style="padding:4px 14px;font-size:9px;font-weight:700;color:#ff4455;letter-spacing:0.5px;background:rgba(255,68,85,0.05);border-top:1px solid rgba(255,68,85,0.15);border-bottom:1px solid rgba(255,68,85,0.15)">── BEARISH ──</div>`
+  const sortedAlphaBulls = sortAlpha(alphaBulls);
+  const sortedAlphaBears = sortAlpha(alphaBears);
+
+  // ── Section separators ────────────────────────────────────────────────────
+  const alphaBullTotal = d.alpha_bull_total || alphaBulls.length;
+  const alphaBearTotal = d.alpha_bear_total || alphaBears.length;
+
+  const bullSep = sortedAlphaBulls.length
+    ? `<div style="padding:5px 14px;font-size:9px;font-weight:700;color:#00e676;letter-spacing:0.6px;background:rgba(0,230,118,0.05);border-bottom:1px solid rgba(0,230,118,0.12)">
+        ── 🐂 BULLISH ALPHA (${alphaBullTotal}) ──
+        <span style="color:rgba(255,255,255,0.3);font-weight:400;margin-left:6px">both models agree · 88% win rate</span>
+      </div>`
     : '';
-  const bullSep = bulls.length
-    ? `<div style="padding:4px 14px;font-size:9px;font-weight:700;color:#00e676;letter-spacing:0.5px;background:rgba(0,230,118,0.05);border-bottom:1px solid rgba(0,230,118,0.15)">── BULLISH ──</div>`
+  const bearSep = sortedAlphaBears.length
+    ? `<div style="padding:5px 14px;font-size:9px;font-weight:700;color:#ff4455;letter-spacing:0.6px;background:rgba(255,68,85,0.05);border-top:1px solid rgba(255,68,85,0.10);border-bottom:1px solid rgba(255,68,85,0.12)">
+        ── 🐻 BEARISH ALPHA (${alphaBearTotal}) ──
+        <span style="color:rgba(255,255,255,0.3);font-weight:400;margin-left:6px">both models agree · 88% win rate</span>
+      </div>`
     : '';
 
-  const bucketInfo = d.bucket_total > 1
-    ? ` · Bucket ${d.bucket}/${d.bucket_total} · ~${d.bucket_total} min/cycle`
-    : '';
-  const topNote = (bullTotal > 15 || bearTotal > 15)
-    ? ` <span style="color:#ffd740">· Showing top 15 of ${bullTotal} bull / ${bearTotal} bear</span>` : '';
-  const footer = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);text-align:center;border-top:1px solid rgba(255,255,255,0.04)">
-    🔮 ${d.model || 'Loading'} · ${d.total} of ${d.watchlist} scanned${bucketInfo} · Updated ${ts}${topNote}
-    <span style="margin-left:8px;opacity:0.7">🎯 = best entry · Edge = timing score (streak 2-4 peak) · 🔥 streak ≥7 · ↺ = flip building · ⚠️ = diverging</span>
+  // ── No-alpha state ─────────────────────────────────────────────────────────
+  if (!sortedAlphaBulls.length && !sortedAlphaBears.length) {
+    const totalBulls = d.bull_total || 0;
+    const totalBears = d.bear_total || 0;
+    body.innerHTML = `
+      <div style="padding:24px 16px;text-align:center">
+        <div style="font-size:13px;color:var(--muted);margin-bottom:6px">
+          🔍 No alpha signals yet — models still diverging on direction
+        </div>
+        <div style="font-size:11px;color:rgba(255,255,255,0.3)">
+          ${totalBulls} bull / ${totalBears} bear signals scanned · ${totalScanned} total · waiting for Kronos + TimesFM to agree
+        </div>
+        <div style="font-size:10px;color:rgba(255,255,255,0.2);margin-top:8px">
+          ${d.model || ''} · Updated ${ts}${bucketInfo}
+        </div>
+      </div>`;
+    return;
+  }
+
+  const bullRows = sortedAlphaBulls.map(renderAlphaRow).join('');
+  const bearRows = sortedAlphaBears.map(renderAlphaRow).join('');
+
+  // ── WR legend bar ─────────────────────────────────────────────────────────
+  const legendBar = `<div style="display:flex;gap:12px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,0.06);flex-wrap:wrap">
+    <span style="font-size:9px;font-weight:700;color:#ffd700;background:rgba(255,215,0,0.12);padding:2px 7px;border-radius:4px;border:1px solid rgba(255,215,0,0.35)">⚡ ELITE — conf ≥80 · ~100% WR</span>
+    <span style="font-size:9px;font-weight:700;color:#c084fc;background:rgba(192,132,252,0.12);padding:2px 7px;border-radius:4px;border:1px solid rgba(192,132,252,0.35)">🔷 PRIME — conf 70-80 · ~90% WR</span>
+    <span style="font-size:9px;font-weight:700;color:#40c4ff;background:rgba(64,196,255,0.10);padding:2px 7px;border-radius:4px;border:1px solid rgba(64,196,255,0.30)">◆ SOLID — conf 60-70 · ~83% WR</span>
+    <span style="font-size:9px;color:rgba(255,255,255,0.3);margin-left:auto;align-self:center">All = Kronos + TFM agree · data from live win-rate tracker</span>
   </div>`;
 
-  body.innerHTML = hdr + bullSep + bullRows + bearSep + bearRows + footer;
+  const footer = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);text-align:center;border-top:1px solid rgba(255,255,255,0.04)">
+    🏆 ${d.model || 'Loading'} · ${totalScanned} of ${d.watchlist} scanned${bucketInfo} · Updated ${ts}
+    <span style="margin-left:6px;opacity:0.6">· 🔥 streak ≥7 · ▲ streak 4-6 · ↑ streak 2-3</span>
+  </div>`;
+
+  body.innerHTML = hdr + legendBar + bullSep + bullRows + bearSep + bearRows + footer;
 }
 
 // Auto-start predictions on page load

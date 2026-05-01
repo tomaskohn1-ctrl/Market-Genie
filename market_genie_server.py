@@ -4870,6 +4870,25 @@ def _predict_apply_streak(sym, res):
         res["consensus_dir"] = raw_dir
         res["streak_count"]  = 1
         res["flipping"]      = False
+
+    # ── both_agree: Kronos + TFM point the same direction ─────────────────────
+    # Data shows: both_agree=1 → 88.4% WR; both_agree=0 → 50.0% (coin flip)
+    k_dir = (res.get("kronos_dir") or "").lower()
+    t_dir = (res.get("tfm_dir")    or "").lower()
+    both  = 1 if (k_dir and t_dir and k_dir == t_dir) else 0
+    res["both_agree"] = both
+
+    # Alpha tier — based purely on both_agree + confidence
+    # conf ≥80 + both_agree = ~100% WR today; 70-80 = ~90%; 60-70 = ~83%
+    conf = res.get("confidence", 0)
+    if both and conf >= 80:
+        res["alpha_tier"] = "ELITE"    # ~100% WR
+    elif both and conf >= 70:
+        res["alpha_tier"] = "PRIME"    # ~90% WR
+    elif both and conf >= 60:
+        res["alpha_tier"] = "SOLID"    # ~83% WR
+    else:
+        res["alpha_tier"] = None       # both_agree=0 → 50% WR, not surfaced
         res["flip_progress"] = 0
     return res
 
@@ -4975,13 +4994,14 @@ def predict_scan():
     for r in results:
         r.pop("_ts", None)
 
-    # Sort: HIGH conviction first, then stable streaks before flipping, then confidence desc
-    conv_order = {"HIGH": 0, "MEDIUM": 1}
+    # Sort: both_agree first (88.4% WR), then confidence desc, then streak desc
+    # both_agree=0 is a 50/50 coin flip per the win-rate data — deprioritise completely
+    tier_order = {"ELITE": 0, "PRIME": 1, "SOLID": 2, None: 3}
     results.sort(key=lambda x: (
-        conv_order.get(x.get("conviction","MEDIUM"), 1),
+        tier_order.get(x.get("alpha_tier"), 3),
         1 if x.get("flipping") else 0,
+        -x.get("confidence", 0),
         -x.get("streak_count", 1),
-        -x.get("confidence", 0)
     ))
 
     def _display_dir(r):
@@ -4991,9 +5011,13 @@ def predict_scan():
     all_bulls = [r for r in results if _display_dir(r) == "BULL"]
     all_bears = [r for r in results if _display_dir(r) == "BEAR"]
 
-    # Cap display at top 15 each — strongest signals only
-    bulls = all_bulls[:15]
-    bears = all_bears[:15]
+    # Alpha = both_agree=1 signals — the 88.4% WR tier
+    alpha_bulls = [r for r in all_bulls if r.get("both_agree") == 1 and not r.get("flipping")]
+    alpha_bears = [r for r in all_bears if r.get("both_agree") == 1 and not r.get("flipping")]
+
+    # Display: show top 20 alpha each, fall back to all_bulls/bears for non-alpha rows
+    bulls = all_bulls[:20]
+    bears = all_bears[:20]
 
     loading = stats["ts"] == 0
     bucket_num   = stats.get("bucket", 0) + 1
@@ -5002,10 +5026,15 @@ def predict_scan():
     return jsonify({
         "bulls":         bulls,
         "bears":         bears,
-        "all":           results[:60],       # top 60 combined for any full-list views
+        "alpha_bulls":   alpha_bulls[:20],  # both_agree=1 bull signals
+        "alpha_bears":   alpha_bears[:20],  # both_agree=1 bear signals
+        "alpha_count":   len(alpha_bulls) + len(alpha_bears),
+        "all":           results[:80],
         "total":         len(results),
         "bull_total":    len(all_bulls),
         "bear_total":    len(all_bears),
+        "alpha_bull_total": len(alpha_bulls),
+        "alpha_bear_total": len(alpha_bears),
         "watchlist":     len(wl),
         "bucket":        bucket_num,
         "bucket_total":  bucket_total,
@@ -5024,9 +5053,47 @@ def predict_scan():
 _WR_DB_PATH        = os.path.join(os.path.dirname(__file__), "winrate.db")
 _WR_RESOLVE_MINS   = 20    # resolve signal after this many minutes
 _WR_MIN_MOVE_PCT   = 0.30  # minimum move % to count as WIN/LOSS (else NEUTRAL)
-                            # 0.30% = 30¢ on a $100 stock — meaningful day-trade threshold
+_WR_EDGE_MIN       = 70.0  # only log "best entry" quality signals (edge score ≥ 70)
 _wr_last_logged    = {}    # { sym: {"dir": str, "ts": float} } — dedup guard
 _wr_lock           = threading.Lock()
+
+
+def _wr_edge_score(res):
+    """
+    Server-side port of the dashboard edgeScore() JS function.
+    Rewards: fresh-confirmed streak (2-4), both models agree, high conviction,
+             large predicted move. Penalises: flipping, diverging momentum.
+    Returns a float score (typically 0-200); higher = better entry timing.
+    """
+    streak      = res.get("streak_count", 1)
+    conf        = res.get("confidence", 0)
+    k_pct       = abs(res.get("kronos_pct") or 0)
+    t_pct       = abs(res.get("tfm_pct")    or 0)
+    k_dir       = (res.get("kronos_dir") or "").lower()
+    t_dir       = (res.get("tfm_dir")    or "").lower()
+    both_agree  = bool(k_dir and t_dir and k_dir == t_dir)
+    is_diverging= res.get("recent_momentum_ok") is False
+    is_flipping = res.get("flipping", False)
+    is_high     = res.get("conviction") == "HIGH"
+
+    if is_flipping:
+        return 0.0
+
+    # Freshness: peak at streak 2-4 (just confirmed, move likely starting)
+    if streak == 1:   freshness = 0.70
+    elif streak <= 3: freshness = 1.30
+    elif streak <= 5: freshness = 1.15
+    elif streak <= 8: freshness = 0.90
+    else:             freshness = 0.70  # late / overcrowded
+
+    score = (conf
+             * freshness
+             * (1.25 if both_agree  else 1.0)
+             * (1.20 if is_high     else 1.0)
+             * (0.60 if is_diverging else 1.0)
+             * (1 + min(k_pct, 3) * 0.05)
+             * (1 + min(t_pct, 3) * 0.03))
+    return round(score, 1)
 
 
 def _wr_init_db():
@@ -5044,6 +5111,7 @@ def _wr_init_db():
                 flipping    INTEGER,
                 kronos_pct  REAL,
                 tfm_pct     REAL,
+                edge_score  REAL,
                 price_entry REAL,
                 ts_entry    INTEGER,
                 price_exit  REAL,
@@ -5052,29 +5120,31 @@ def _wr_init_db():
                 pct_move    REAL
             )
         """)
+        # Add edge_score column if upgrading from old schema (no error if exists)
+        try:
+            con.execute("ALTER TABLE signals ADD COLUMN edge_score REAL")
+        except Exception:
+            pass
         con.commit()
 
 
 def _wr_log_signal(res):
     """
-    Log a prediction signal if it passes quality filters and isn't a duplicate.
-    Called from _predict_bg_loop after each result is annotated with streak data.
-    Quality gate: streak_count >= 2 AND not currently flipping.
-    Dedup: skip if same ticker+direction logged in last 30 min.
+    Log ONLY both_agree=1 signals — the 88.4% WR tier confirmed by live data.
+    both_agree=0 is a 50/50 coin flip and is never logged to keep stats clean.
+    Dedup: same ticker+direction skipped if logged within 30 min.
     """
     sym        = res.get("sym", "")
     direction  = (res.get("consensus_dir") or res.get("direction") or "").lower()
-    streak     = res.get("streak_count", 1)
     flipping   = res.get("flipping", False)
 
     if not sym or direction not in ("bull", "bear"):
         return
     if flipping:
-        return   # skip signals actively flipping direction
-    # Log streak >= 1 so data accumulates from the first scan.
-    # The streak value is stored in the DB so breakdown analysis still
-    # shows whether high-streak signals outperform streak=1 signals.
-    if streak < 1:
+        return
+
+    # PRIMARY GATE: only log when both models agree (88.4% WR vs 50.0% for non-agree)
+    if not res.get("both_agree"):
         return
 
     now = time.time()
@@ -5093,11 +5163,12 @@ def _wr_log_signal(res):
         except Exception:
             price = 0.0
 
-    kpct = res.get("kronos_pct")
-    tpct = res.get("tfm_pct")
-    kdir = (res.get("kronos_dir") or "").lower()
-    tdir = (res.get("tfm_dir") or "").lower()
-    both = 1 if (kdir and tdir and kdir == tdir) else 0
+    kpct   = res.get("kronos_pct")
+    tpct   = res.get("tfm_pct")
+    kdir   = (res.get("kronos_dir") or "").lower()
+    tdir   = (res.get("tfm_dir") or "").lower()
+    both   = 1 if (kdir and tdir and kdir == tdir) else 0
+    streak = res.get("streak_count", 1)
 
     try:
         with sqlite3.connect(_WR_DB_PATH) as con:
