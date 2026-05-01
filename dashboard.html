@@ -5409,12 +5409,22 @@ async function pollLiveSurges() {
     const body    = document.getElementById('surgeBody');
     if (!badge || !body) return;
 
-    // Update second-bar counter
-    if (secEl && d.second_bars > 0) {
-      secEl.textContent = `${d.second_bars.toLocaleString()} A-bars`;
-    }
+    const surges    = d.surges || [];
+    const mode      = d.mode || 'waiting';
+    const amBars    = d.am_bars || 0;
+    const secBars   = d.second_bars || 0;
+    const liveTix   = d.live_tickers || 0;
 
-    const surges = d.surges || [];
+    // Update feed mode indicator
+    if (secEl) {
+      if (secBars > 0) {
+        secEl.textContent = `${secBars.toLocaleString()} A-bars (per-sec)`;
+        secEl.style.color = '#00e676';
+      } else if (amBars > 0) {
+        secEl.textContent = `${amBars.toLocaleString()} min-bars · ${liveTix} tickers`;
+        secEl.style.color = 'var(--muted)';
+      }
+    }
 
     // Badge
     if (!d.connected) {
@@ -5436,9 +5446,17 @@ async function pollLiveSurges() {
 
     if (surges.length === 0) {
       if (d.connected) {
-        body.innerHTML = `<div style="text-align:center;padding:14px;color:var(--muted);font-size:11px">
-          📡 Monitoring ${d.second_bars > 0 ? d.second_bars.toLocaleString() + ' second bars processed' : 'second-level bars'}…
-          No volume surges detected right now.
+        let modeMsg = '';
+        if (mode === 'second_bars') {
+          modeMsg = `⚡ Per-second mode: ${secBars.toLocaleString()} A-bars processed across ${liveTix} tickers.`;
+        } else if (mode === 'minute_bars') {
+          modeMsg = `📊 Minute-bar mode: watching ${liveTix} tickers via AM.* feed (${amBars.toLocaleString()} bars). ` +
+                    `<span style="color:#ffd740">A.* per-second channel not active on this plan — surges fire on completed minute spikes instead.</span>`;
+        } else {
+          modeMsg = `⏳ Waiting for first bars… WebSocket connected, accumulating history.`;
+        }
+        body.innerHTML = `<div style="text-align:center;padding:14px;color:var(--muted);font-size:11px;line-height:1.7">
+          ${modeMsg}<br>No volume surges (3× avg) detected right now.
         </div>`;
       }
       return;
@@ -5488,7 +5506,7 @@ async function pollLiveSurges() {
         </div>
         <div style="font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace;text-align:right">
           ${isActive ? '<span style="color:#ffd740">● LIVE</span>' : ageStr}<br>
-          ${s.elapsed || ''}s into min
+          ${s.source === 'AM' ? 'full min' : (s.elapsed || '') + 's into min'}
         </div>
       </div>`;
     });

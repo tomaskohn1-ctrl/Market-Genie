@@ -642,10 +642,36 @@ def _ws_on_message(ws, raw):
                             "ts":      now,
                             "chg_pct": chg_pct,
                         }
-                        # Also feed completed minute vol into history baseline
+                        # Feed completed minute vol into history baseline
                         if bar_vol > 0:
                             hist = _ws_minute_hist.setdefault(sym, _deque(maxlen=8))
                             hist.append(bar_vol)
+                            # ── AM-based volume surge fallback ──────────────────
+                            # Used when A.* per-second channel is unavailable.
+                            # Compares this completed minute's volume to the 8-bar
+                            # average. Fires at same 3× threshold as second-bar path.
+                            if len(hist) >= 3:
+                                avg_vol = sum(list(hist)[:-1]) / (len(hist) - 1)
+                                if avg_vol > 0:
+                                    ratio = bar_vol / avg_vol
+                                    if ratio >= _SURGE_RATIO_MIN:
+                                        am_open = float(m.get("o") or close)
+                                        dirn    = "bull" if close >= am_open else "bear"
+                                        _ws_surges[sym] = {
+                                            "ratio":   round(ratio, 1),
+                                            "vol":     bar_vol,
+                                            "avg":     round(avg_vol),
+                                            "elapsed": 60,       # full minute bar
+                                            "ts":      now,
+                                            "dir":     dirn,
+                                            "price":   close,
+                                            "source":  "AM",     # distinguish from A.* source
+                                        }
+                                    else:
+                                        # Clear stale AM surge if ratio drops below threshold
+                                        if sym in _ws_surges and _ws_surges[sym].get("source") == "AM":
+                                            if (now - _ws_surges[sym]["ts"]) > _SURGE_TTL:
+                                                del _ws_surges[sym]
                     _ws_status["bars"] += 1
                     _ws_status["ts"]    = int(now)
 
@@ -709,23 +735,51 @@ def api_live_prices():
 
 @app.route("/api/live/surges")
 def api_live_surges():
-    """Return active mid-bar volume surge alerts from second-bar accumulator."""
+    """Return active volume surge alerts.
+    Sources: A.* per-second bars (if plan supports it) OR AM.* completed-minute
+    volume spikes as fallback. Both use the same 3× ratio threshold."""
     now = time.time()
     with _ws_lock:
-        # Only return surges seen within the last SURGE_TTL seconds
         active = {
             sym: surge
             for sym, surge in _ws_surges.items()
             if (now - surge["ts"]) <= _SURGE_TTL
         }
-    # Sort by ratio descending
+        am_bars     = _ws_status["bars"]
+        sec_bars    = _ws_status["second_bars"]
+        live_tickers = len(_ws_live)
     ranked = sorted(active.items(), key=lambda x: x[1]["ratio"], reverse=True)
+    # Determine which mode is active
+    mode = "second_bars" if sec_bars > 0 else ("minute_bars" if am_bars > 0 else "waiting")
     return jsonify({
-        "surges":     [{"sym": sym, **data} for sym, data in ranked],
-        "count":      len(ranked),
-        "connected":  _ws_status["connected"],
-        "second_bars": _ws_status["second_bars"],
-        "ts":         int(now),
+        "surges":      [{"sym": sym, **data} for sym, data in ranked],
+        "count":       len(ranked),
+        "connected":   _ws_status["connected"],
+        "second_bars": sec_bars,
+        "am_bars":     am_bars,
+        "live_tickers": live_tickers,
+        "mode":        mode,   # "second_bars" | "minute_bars" | "waiting"
+        "ts":          int(now),
+    })
+
+
+@app.route("/api/debug/ws")
+def api_debug_ws():
+    """Diagnostic endpoint — shows raw WebSocket state for troubleshooting."""
+    now = time.time()
+    with _ws_lock:
+        live_sample = {k: v for k, v in list(_ws_live.items())[:10]}
+        surge_sample = dict(_ws_surges)
+        hist_sample = {k: list(v) for k, v in list(_ws_minute_hist.items())[:10]}
+    return jsonify({
+        "status":        _ws_status,
+        "live_count":    len(_ws_live),
+        "live_sample":   live_sample,
+        "surge_count":   len(_ws_surges),
+        "surges":        surge_sample,
+        "hist_sample":   hist_sample,
+        "sub_list_preview": _ws_build_sub_list()[:200],
+        "ts":            int(now),
     })
 
 
