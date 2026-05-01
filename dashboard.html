@@ -2474,6 +2474,22 @@
     </div>
   </div>
 
+  <!-- ══ WIN RATE TRACKER ══ -->
+  <div class="card" data-tab="signal" id="winrateCard" style="border-color:rgba(0,200,160,0.35);box-shadow:0 0 18px rgba(0,200,160,0.08)">
+    <div class="card-header" style="background:linear-gradient(135deg,rgba(0,200,160,0.10),rgba(0,160,255,0.07))">
+      <div class="card-title"><span class="card-icon">📊</span> Win Rate Tracker <span style="font-size:10px;font-weight:400;color:var(--muted)">signal accuracy over time</span></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="winrateBadge" class="card-tag" style="background:rgba(0,200,160,0.15);color:#00c8a0;border:1px solid rgba(0,200,160,0.3)">Loading…</span>
+        <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="loadWinRate()">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="card-body" style="padding:0">
+      <div id="winrateBody">
+        <div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">⏳ Collecting signal data… Win rate populates after 20 min per signal.</div>
+      </div>
+    </div>
+  </div>
+
   <!-- ══ LIVE SURGES ══ -->
   <div class="card" data-tab="signal" id="surgeCard" style="border-color:rgba(255,200,0,0.35);box-shadow:0 0 18px rgba(255,200,0,0.08)">
     <div class="card-header" style="background:linear-gradient(135deg,rgba(255,180,0,0.10),rgba(255,80,0,0.07))">
@@ -5422,6 +5438,170 @@ setTimeout(pollLivePrices, 2000);
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ══════════════════════════════════════════════════════════════════════════════
+// ── WIN RATE TRACKER ─────────────────────────────────────────────────────────
+let _wrData = null;
+let _wrHistData = null;
+
+async function loadWinRate() {
+  try {
+    const [statsRes, histRes] = await Promise.all([
+      fetch('/api/winrate'),
+      fetch('/api/winrate/history?limit=50')
+    ]);
+    _wrData     = await statsRes.json();
+    _wrHistData = await histRes.json();
+    renderWinRate();
+  } catch (e) {
+    console.warn('Win rate load error', e);
+  }
+}
+
+function renderWinRate() {
+  const d    = _wrData;
+  const hist = _wrHistData;
+  const badge = document.getElementById('winrateBadge');
+  const body  = document.getElementById('winrateBody');
+  if (!d || !body) return;
+
+  const ov = d.overall || {};
+  const wr = ov.win_rate;
+
+  // Badge
+  if (wr === null || ov.total === 0) {
+    badge.textContent = `⏳ ${d.pending || 0} pending`;
+    badge.style.color = 'var(--muted)';
+  } else {
+    const clr = wr >= 55 ? '#00e676' : wr >= 45 ? '#ffd740' : '#ff4455';
+    badge.textContent = `${wr}% win rate · ${ov.total} resolved`;
+    badge.style.color = clr;
+    badge.style.background = wr >= 55 ? 'rgba(0,230,118,0.12)' : wr >= 45 ? 'rgba(255,215,0,0.12)' : 'rgba(255,68,85,0.12)';
+    badge.style.borderColor = clr + '55';
+  }
+
+  // ── Gauge row ──
+  const gaugeVal = wr !== null ? wr : 0;
+  const gaugeClr = gaugeVal >= 55 ? '#00e676' : gaugeVal >= 45 ? '#ffd740' : '#ff4455';
+  const gaugeHtml = wr !== null ? `
+    <div style="display:flex;align-items:center;gap:12px;padding:14px 16px 6px">
+      <div style="position:relative;width:72px;height:72px;flex-shrink:0">
+        <svg viewBox="0 0 72 72" style="width:72px;height:72px;transform:rotate(-90deg)">
+          <circle cx="36" cy="36" r="30" fill="none" stroke="rgba(255,255,255,0.07)" stroke-width="8"/>
+          <circle cx="36" cy="36" r="30" fill="none" stroke="${gaugeClr}" stroke-width="8"
+            stroke-dasharray="${Math.round(gaugeVal * 1.884)} 188.4"
+            stroke-linecap="round" style="transition:stroke-dasharray 0.6s ease"/>
+        </svg>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;color:${gaugeClr}">${gaugeVal}%</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 18px;font-size:11px">
+        <div><span style="color:var(--muted)">Wins</span> <b style="color:#00e676">${ov.wins}</b></div>
+        <div><span style="color:var(--muted)">Losses</span> <b style="color:#ff4455">${ov.losses}</b></div>
+        <div><span style="color:var(--muted)">Neutral</span> <b style="color:var(--muted)">${ov.neutral}</b></div>
+        <div><span style="color:var(--muted)">Pending</span> <b style="color:#ffd740">${d.pending}</b></div>
+      </div>
+    </div>` : `<div style="padding:12px 16px;color:var(--muted);font-size:11px">⏳ ${d.pending} signals pending resolution (20 min window)…</div>`;
+
+  // ── Breakdown table ──
+  function breakdownRow(label, s, note='') {
+    if (!s || s.total === 0) return '';
+    const w = s.win_rate;
+    const clr = w === null ? 'var(--muted)' : w >= 55 ? '#00e676' : w >= 45 ? '#ffd740' : '#ff4455';
+    const wrStr = w !== null ? `<b style="color:${clr}">${w}%</b>` : '<span style="color:var(--muted)">—</span>';
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
+      <td style="padding:5px 10px;color:var(--text-hi);font-size:11px">${label}</td>
+      <td style="padding:5px 10px;text-align:center;font-size:11px">${wrStr}</td>
+      <td style="padding:5px 10px;text-align:center;font-size:10px;color:var(--muted)">${s.wins}W / ${s.losses}L / ${s.neutral}N</td>
+      <td style="padding:5px 10px;text-align:center;font-size:10px;color:var(--muted)">${note}</td>
+    </tr>`;
+  }
+
+  const bc = d.by_conviction || {};
+  const bs = d.by_streak || {};
+  const ba = d.by_agreement || {};
+  const bd = d.by_direction || {};
+
+  const tableHtml = `
+    <table style="width:100%;border-collapse:collapse;font-size:11px">
+      <thead>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.08)">
+          <th style="padding:5px 10px;text-align:left;font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:0.5px">Filter</th>
+          <th style="padding:5px 10px;text-align:center;font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:0.5px">Win Rate</th>
+          <th style="padding:5px 10px;text-align:center;font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:0.5px">W / L / N</th>
+          <th style="padding:5px 10px;text-align:center;font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:0.5px">Note</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="background:rgba(255,255,255,0.02)">
+          <td colspan="4" style="padding:4px 10px;font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">BY CONVICTION</td>
+        </tr>
+        ${breakdownRow('HIGH conviction', bc.HIGH, 'Strong edge expected')}
+        ${breakdownRow('MEDIUM conviction', bc.MEDIUM, '')}
+        <tr style="background:rgba(255,255,255,0.02)">
+          <td colspan="4" style="padding:4px 10px;font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">BY STREAK (cycles confirmed)</td>
+        </tr>
+        ${breakdownRow('Streak = 2', bs['2'], 'New confirmation')}
+        ${breakdownRow('Streak 3–4', bs['3-4'], 'Established')}
+        ${breakdownRow('Streak 5+', bs['5+'], 'Strongest')}
+        <tr style="background:rgba(255,255,255,0.02)">
+          <td colspan="4" style="padding:4px 10px;font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">BY MODEL AGREEMENT</td>
+        </tr>
+        ${breakdownRow('Both Agree ✓', ba.both_agree, 'Kronos + LinReg align')}
+        ${breakdownRow('Single model', ba.single, '')}
+        <tr style="background:rgba(255,255,255,0.02)">
+          <td colspan="4" style="padding:4px 10px;font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">BY DIRECTION</td>
+        </tr>
+        ${breakdownRow('🟢 Bull signals', bd.bull, '')}
+        ${breakdownRow('🔴 Bear signals', bd.bear, '')}
+      </tbody>
+    </table>`;
+
+  // ── Recent history table ──
+  const signals = (hist && hist.signals) ? hist.signals : [];
+  const histRows = signals.slice(0, 30).map(s => {
+    const isBull  = s.direction === 'bull';
+    const dirClr  = isBull ? '#00e676' : '#ff4455';
+    const dirLbl  = isBull ? '▲ BULL' : '▼ BEAR';
+    const outClr  = s.outcome === 'WIN' ? '#00e676' : s.outcome === 'LOSS' ? '#ff4455' : s.outcome === 'PENDING' ? '#ffd740' : 'var(--muted)';
+    const outIcon = s.outcome === 'WIN' ? '✅' : s.outcome === 'LOSS' ? '❌' : s.outcome === 'PENDING' ? '⏳' : '➖';
+    const move    = s.pct_move != null ? `${s.pct_move > 0 ? '+' : ''}${s.pct_move.toFixed(2)}%` : '—';
+    const age     = s.ts_entry ? Math.round((Date.now()/1000 - s.ts_entry)/60) : '?';
+    const ba      = s.both_agree ? '<span style="color:#00e676;font-size:9px">✓</span>' : '';
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,0.03)" onclick="openTickerChart('${s.sym}')" style="cursor:pointer">
+      <td style="padding:4px 8px;font-size:11px;font-weight:700;color:var(--text-hi)">${s.sym}</td>
+      <td style="padding:4px 8px;font-size:10px;color:${dirClr}">${dirLbl}</td>
+      <td style="padding:4px 8px;font-size:10px;color:var(--muted)">${s.confidence}% ${ba}</td>
+      <td style="padding:4px 8px;font-size:10px;color:var(--muted)">${s.streak}●</td>
+      <td style="padding:4px 8px;font-size:10px;color:${outClr}">${outIcon} ${s.outcome}</td>
+      <td style="padding:4px 8px;font-size:10px;color:var(--muted)">${move}</td>
+      <td style="padding:4px 8px;font-size:10px;color:var(--muted)">${age}m ago</td>
+    </tr>`;
+  }).join('');
+
+  const histHtml = signals.length > 0 ? `
+    <div style="border-top:1px solid rgba(255,255,255,0.06);padding:8px 10px 4px;font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">Recent Signals</div>
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06)">
+          <th style="padding:4px 8px;text-align:left;font-size:9px;color:var(--muted);font-weight:600">SYM</th>
+          <th style="padding:4px 8px;text-align:left;font-size:9px;color:var(--muted);font-weight:600">DIR</th>
+          <th style="padding:4px 8px;text-align:left;font-size:9px;color:var(--muted);font-weight:600">CONF</th>
+          <th style="padding:4px 8px;text-align:left;font-size:9px;color:var(--muted);font-weight:600">STREAK</th>
+          <th style="padding:4px 8px;text-align:left;font-size:9px;color:var(--muted);font-weight:600">RESULT</th>
+          <th style="padding:4px 8px;text-align:left;font-size:9px;color:var(--muted);font-weight:600">MOVE</th>
+          <th style="padding:4px 8px;text-align:left;font-size:9px;color:var(--muted);font-weight:600">AGE</th>
+        </tr>
+      </thead>
+      <tbody>${histRows}</tbody>
+    </table>
+    </div>` : '';
+
+  body.innerHTML = gaugeHtml + tableHtml + histHtml;
+}
+
+// Load win rate on page load and every 3 minutes
+loadWinRate();
+setInterval(loadWinRate, 180000);
+
 // ── LIVE SURGES — second-bar mid-bar volume spike feed ────────────────────────
 // Polls /api/live/surges every 3s and renders a mini alert card.
 // A surge fires when current-minute volume pace ≥ 3× the 8-bar average.

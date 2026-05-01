@@ -17,6 +17,7 @@ import gc
 import time
 import json
 import math
+import sqlite3
 import threading
 import warnings
 import requests
@@ -4873,6 +4874,11 @@ def _predict_bg_loop():
                         res["_ts"] = time.time()
                         _predict_apply_streak(sym, res)
                         bucket_results[sym] = res
+                        # Log to win rate tracker (quality-gated inside _wr_log_signal)
+                        try:
+                            _wr_log_signal(res)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -4971,6 +4977,283 @@ def predict_scan():
         "model":         stats["model"],
         "loading":       loading,
     })
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── WIN RATE TRACKER ──────────────────────────────────────────────────────────
+# Logs every confirmed prediction signal (streak ≥ 2) to SQLite.
+# A background thread resolves each signal 20 min later by comparing
+# actual price move to the predicted direction.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_WR_DB_PATH        = os.path.join(os.path.dirname(__file__), "winrate.db")
+_WR_RESOLVE_MINS   = 20    # resolve signal after this many minutes
+_WR_MIN_MOVE_PCT   = 0.05  # minimum move % to count as WIN/LOSS (else NEUTRAL)
+_wr_last_logged    = {}    # { sym: {"dir": str, "ts": float} } — dedup guard
+_wr_lock           = threading.Lock()
+
+
+def _wr_init_db():
+    """Create the signals table if it doesn't exist."""
+    with sqlite3.connect(_WR_DB_PATH) as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS signals (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                sym         TEXT    NOT NULL,
+                direction   TEXT    NOT NULL,
+                confidence  REAL,
+                conviction  TEXT,
+                streak      INTEGER,
+                both_agree  INTEGER,
+                flipping    INTEGER,
+                kronos_pct  REAL,
+                tfm_pct     REAL,
+                price_entry REAL,
+                ts_entry    INTEGER,
+                price_exit  REAL,
+                ts_exit     INTEGER,
+                outcome     TEXT    DEFAULT 'PENDING',
+                pct_move    REAL
+            )
+        """)
+        con.commit()
+
+
+def _wr_log_signal(res):
+    """
+    Log a prediction signal if it passes quality filters and isn't a duplicate.
+    Called from _predict_bg_loop after each result is annotated with streak data.
+    Quality gate: streak_count >= 2 AND not currently flipping.
+    Dedup: skip if same ticker+direction logged in last 30 min.
+    """
+    sym        = res.get("sym", "")
+    direction  = (res.get("consensus_dir") or res.get("direction") or "").lower()
+    streak     = res.get("streak_count", 1)
+    flipping   = res.get("flipping", False)
+
+    if not sym or direction not in ("bull", "bear"):
+        return
+    if streak < 2 or flipping:
+        return   # only log confirmed, non-flipping signals
+
+    now = time.time()
+    with _wr_lock:
+        last = _wr_last_logged.get(sym, {})
+        if last.get("dir") == direction and (now - last.get("ts", 0)) < 1800:
+            return   # same direction within 30 min → skip
+        _wr_last_logged[sym] = {"dir": direction, "ts": now}
+
+    # Get current price for entry
+    price = res.get("last_price") or res.get("price") or 0.0
+    if not price:
+        try:
+            fi = yf.Ticker(sym).fast_info
+            price = float(getattr(fi, "last_price", 0) or getattr(fi, "previous_close", 0) or 0)
+        except Exception:
+            price = 0.0
+
+    kpct = res.get("kronos_pct")
+    tpct = res.get("tfm_pct")
+    kdir = (res.get("kronos_dir") or "").lower()
+    tdir = (res.get("tfm_dir") or "").lower()
+    both = 1 if (kdir and tdir and kdir == tdir) else 0
+
+    try:
+        with sqlite3.connect(_WR_DB_PATH) as con:
+            con.execute("""
+                INSERT INTO signals
+                    (sym, direction, confidence, conviction, streak, both_agree,
+                     flipping, kronos_pct, tfm_pct, price_entry, ts_entry)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                sym, direction,
+                round(res.get("confidence", 0), 1),
+                res.get("conviction", "MEDIUM"),
+                streak, both, 0,
+                round(kpct, 3) if kpct is not None else None,
+                round(tpct, 3) if tpct is not None else None,
+                round(price, 4), int(now),
+            ))
+            con.commit()
+    except Exception as e:
+        print(f"[WinRate] Log error: {e}")
+
+
+def _wr_resolve_pending():
+    """
+    Check PENDING signals that are old enough and resolve them.
+    WIN  = price moved >= _WR_MIN_MOVE_PCT in predicted direction
+    LOSS = price moved >= _WR_MIN_MOVE_PCT against predicted direction
+    NEUTRAL = price barely moved
+    """
+    cutoff = int(time.time()) - _WR_RESOLVE_MINS * 60
+    try:
+        with sqlite3.connect(_WR_DB_PATH) as con:
+            rows = con.execute("""
+                SELECT id, sym, direction, price_entry
+                FROM signals
+                WHERE outcome = 'PENDING' AND ts_entry <= ?
+            """, (cutoff,)).fetchall()
+
+        for row_id, sym, direction, price_entry in rows:
+            if not price_entry:
+                with sqlite3.connect(_WR_DB_PATH) as con:
+                    con.execute("UPDATE signals SET outcome='EXPIRED' WHERE id=?", (row_id,))
+                    con.commit()
+                continue
+            # Fetch current price
+            price_now = 0.0
+            try:
+                with _ws_lock:
+                    live = _ws_live.get(sym.upper(), {})
+                if live.get("c"):
+                    price_now = float(live["c"])
+                else:
+                    fi = yf.Ticker(sym).fast_info
+                    price_now = float(getattr(fi, "last_price", 0) or 0)
+            except Exception:
+                pass
+
+            if not price_now:
+                continue
+
+            pct_move = round((price_now - price_entry) / price_entry * 100, 3)
+            if direction == "bull":
+                if pct_move >= _WR_MIN_MOVE_PCT:
+                    outcome = "WIN"
+                elif pct_move <= -_WR_MIN_MOVE_PCT:
+                    outcome = "LOSS"
+                else:
+                    outcome = "NEUTRAL"
+            else:  # bear
+                if pct_move <= -_WR_MIN_MOVE_PCT:
+                    outcome = "WIN"
+                elif pct_move >= _WR_MIN_MOVE_PCT:
+                    outcome = "LOSS"
+                else:
+                    outcome = "NEUTRAL"
+
+            with sqlite3.connect(_WR_DB_PATH) as con:
+                con.execute("""
+                    UPDATE signals
+                    SET outcome=?, price_exit=?, ts_exit=?, pct_move=?
+                    WHERE id=?
+                """, (outcome, round(price_now, 4), int(time.time()), pct_move, row_id))
+                con.commit()
+
+    except Exception as e:
+        print(f"[WinRate] Resolve error: {e}")
+
+
+def _wr_resolve_loop():
+    """Background thread: resolve pending signals every 2 minutes."""
+    _wr_init_db()
+    while True:
+        try:
+            _wr_resolve_pending()
+        except Exception as e:
+            print(f"[WinRate] Loop error: {e}")
+        time.sleep(120)
+
+
+def _wr_start():
+    t = threading.Thread(target=_wr_resolve_loop, daemon=True)
+    t.start()
+    print("[WinRate] Tracker started")
+
+# Start win rate tracker on import
+_wr_start()
+
+
+@app.route("/api/winrate")
+def api_winrate():
+    """Aggregated win rate stats broken down by conviction, streak, and model agreement."""
+    try:
+        _wr_init_db()
+        with sqlite3.connect(_WR_DB_PATH) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute("""
+                SELECT * FROM signals
+                WHERE outcome IN ('WIN','LOSS','NEUTRAL')
+                ORDER BY ts_entry DESC
+            """).fetchall()
+            pending = con.execute(
+                "SELECT COUNT(*) FROM signals WHERE outcome='PENDING'"
+            ).fetchone()[0]
+
+        data = [dict(r) for r in rows]
+
+        def _stats(subset):
+            wins    = sum(1 for r in subset if r["outcome"] == "WIN")
+            losses  = sum(1 for r in subset if r["outcome"] == "LOSS")
+            neutral = sum(1 for r in subset if r["outcome"] == "NEUTRAL")
+            total   = wins + losses + neutral
+            decided = wins + losses
+            wr = round(wins / decided * 100, 1) if decided > 0 else None
+            avg_move = round(sum(abs(r["pct_move"] or 0) for r in subset) / total, 3) if total else 0
+            return {"wins": wins, "losses": losses, "neutral": neutral,
+                    "total": total, "win_rate": wr, "avg_move_pct": avg_move}
+
+        overall = _stats(data)
+
+        # Breakdown by conviction
+        by_conviction = {
+            "HIGH":   _stats([r for r in data if r["conviction"] == "HIGH"]),
+            "MEDIUM": _stats([r for r in data if r["conviction"] == "MEDIUM"]),
+        }
+
+        # Breakdown by streak bucket
+        by_streak = {
+            "2":   _stats([r for r in data if r["streak"] == 2]),
+            "3-4": _stats([r for r in data if 3 <= r["streak"] <= 4]),
+            "5+":  _stats([r for r in data if r["streak"] >= 5]),
+        }
+
+        # Breakdown by model agreement
+        by_agreement = {
+            "both_agree": _stats([r for r in data if r["both_agree"] == 1]),
+            "single":     _stats([r for r in data if r["both_agree"] == 0]),
+        }
+
+        # Breakdown by direction
+        by_direction = {
+            "bull": _stats([r for r in data if r["direction"] == "bull"]),
+            "bear": _stats([r for r in data if r["direction"] == "bear"]),
+        }
+
+        return jsonify({
+            "overall":       overall,
+            "by_conviction": by_conviction,
+            "by_streak":     by_streak,
+            "by_agreement":  by_agreement,
+            "by_direction":  by_direction,
+            "pending":       pending,
+            "ts":            int(time.time()),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/winrate/history")
+def api_winrate_history():
+    """Recent 100 resolved + pending signals for the history table."""
+    try:
+        _wr_init_db()
+        limit = int(request.args.get("limit", 100))
+        with sqlite3.connect(_WR_DB_PATH) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute("""
+                SELECT id, sym, direction, confidence, conviction, streak,
+                       both_agree, kronos_pct, tfm_pct,
+                       price_entry, price_exit, ts_entry, ts_exit,
+                       outcome, pct_move
+                FROM signals
+                ORDER BY ts_entry DESC
+                LIMIT ?
+            """, (limit,)).fetchall()
+        return jsonify({"signals": [dict(r) for r in rows], "ts": int(time.time())})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 # ── TimesFM — lazy-loaded Google foundation model for 5-bar price forecast ─────
 # Uses timesfm 1.x PyPI API (TimesFmHparams / TimesFmCheckpoint / .forecast())
