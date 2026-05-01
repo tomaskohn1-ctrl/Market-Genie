@@ -4666,40 +4666,43 @@ def _predict_fetch_closes(sym, bars=90):
                 if len(closes) >= 20:
                     last_p = float(closes[-1])
                     if last_p > 0:
-                        return closes[-bars:], last_p
+                        return closes[-bars:], last_p, "massive"
 
         # Fall back to yfinance
         df = yf.Ticker(sym).history(period="2d", interval="1m", prepost=True)
         if df is None or len(df) < 20:
-            return None, None
+            return None, None, None
         closes = df["Close"].values.astype(float)
         last_p = float(closes[-1])
         if last_p <= 0:
-            return None, None
-        return closes[-bars:], last_p
+            return None, None, None
+        return closes[-bars:], last_p, "yfinance"
     except Exception:
-        return None, None
+        return None, None, None
 
 def _predict_one(sym):
     """Run Kronos + TimesFM on one ticker. Returns result dict or None."""
     import numpy as np
     import pandas as pd
 
-    closes, last_p = _predict_fetch_closes(sym)
+    closes, last_p, price_source = _predict_fetch_closes(sym)
     if closes is None or len(closes) < 20:
         return None
 
-    kronos_dir = None
-    kronos_pct = None
+    kronos_dir  = None
+    kronos_pct  = None
     kronos_prob = None
-    tfm_dir    = None
-    tfm_pct    = None
+    tfm_dir     = None
+    tfm_pct     = None
+    ohlcv_source = "none"
 
     # ── Kronos (5-min OHLCV, 20-bar ahead) ───────────────────────────────────
     try:
         predictor = _kronos_predictor
         if predictor is not None:
             df_k, x_ts = _get_kronos_ohlcv(sym, lookback=200)
+            if df_k is not None:
+                ohlcv_source = "massive" if MASSIVE_KEY else "yfinance"
             if df_k is not None and len(df_k) >= 50:
                 y_ts = _make_future_timestamps(x_ts.iloc[-1], n_bars=4, interval_min=5)
                 pred_df = predictor.predict(
@@ -4794,6 +4797,19 @@ def _predict_one(sym):
     agr_score  = (bull_votes / total * 60) if direction == "BULL" else (bear_votes / total * 60)
     confidence = round(mag_score + agr_score, 1)
 
+    # ── Data source — what feeds this prediction ─────────────────────────────
+    # ws_live   = Massive WebSocket, sub-second (best)
+    # massive   = Massive REST 1-min bars, real-time (good)
+    # yfinance  = yfinance .history(), typically 1-5 min lag (acceptable)
+    with _ws_lock:
+        has_ws = sym in _ws_live
+    if has_ws:
+        data_source = "ws_live"
+    elif price_source == "massive":
+        data_source = "massive"
+    else:
+        data_source = "yfinance"
+
     return {
         "sym":                sym,
         "direction":          direction,
@@ -4806,7 +4822,8 @@ def _predict_one(sym):
         "kronos_prob":        kronos_prob,
         "tfm_dir":            tfm_dir,
         "tfm_pct":            tfm_pct,
-        "recent_momentum_ok": recent_momentum_ok,  # False = price bars contradict model
+        "recent_momentum_ok": recent_momentum_ok,
+        "data_source":        data_source,   # ws_live | massive | yfinance
         "_ts":                time.time(),
     }
 

@@ -5398,6 +5398,16 @@ function renderPredictions() {
     const edgeVal    = r._edge || 0;
     const isTopPick  = topPicks.has(r.sym);
 
+    // ── Data source pill ─────────────────────────────────────────────────────
+    const src = r.data_source || '';
+    const srcLabel = src === 'ws_live' ? '⚡ WS' : src === 'massive' ? '📡 REST' : src === 'yfinance' ? '🕐 YF' : '';
+    const srcTitle = src === 'ws_live' ? 'WebSocket live — sub-second price feed'
+                   : src === 'massive' ? 'Massive REST — real-time 1-min bars'
+                   : src === 'yfinance' ? 'yFinance — typically 1-5 min lag'
+                   : 'Unknown source';
+    const srcClr   = src === 'ws_live' ? '#00e676' : src === 'massive' ? '#40c4ff' : '#ffd740';
+    const srcPill  = srcLabel ? `<span title="${srcTitle}" style="font-size:8px;color:${srcClr};background:${srcClr}18;border:1px solid ${srcClr}33;padding:1px 4px;border-radius:3px;font-weight:600;letter-spacing:0.2px">${srcLabel}</span>` : '';
+
     // Edge score cell — colour-tiered
     const edgeClr  = edgeVal >= 100 ? '#ffd700' : edgeVal >= 80 ? '#00e676' : edgeVal >= 60 ? '#ffd740' : 'var(--muted)';
     const edgeBg   = edgeVal >= 100 ? 'rgba(255,215,0,0.15)'  : edgeVal >= 80 ? 'rgba(0,230,118,0.12)' : edgeVal >= 60 ? 'rgba(255,215,0,0.08)' : 'rgba(255,255,255,0.03)';
@@ -5411,7 +5421,10 @@ function renderPredictions() {
       : '';
 
     return `<div style="display:grid;grid-template-columns:70px 90px 60px 56px 64px 1fr 1fr;gap:4px;padding:7px 14px;border-bottom:1px solid rgba(255,255,255,0.04);align-items:center;cursor:pointer;transition:background 0.15s;background:${rowBg};${rowBorder}" onmouseenter="this.style.background='rgba(255,255,255,0.05)'" onmouseleave="this.style.background='${rowBg}'" onclick="openTickerChart('${r.sym}')">
-      <div style="font-size:13px;font-weight:700;color:var(--text-hi)">${r.sym}</div>
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <span style="font-size:13px;font-weight:700;color:var(--text-hi)">${r.sym}</span>
+        ${srcPill}
+      </div>
       <div style="display:flex;flex-direction:column;gap:2px">
         <span style="font-size:12px;font-weight:800;color:${dirClr};background:${dirBg};padding:2px 7px;border-radius:4px;display:inline-block;letter-spacing:0.5px;opacity:${dirOpacity}">${dirLabel}</span>
         ${topBadge || statusBadge}
