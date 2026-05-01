@@ -19,11 +19,9 @@ import json
 import math
 import threading
 import warnings
-import webbrowser
 import requests
 import yfinance as yf
 import xml.etree.ElementTree as ET
-import datetime as _datetime_module
 from datetime import datetime, timedelta, time as dtime
 from email.utils import parsedate_to_datetime
 from flask import Flask, jsonify, send_from_directory, request
@@ -757,6 +755,31 @@ def api_live_prices():
     })
 
 
+@app.route("/api/price/<ticker>")
+def api_price(ticker):
+    """Single-ticker price lookup used by the client-side price-alert checker.
+    Returns {price, ts}. Checks WebSocket live cache first (sub-second), falls
+    back to yfinance fast_info (a few seconds stale) if ticker not in WS feed."""
+    ticker = ticker.upper().strip()
+    # Fast path: check WebSocket live cache
+    with _ws_lock:
+        live = _ws_live.get(ticker)
+    if live and live.get("c"):
+        return jsonify({"price": round(float(live["c"]), 4), "ts": live.get("ts", int(time.time()))})
+    # Fallback: yfinance fast_info (cached 10s to avoid hammering API)
+    key = f"price_check:{ticker}"
+    if (v := cached(key, ttl=10)): return jsonify(v)
+    try:
+        fi = yf.Ticker(ticker).fast_info
+        price = float(getattr(fi, "last_price", 0) or 0)
+        if not price:
+            price = float(getattr(fi, "previous_close", 0) or 0)
+        result = {"price": round(price, 4), "ts": int(time.time())}
+        return jsonify(set_cache(key, result))
+    except Exception as e:
+        return jsonify({"price": 0, "ts": int(time.time()), "error": str(e)})
+
+
 @app.route("/api/live/surges")
 def api_live_surges():
     """Return active volume surge alerts + near-miss candidates.
@@ -1158,171 +1181,6 @@ def get_extended_quote(ticker):
     except Exception as e:
         print(f"[ExtQuote] {ticker} failed: {e}")
         return {}
-
-
-def get_options_data(ticker):
-    """
-    Pull options chain from yfinance and identify UNUSUAL activity.
-
-    "Unusual" = Vol/OI > 0.5  (more new contracts opened than existing OI —
-    fresh positioning, not just rolling).  We scan the nearest 4 expiries so
-    weekly sweeps aren't missed, then rank by estimated dollar premium.
-
-    Returns:
-        pcRatio        – put/call ratio (float)
-        ivPct          – median IV as a readable pct string, e.g. "72%"
-        totalCallVol   – int
-        totalPutVol    – int
-        optVol         – volume multiplier vs baseline, e.g. "2.3x"
-        flowRows       – list of dicts: type, strike, premium, signal, iv
-    """
-    key = f"options:{ticker}"
-    if (v := cached(key, ttl=120)): return v
-
-    empty = {"pcRatio": "—", "ivPct": "—", "totalCallVol": 0,
-             "totalPutVol": 0, "optVol": "—", "flowRows": []}
-
-    try:
-        t = yf.Ticker(ticker)
-        exps = t.options
-        if not exps:
-            print(f"[Options] {ticker} — no expiries available")
-            return set_cache(key, empty)
-
-        # Scan up to 4 nearest expiries to catch weekly and front-month sweeps
-        scan_exps = exps[:min(4, len(exps))]
-        all_calls, all_puts = [], []
-
-        for exp in scan_exps:
-            try:
-                chain = t.option_chain(exp)
-                c = chain.calls.copy()
-                p = chain.puts.copy()
-                c["expiry"] = exp
-                p["expiry"] = exp
-                all_calls.append(c)
-                all_puts.append(p)
-            except Exception as ex:
-                print(f"[Options] {ticker} {exp} chain error: {ex}")
-                continue
-
-        if not all_calls:
-            return set_cache(key, empty)
-
-        import pandas as pd
-        calls = pd.concat(all_calls, ignore_index=True)
-        puts  = pd.concat(all_puts,  ignore_index=True)
-
-        # Fill NaN
-        for df in [calls, puts]:
-            df["volume"]           = df["volume"].fillna(0).astype(float)
-            df["openInterest"]     = df["openInterest"].fillna(0).astype(float)
-            df["impliedVolatility"] = df["impliedVolatility"].fillna(0).astype(float)
-            df["lastPrice"]        = df["lastPrice"].fillna(0).astype(float)
-            df["ask"]              = df.get("ask", pd.Series(dtype=float)).fillna(0).astype(float)
-            df["bid"]              = df.get("bid", pd.Series(dtype=float)).fillna(0).astype(float)
-
-        total_call_vol = int(calls["volume"].sum())
-        total_put_vol  = int(puts["volume"].sum())
-        pc_ratio = round(total_put_vol / total_call_vol, 2) if total_call_vol > 0 else 0
-
-        # ── Unusualness filter: Vol/OI > 0.3 ──────────────────────────────────
-        # A ratio > 0.3 means significant new positioning relative to existing OI.
-        # We keep minimum volume of 10 to exclude penny-wide noise.
-        def unusual_rows(df, side):
-            df = df[df["volume"] >= 10].copy()
-            df["vol_oi_ratio"] = df.apply(
-                lambda r: r["volume"] / r["openInterest"] if r["openInterest"] > 0 else 1.5,
-                axis=1
-            )
-            df = df[df["vol_oi_ratio"] >= 0.3]
-
-            # Estimate dollar premium: contracts × 100 shares × mid_price
-            def mid(r):
-                if r["ask"] > 0 and r["bid"] > 0:
-                    return (r["ask"] + r["bid"]) / 2
-                return r["lastPrice"] or 0
-            df["est_premium"] = df.apply(lambda r: mid(r) * r["volume"] * 100, axis=1)
-
-            # Sort by est_premium descending
-            df = df.sort_values("est_premium", ascending=False)
-            rows = []
-            for _, row in df.head(4).iterrows():
-                iv_val = round(float(row["impliedVolatility"]) * 100, 1)
-                prem   = row["est_premium"]
-                if prem >= 1_000_000:
-                    prem_str = f"${prem/1_000_000:.1f}M"
-                elif prem >= 1_000:
-                    prem_str = f"${prem/1_000:.0f}K"
-                else:
-                    prem_str = f"${prem:.0f}"
-                vol_oi = row["vol_oi_ratio"]
-                # Flag: sweep = vol/OI > 1.5, block = > 0.5, else unusual
-                if vol_oi >= 1.5:   flag = "SWEEP"
-                elif vol_oi >= 0.5: flag = "BLOCK"
-                else:               flag = "UNUSUAL"
-                exp_short = str(row.get("expiry", ""))[-5:].replace("-", "/")
-                rows.append({
-                    "type":    side,
-                    "strike":  f"${row['strike']:.0f} {exp_short}",
-                    "premium": prem_str,
-                    "signal":  "BULL" if side == "CALL" else "BEAR",
-                    "iv":      iv_val,
-                    "flag":    flag,
-                    "volOI":   f"{vol_oi:.1f}x"
-                })
-            return rows
-
-        call_rows = unusual_rows(calls, "CALL")
-        put_rows  = unusual_rows(puts,  "PUT")
-
-        # Merge and take top 6 by implied premium size
-        all_rows = call_rows + put_rows
-        # If nothing passes the Vol/OI filter, fall back to pure top-volume
-        if not all_rows:
-            print(f"[Options] {ticker} — no unusual rows, falling back to top-volume")
-            for df, side in [(calls, "CALL"), (puts, "PUT")]:
-                for _, row in df.nlargest(3, "volume").iterrows():
-                    iv_val = round(float(row["impliedVolatility"]) * 100, 1)
-                    vol = int(row["volume"])
-                    exp_short = str(row.get("expiry", ""))[-5:].replace("-", "/")
-                    all_rows.append({
-                        "type": side,
-                        "strike": f"${row['strike']:.0f} {exp_short}",
-                        "premium": f"Vol {vol:,}",
-                        "signal": "BULL" if side == "CALL" else "BEAR",
-                        "iv": iv_val,
-                        "flag": "HIGH VOL",
-                        "volOI": "—"
-                    })
-
-        flow_rows = all_rows[:8]  # max 8 rows in table
-
-        # IV percentile approximation — median across all expirations
-        median_iv = float(calls["impliedVolatility"].median()) if len(calls) > 0 else 0
-        iv_pct_rank = min(int(median_iv * 100), 99)
-
-        # Options volume multiplier vs a simple baseline (total vol / 500 per expiry)
-        baseline = 500 * len(scan_exps)
-        opt_total = total_call_vol + total_put_vol
-        mult = round(opt_total / baseline, 1) if baseline > 0 else 1.0
-        opt_vol_str = f"{mult:.1f}x"
-
-        result = {
-            "pcRatio":       pc_ratio,
-            "ivPct":         f"{iv_pct_rank}%",
-            "totalCallVol":  total_call_vol,
-            "totalPutVol":   total_put_vol,
-            "optVol":        opt_vol_str,
-            "flowRows":      flow_rows,
-            "expiry":        scan_exps[0]
-        }
-        print(f"[Options] {ticker} — {len(flow_rows)} unusual rows, P/C={pc_ratio}, IV={iv_pct_rank}%")
-        return set_cache(key, result)
-
-    except Exception as e:
-        print(f"[Options] {ticker} error: {e}")
-        return set_cache(key, empty)
 
 
 # ── Analyst Sentiment (replaces StockTwits — blocked by Cloudflare) ───────────
@@ -3215,26 +3073,6 @@ def watchlist_scanner():
     return jsonify(set_cache(cache_key, results))
 
 
-@app.route("/api/options/<ticker>")
-def api_options(ticker):
-    """
-    Options flow for a ticker — loaded ASYNC after the main scan so it never
-    blocks quote/price delivery. Returns pcRatio, ivPct, flowRows, etc.
-    Cache: 2 minutes (options chains don't change second-by-second).
-    """
-    ticker = ticker.upper().strip()
-    key = f"options_route:{ticker}"
-    if (v := cached(key, ttl=120)): return jsonify(v)
-    try:
-        data = get_options_data(ticker)
-        return jsonify(set_cache(key, data))
-    except Exception as e:
-        print(f"[Options] {ticker} route error: {e}")
-        return jsonify({"pcRatio": "—", "ivPct": "—", "totalCallVol": 0,
-                        "totalPutVol": 0, "optVol": "—", "flowRows": [],
-                        "error": str(e)})
-
-
 # ── Catalyst / News endpoints ─────────────────────────────────────────────────
 
 @app.route("/api/news/<ticker>")
@@ -3556,56 +3394,6 @@ def api_premarket():
     }
     print(f"[PreMarket] {len(results)} movers — {label}")
     return jsonify(set_cache(key, payload))
-
-
-# ── Standalone breadth endpoint ───────────────────────────────────────────────
-@app.route("/api/breadth")
-def api_breadth():
-    """Returns market breadth + VIX + index ETF performance. No ticker needed."""
-    b = get_market_breadth()
-    return jsonify({
-        "vix":       b.get("vix", "—"),
-        "vixChg":    b.get("vixChg", 0),
-        "vixLabel":  b.get("vixLabel", "—"),
-        "spyPct":    b.get("spyPct", 0),
-        "qqqPct":    b.get("qqqPct", 0),
-        "iwmPct":    b.get("iwmPct", 0),
-        "diaPct":    b.get("diaPct", 0),
-        "regime":    b.get("regime", "—"),
-        "regimeClass": b.get("regimeClass", "neutral"),
-        "sectorPerf":  b.get("sectorPerf", []),
-        "uptrendRatio": b.get("uptrendRatio", "—"),
-        "breadthHistory": b.get("breadthHistory", []),
-    })
-
-
-# ── Index ETF bar endpoint (lightweight, 15s cache) ────────────────────────────
-@app.route("/api/indices")
-def api_indices():
-    """Returns SPY/QQQ/IWM/DIA/VIX for the market overview bar. Fast, 15s cache."""
-    key = "indices_bar"
-    if (v := cached(key, ttl=15)): return jsonify(v)
-
-    symbols = ["SPY", "QQQ", "IWM", "DIA", "^VIX"]
-    out = []
-    for sym in symbols:
-        try:
-            fi = yf.Ticker(sym).fast_info
-            price = fi.last_price or 0
-            prev  = fi.previous_close or price
-            chg_pct = round(((price - prev) / prev) * 100, 2) if prev else 0
-            out.append({
-                "sym":    sym.replace("^", ""),
-                "price":  round(price, 2),
-                "chgPct": chg_pct
-            })
-        except Exception as e:
-            print(f"[Indices] {sym} error: {e}")
-            out.append({"sym": sym.replace("^", ""), "price": 0, "chgPct": 0})
-
-    result = {"indices": out, "ts": int(time.time())}
-    set_cache(key, result)
-    return jsonify(result)
 
 
 # ── Serve the HTML dashboard ───────────────────────────────────────────────────
@@ -5068,21 +4856,6 @@ def predict_scan():
         "model":     stats["model"],
         "loading":   loading,
     })
-
-@app.route("/api/predict/watchlist", methods=["GET", "POST"])
-def predict_watchlist():
-    """GET: return current watchlist. POST: replace with new list."""
-    global _PREDICT_WATCHLIST
-    if request.method == "POST":
-        data = request.get_json(force=True) or {}
-        tickers = [t.upper().strip() for t in data.get("tickers", []) if t.strip()]
-        if 1 <= len(tickers) <= 100:
-            with _predict_lock:
-                _PREDICT_WATCHLIST.clear()
-                _PREDICT_WATCHLIST.extend(tickers)
-            return jsonify({"ok": True, "watchlist": _PREDICT_WATCHLIST})
-        return jsonify({"ok": False, "error": "Provide 1-100 tickers"}), 400
-    return jsonify({"watchlist": _PREDICT_WATCHLIST, "model": _predict_stats.get("model","loading")})
 
 # ── TimesFM — lazy-loaded Google foundation model for 5-bar price forecast ─────
 # Uses timesfm 1.x PyPI API (TimesFmHparams / TimesFmCheckpoint / .forecast())
@@ -6963,14 +6736,6 @@ def api_alerts_clear(alert_id):
     if removed:
         print(f"[PriceAlert] Cleared: {alert_id}")
     return jsonify({"ok": True, "removed": bool(removed)})
-
-@app.route("/api/alerts/clear-all", methods=["POST"])
-def api_alerts_clear_all():
-    """Remove all price alerts for a clean slate."""
-    with _custom_alerts_lock:
-        count = len(_custom_alerts)
-        _custom_alerts.clear()
-    return jsonify({"ok": True, "cleared": count})
 
 @app.route("/api/push/price-alert", methods=["POST"])
 def push_price_alert():
