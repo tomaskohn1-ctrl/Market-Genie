@@ -5273,7 +5273,15 @@ function renderPredictions() {
   </div>`;
 
   function renderRow(r) {
-    const isBull  = r.direction === 'BULL';
+    // ── Use consensus direction (streak-smoothed) if available ────────────────
+    // consensus_dir is the committed direction after N consecutive agrees.
+    // r.direction is the raw single-cycle direction — may flip each cycle.
+    const consensusDir = r.consensus_dir || r.direction || '';
+    const isFlipping   = r.flipping === true;
+    const streakCount  = r.streak_count || 1;
+    const flipProgress = r.flip_progress || 0;
+
+    const isBull  = consensusDir.toUpperCase() === 'BULL' || consensusDir === 'bull';
     const dirClr  = isBull ? '#00e676' : '#ff4455';
     const dirBg   = isBull ? 'rgba(0,230,118,0.12)' : 'rgba(255,68,85,0.12)';
     const convClr = r.conviction === 'HIGH' ? dirClr : '#ffb300';
@@ -5290,20 +5298,36 @@ function renderPredictions() {
     const tClr  = tDir === 'bull' ? '#00e676' : tDir === 'bear' ? '#ff4455' : '#718096';
     const tArrow= tDir === 'bull' ? '▲' : tDir === 'bear' ? '▼' : '—';
 
-    const bothAgree      = kDir && tDir && kDir === tDir;
-    const momOkPredict   = r.recent_momentum_ok !== false;  // false = last 5 bars contradict model
-    // Suppress BOTH AGREE if price momentum contradicts the model — model is lagging a reversal
-    const agreeBadge = (bothAgree && momOkPredict)
-      ? `<span style="font-size:8px;font-weight:700;background:${convBg};color:${convClr};padding:1px 4px;border-radius:3px;border:1px solid ${convClr}44">BOTH AGREE</span>`
-      : (!momOkPredict && (kDir || tDir))
-        ? `<span title="Last 5 price bars contradict model direction — possible lag or reversal in progress" style="font-size:8px;font-weight:700;background:rgba(255,160,0,0.15);color:#ffa000;padding:1px 4px;border-radius:3px;border:1px solid rgba(255,160,0,0.4)">⚠️ DIVERGING</span>`
-        : '';
+    // ── Streak indicator — show strength of current direction ─────────────────
+    // streakCount: how many consecutive cycles the committed direction has held
+    const streakDots = streakCount >= 5 ? '●●●' : streakCount >= 3 ? '●●' : '●○';
+    const streakTitle = `Direction held for ${streakCount} consecutive cycle${streakCount > 1 ? 's' : ''}`;
+
+    // ── FLIPPING badge — shows when a counter-signal is building ──────────────
+    // "flipProgress" = how many consecutive readings have pointed the other way
+    // We need 3 to commit a flip — so show progress as N/3
+    let statusBadge = '';
+    if (isFlipping && flipProgress > 0) {
+      statusBadge = `<span title="Counter-signal building: ${flipProgress}/3 to commit a flip" style="font-size:8px;font-weight:700;background:rgba(255,160,0,0.15);color:#ffa000;padding:1px 4px;border-radius:3px;border:1px solid rgba(255,160,0,0.4)">↺ ${flipProgress}/3</span>`;
+    } else {
+      const bothAgree    = kDir && tDir && kDir === tDir;
+      const momOkPredict = r.recent_momentum_ok !== false;
+      if (bothAgree && momOkPredict) {
+        statusBadge = `<span style="font-size:8px;font-weight:700;background:${convBg};color:${convClr};padding:1px 4px;border-radius:3px;border:1px solid ${convClr}44">BOTH AGREE</span>`;
+      } else if (!momOkPredict && (kDir || tDir)) {
+        statusBadge = `<span title="Last 5 price bars contradict model direction — possible lag" style="font-size:8px;font-weight:700;background:rgba(255,160,0,0.15);color:#ffa000;padding:1px 4px;border-radius:3px;border:1px solid rgba(255,160,0,0.4)">⚠️ DIVERGING</span>`;
+      }
+    }
+
+    const dirLabel   = isBull ? 'BULL' : 'BEAR';
+    // Dim the direction slightly when only 1 cycle has agreed (just became consensus)
+    const dirOpacity = streakCount >= 2 ? '1' : '0.75';
 
     return `<div style="display:grid;grid-template-columns:70px 90px 70px 1fr 1fr;gap:4px;padding:7px 14px;border-bottom:1px solid rgba(255,255,255,0.04);align-items:center;cursor:pointer;transition:background 0.15s" onmouseenter="this.style.background='rgba(255,255,255,0.03)'" onmouseleave="this.style.background=''" onclick="openTickerChart('${r.sym}')">
       <div style="font-size:13px;font-weight:700;color:var(--text-hi)">${r.sym}</div>
       <div style="display:flex;flex-direction:column;gap:2px">
-        <span style="font-size:12px;font-weight:800;color:${dirClr};background:${dirBg};padding:2px 7px;border-radius:4px;display:inline-block;letter-spacing:0.5px">${r.direction} ${r.conviction === 'HIGH' ? '●●' : '●○'}</span>
-        ${agreeBadge}
+        <span title="${streakTitle}" style="font-size:12px;font-weight:800;color:${dirClr};background:${dirBg};padding:2px 7px;border-radius:4px;display:inline-block;letter-spacing:0.5px;opacity:${dirOpacity}">${dirLabel} ${streakDots}</span>
+        ${statusBadge}
       </div>
       <div>
         <div style="font-size:11px;font-weight:700;color:${convClr};font-family:'JetBrains Mono',monospace">${confBar}%</div>
@@ -5328,7 +5352,8 @@ function renderPredictions() {
     : '';
 
   const footer = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);text-align:center;border-top:1px solid rgba(255,255,255,0.04)">
-    🔮 ${d.model || 'Loading'} · ${d.total}/${d.watchlist} predicted · Updated ${ts} · Auto-refreshes 60s · ●● = HIGH conviction (both models agree)
+    🔮 ${d.model || 'Loading'} · ${d.total}/${d.watchlist} predicted · Updated ${ts} · Auto-refreshes 60s
+    <span style="margin-left:8px;opacity:0.7">●●● = 5+ cycles confirmed · ↺ = counter-signal building · ⚠️ = price diverging</span>
   </div>`;
 
   body.innerHTML = hdr + bullSep + bullRows + bearSep + bearRows + footer;
@@ -5409,11 +5434,12 @@ async function pollLiveSurges() {
     const body    = document.getElementById('surgeBody');
     if (!badge || !body) return;
 
-    const surges    = d.surges || [];
-    const mode      = d.mode || 'waiting';
-    const amBars    = d.am_bars || 0;
-    const secBars   = d.second_bars || 0;
-    const liveTix   = d.live_tickers || 0;
+    const surges     = d.surges || [];
+    const nearMisses = d.near_misses || [];
+    const mode       = d.mode || 'waiting';
+    const amBars     = d.am_bars || 0;
+    const secBars    = d.second_bars || 0;
+    const liveTix    = d.live_tickers || 0;
 
     // Update feed mode indicator
     if (secEl) {
@@ -5450,17 +5476,36 @@ async function pollLiveSurges() {
         if (mode === 'second_bars') {
           modeMsg = `⚡ Per-second mode: ${secBars.toLocaleString()} A-bars processed across ${liveTix} tickers.`;
         } else if (mode === 'minute_bars') {
-          modeMsg = `📊 Minute-bar mode: watching ${liveTix} tickers via AM.* feed (${amBars.toLocaleString()} bars). ` +
-                    `<span style="color:#ffd740">A.* per-second channel not active on this plan — surges fire on completed minute spikes instead.</span>`;
+          modeMsg = `📊 Minute-bar mode: watching ${liveTix} tickers · ${amBars.toLocaleString()} bars received. ` +
+                    `<span style="color:#ffd740">Surges fire when a ticker's completed-minute volume hits 2× its recent average.</span>`;
         } else {
-          // WebSocket connected but no bars yet — show live ticker count as proof it's working
           const tickerNote = liveTix > 0
-            ? `${liveTix} tickers live via WebSocket.`
-            : `No tickers yet — waiting for first minute boundary after deploy.`;
-          modeMsg = `⏳ Accumulating baseline… ${tickerNote} First surge will fire after 2 completed minutes per ticker.`;
+            ? `${liveTix} tickers connected.`
+            : `Waiting for first minute boundary after deploy.`;
+          modeMsg = `⏳ Accumulating baseline… ${tickerNote} First surge fires after 2 completed minute bars per ticker.`;
         }
+
+        // Near-miss section — shows proof of life even before a 2× spike
+        let nearHtml = '';
+        if (nearMisses.length > 0) {
+          const nmRows = nearMisses.map(n => {
+            const pct = Math.round((n.ratio / 2.0) * 100); // % of way to threshold
+            return `<span style="
+              display:inline-flex;align-items:center;gap:4px;
+              background:rgba(255,180,0,0.08);border:1px solid rgba(255,180,0,0.2);
+              border-radius:4px;padding:2px 7px;font-size:10px;margin:2px">
+              <b style="color:var(--text-hi)">${n.sym}</b>
+              <span style="color:#ffd740">${n.ratio}×</span>
+              <span style="color:var(--muted);font-size:9px">(${pct}% of threshold)</span>
+            </span>`;
+          }).join('');
+          nearHtml = `<div style="margin-top:8px;color:var(--muted);font-size:10px">
+            📈 Nearest to surge threshold: ${nmRows}
+          </div>`;
+        }
+
         body.innerHTML = `<div style="text-align:center;padding:14px;color:var(--muted);font-size:11px;line-height:1.7">
-          ${modeMsg}<br>No volume surges (3× avg) detected right now.
+          ${modeMsg}<br>No 2× volume surges right now.${nearHtml}
         </div>`;
       }
       return;

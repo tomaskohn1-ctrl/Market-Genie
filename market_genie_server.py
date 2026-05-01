@@ -500,6 +500,7 @@ _ws_live         = {}          # { SYM: {c,o,h,l,v,a,ts,chg_pct} }
 _ws_second_bars  = {}          # { SYM: {vol, elapsed, min_start, last_close} }
 _ws_minute_hist  = {}          # { SYM: deque([vol, ...], maxlen=8) }
 _ws_surges       = {}          # { SYM: {ratio, vol, avg, ts, dir, price} }
+_ws_near_misses  = {}          # { SYM: {ratio, vol, avg, ts, price} } — highest ratio < threshold
 _ws_lock         = threading.Lock()
 _ws_status       = {"connected": False, "ts": 0, "bars": 0, "second_bars": 0}
 _WS_URL          = "wss://socket.massive.com/stocks"
@@ -509,6 +510,8 @@ _SURGE_RATIO_MIN     = 3.0   # 3× pace for A.* per-second bars (short burst det
 _SURGE_RATIO_MIN_AM  = 2.0   # 2× for AM.* completed minute bars (smoothed — harder to hit 3×)
 _SURGE_ELAPSED_MIN   = 10    # require ≥10 seconds before signalling (A.* only)
 _SURGE_TTL           = 120   # keep surge visible for 120 seconds
+_NEAR_MISS_MIN       = 1.3   # track ratios ≥1.3× as "near misses" (proof of life)
+_NEAR_MISS_TTL       = 180   # keep near-miss visible for 3 minutes
 
 def _ws_build_sub_list():
     """
@@ -673,7 +676,20 @@ def _ws_on_message(ws, raw):
                                             "price":   close,
                                             "source":  "AM",
                                         }
+                                        # Remove from near-misses once it becomes a surge
+                                        _ws_near_misses.pop(sym, None)
                                         print(f"[Surge/AM] {sym} {ratio:.1f}× vol={bar_vol} avg={avg_vol:.0f}")
+                                    elif ratio >= _NEAR_MISS_MIN:
+                                        # Track near-miss — ratio above floor but below surge threshold
+                                        prev_nm = _ws_near_misses.get(sym)
+                                        if not prev_nm or ratio > prev_nm.get("ratio", 0):
+                                            _ws_near_misses[sym] = {
+                                                "ratio": round(ratio, 2),
+                                                "vol":   bar_vol,
+                                                "avg":   round(avg_vol),
+                                                "ts":    now,
+                                                "price": close,
+                                            }
                                     else:
                                         # Clear stale AM surge once ratio normalises
                                         if sym in _ws_surges and _ws_surges[sym].get("source") == "AM":
@@ -743,9 +759,9 @@ def api_live_prices():
 
 @app.route("/api/live/surges")
 def api_live_surges():
-    """Return active volume surge alerts.
+    """Return active volume surge alerts + near-miss candidates.
     Sources: A.* per-second bars (if plan supports it) OR AM.* completed-minute
-    volume spikes as fallback. Both use the same 3× ratio threshold."""
+    volume spikes as fallback."""
     now = time.time()
     with _ws_lock:
         active = {
@@ -753,21 +769,28 @@ def api_live_surges():
             for sym, surge in _ws_surges.items()
             if (now - surge["ts"]) <= _SURGE_TTL
         }
-        am_bars     = _ws_status["bars"]
-        sec_bars    = _ws_status["second_bars"]
+        # Near-misses: below surge threshold but above 1.3× — shows system is alive
+        near = sorted(
+            [{"sym": s, **d} for s, d in _ws_near_misses.items()
+             if (now - d["ts"]) <= _NEAR_MISS_TTL],
+            key=lambda x: x["ratio"], reverse=True
+        )[:5]
+        am_bars      = _ws_status["bars"]
+        sec_bars     = _ws_status["second_bars"]
         live_tickers = len(_ws_live)
     ranked = sorted(active.items(), key=lambda x: x[1]["ratio"], reverse=True)
     # Determine which mode is active
     mode = "second_bars" if sec_bars > 0 else ("minute_bars" if am_bars > 0 else "waiting")
     return jsonify({
-        "surges":      [{"sym": sym, **data} for sym, data in ranked],
-        "count":       len(ranked),
-        "connected":   _ws_status["connected"],
-        "second_bars": sec_bars,
-        "am_bars":     am_bars,
+        "surges":       [{"sym": sym, **data} for sym, data in ranked],
+        "count":        len(ranked),
+        "near_misses":  near,
+        "connected":    _ws_status["connected"],
+        "second_bars":  sec_bars,
+        "am_bars":      am_bars,
         "live_tickers": live_tickers,
-        "mode":        mode,   # "second_bars" | "minute_bars" | "waiting"
-        "ts":          int(now),
+        "mode":         mode,   # "second_bars" | "minute_bars" | "waiting"
+        "ts":           int(now),
     })
 
 
@@ -4745,6 +4768,13 @@ _predict_bg_on    = False
 _predict_bg_lock  = threading.Lock()
 _predict_stats    = {"ts": 0, "model": "loading"}
 
+# ── Direction streak / hysteresis ────────────────────────────────────────────
+# Prevents rapid bull↔bear flips from noisy single-bar readings.
+# A direction must appear N consecutive times before the committed direction changes.
+# _predict_streak = { sym: { "dir": "bull"|"bear", "count": int, "candidate": str, "cand_count": int } }
+_STREAK_FLIP_REQUIRED = 3   # need 3 consecutive opposite readings to commit a flip
+_predict_streak = {}        # running streak state — persists between prediction cycles
+
 def _predict_fetch_closes(sym, bars=90):
     """Fetch up to `bars` 1-min close prices including pre/post market.
     Tries Massive first (real extended-hours volume), falls back to yfinance."""
@@ -4921,6 +4951,47 @@ def _predict_bg_loop():
                 try:
                     res = _predict_one(sym)
                     if res:
+                        # ── Direction streak / hysteresis ───────────────────────
+                        # Raw direction from this single prediction cycle
+                        raw_dir = res.get("direction") or res.get("kronos_dir") or ""
+                        if raw_dir in ("bull", "bear"):
+                            st = _predict_streak.get(sym)
+                            if st is None:
+                                # First reading — initialise streak
+                                st = {"dir": raw_dir, "count": 1, "candidate": raw_dir, "cand_count": 1}
+                            else:
+                                if raw_dir == st["dir"]:
+                                    # Agrees with committed direction — reinforce streak
+                                    st["count"]      = min(st["count"] + 1, 10)
+                                    st["candidate"]  = raw_dir
+                                    st["cand_count"] = 1
+                                else:
+                                    # Disagrees — build counter-candidate
+                                    if raw_dir == st.get("candidate") and raw_dir != st["dir"]:
+                                        st["cand_count"] += 1
+                                    else:
+                                        st["candidate"]  = raw_dir
+                                        st["cand_count"] = 1
+                                    # Flip committed direction only after N consecutive counter-signals
+                                    if st["cand_count"] >= _STREAK_FLIP_REQUIRED:
+                                        st["dir"]       = raw_dir
+                                        st["count"]     = _STREAK_FLIP_REQUIRED
+                                        st["cand_count"] = 0
+                                        st["candidate"] = raw_dir
+                            _predict_streak[sym] = st
+
+                            # Annotate result with consensus direction + strength
+                            res["consensus_dir"]    = st["dir"]
+                            res["streak_count"]     = st["count"]
+                            res["flipping"]         = (st.get("candidate") != st["dir"] and
+                                                       st.get("cand_count", 0) > 0)
+                            res["flip_progress"]    = st.get("cand_count", 0)
+                        else:
+                            res["consensus_dir"]  = raw_dir
+                            res["streak_count"]   = 1
+                            res["flipping"]       = False
+                            res["flip_progress"]  = 0
+
                         new_results[sym] = res
                 except Exception:
                     pass
@@ -4968,16 +5039,22 @@ def predict_scan():
     for r in results:
         r.pop("_ts", None)
 
-    # Sort: HIGH conviction first, then by confidence desc
+    # Sort: HIGH conviction first, then stable streaks before flipping, then confidence desc
     conv_order = {"HIGH": 0, "MEDIUM": 1}
     results.sort(key=lambda x: (
         conv_order.get(x.get("conviction","MEDIUM"), 1),
+        1 if x.get("flipping") else 0,   # flipping signals go lower
+        -x.get("streak_count", 1),        # higher streak = more reliable = sort first
         -x.get("confidence", 0)
     ))
 
-    # Split bull / bear
-    bulls = [r for r in results if r["direction"] == "BULL"]
-    bears = [r for r in results if r["direction"] == "BEAR"]
+    # Split bull / bear using consensus direction (streak-smoothed) when available
+    def _display_dir(r):
+        cd = r.get("consensus_dir", "")
+        return (cd.upper() if cd else r.get("direction", ""))
+
+    bulls = [r for r in results if _display_dir(r) == "BULL"]
+    bears = [r for r in results if _display_dir(r) == "BEAR"]
 
     loading = stats["ts"] == 0
 
