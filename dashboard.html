@@ -5193,16 +5193,13 @@ function renderScalpAlerts() {
 
   if (!d.alerts.length) {
     let warmMsg;
-    if (d.status === 'closed') {
-      const minsAway = d.mins_to_open || 0;
-      const timeStr  = minsAway > 0
-        ? `Opens in ${minsAway >= 60 ? Math.floor(minsAway/60)+'h '+(minsAway%60)+'m' : minsAway+'m'}`
-        : 'Market closed';
-      warmMsg = `🕐 Volume scanner requires regular market hours (9:30 AM – 4:00 PM ET). ${timeStr}. Pre/after-market data has no volume — signals can't fire.`;
-    } else if (d.status === 'warming_up') {
-      warmMsg = '⏳ Scanner warming up — first pass takes ~60s…';
+    if (d.status === 'warming_up') {
+      const sessionNote = d.session === 'extended' ? ' (Extended hours — Finnhub data, 80 tickers)' : '';
+      warmMsg = `⏳ Scanner warming up${sessionNote} — first pass takes ~60s…`;
     } else if (d.status === 'stale') {
       warmMsg = '⚠️ Scanner may be restarting — check back in 30s.';
+    } else if (d.session === 'extended') {
+      warmMsg = '🌙 Extended hours active (Finnhub, 80 tickers). No setups meeting criteria right now — auto-retrying in 60s.';
     } else {
       warmMsg = '🔍 No setups meet criteria right now — market is calm. Auto-retrying in 60s.';
     }
@@ -5355,9 +5352,12 @@ function renderScalpAlerts() {
     <span>${d.scanned} scanned · ${new Date(d.ts * 1000).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}</span>
   </div>`;
 
-  const statusDot = d.status === 'live' ? '🟢' : d.status === 'warming_up' ? '🟡' : '🔴';
+  const statusDot  = d.status === 'live' ? '🟢' : d.status === 'warming_up' ? '🟡' : '🔴';
+  const sessionTag = d.session === 'extended'
+    ? '<span style="background:rgba(100,180,255,0.15);color:#64b4ff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;border:1px solid rgba(100,180,255,0.3);margin-left:4px">EXT HRS</span>'
+    : '';
   const footer = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);text-align:center;border-top:1px solid rgba(255,255,255,0.04)">
-    ${statusDot} Auto-refreshes every 60s · A=5+/11 · B=3-4/11 · C=2/11 pre-mkt · TFM▲▼ = Google AI forecast
+    ${statusDot}${sessionTag} Auto-refreshes every 60s · A=5+/11 · B=3-4/11 · TFM▲▼ = Google AI forecast
   </div>`;
 
   body.innerHTML = spyBar + header + rows + footer;

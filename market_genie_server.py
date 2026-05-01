@@ -4367,6 +4367,63 @@ _SCALP_UNIVERSE = [
     "SLV","USO","UNG","CORN","WEAT","DBA","MOO","PDBC","BCI","GSG",
 ]
 
+# ── Extended-hours universe (Finnhub-based, ~80 most active tickers) ──────────
+# Used 4 AM-9:29 AM and 4:01 PM-8 PM ET — Finnhub provides volume here, yfinance does not
+_EXT_UNIVERSE = [
+    # Mega-cap tech (always active extended)
+    "AAPL","MSFT","NVDA","TSLA","AMZN","META","AMD","GOOGL","AVGO","QCOM",
+    "INTC","MU","SMCI","ARM","AMAT","CRM","ORCL","NFLX","ADBE","MRVL",
+    # High-beta / meme / crypto-adjacent
+    "PLTR","SOFI","COIN","HOOD","MARA","RIOT","MSTR","CLSK","RGTI","IONQ",
+    "GME","AMC","SOUN","RBLX","SNAP","PINS","RDDT","HIMS","RKLB","ASTS",
+    # Major ETFs (pre-market gaps visible)
+    "SPY","QQQ","IWM","TQQQ","SQQQ","SOXL","SOXS","ARKK","VXX","UVXY",
+    "GLD","SLV","USO","XBI","XLF","XLE","XLK","IBB","SMH",
+    # Growth / momentum
+    "CRWD","PANW","NET","SNOW","DDOG","TEAM","ZS","MNDY","APP","AXON",
+    "CELH","ENPH","TSLA","UBER","LYFT","ABNB","DASH","SPOT","TTD","ROKU",
+    # Financials / banks (move on macro news)
+    "JPM","BAC","GS","MS","C","WFC","SCHW","V","MA","PYPL",
+]
+
+# ── Finnhub 1-min candle fetch for extended hours ─────────────────────────────
+_FH_RATE_SEM = threading.Semaphore(1)   # 1 Finnhub call at a time → stay under rate limit
+_FH_LAST_CALL = [0.0]                   # timestamp of last call
+
+def _finnhub_candles_ext(sym, minutes_back=90):
+    """Fetch last N minutes of 1-min OHLCV from Finnhub (supports extended hours)."""
+    if not FINNHUB_KEY:
+        return None
+    import time as _time
+    now_ts  = int(_time.time())
+    from_ts = now_ts - minutes_back * 60
+    # Rate-limit: max 1 call per 0.5s (120/min, well under free 60/min with threads)
+    with _FH_RATE_SEM:
+        gap = _time.time() - _FH_LAST_CALL[0]
+        if gap < 1.1:
+            _time.sleep(1.1 - gap)
+        _FH_LAST_CALL[0] = _time.time()
+        try:
+            r = requests.get(
+                "https://finnhub.io/api/v1/stock/candle",
+                params={"symbol": sym, "resolution": "1",
+                        "from": from_ts, "to": now_ts,
+                        "token": FINNHUB_KEY},
+                timeout=8,
+            )
+            d = r.json()
+        except Exception:
+            return None
+    if d.get("s") != "ok" or not d.get("c"):
+        return None
+    import numpy as np
+    closes  = np.array(d["c"], dtype=float)
+    opens   = np.array(d["o"], dtype=float)
+    highs   = np.array(d["h"], dtype=float)
+    lows    = np.array(d["l"], dtype=float)
+    volumes = np.array(d["v"], dtype=float)
+    return closes, opens, highs, lows, volumes
+
 # ── Rotating-bucket background state ─────────────────────────────────────────
 _scalp_spy        = {"ret1": 0.0, "bull_trend": False, "bear_trend": False}
 _scalp_results    = {}          # { sym: alert_dict }  — live merged results
@@ -4404,21 +4461,36 @@ def _scalp_refresh_spy():
         pass
 
 def _scalp_fetch_one(sym):
-    """Scan one ticker using the cached SPY data. Returns alert dict or None."""
+    """Scan one ticker using the cached SPY data. Returns alert dict or None.
+    Regular hours → yfinance (578 tickers, fast).
+    Extended hours → Finnhub candles (80-ticker universe, provides real volume)."""
     import numpy as np
     try:
         spy_ret1       = _scalp_spy["ret1"]
         spy_bull_trend = _scalp_spy["bull_trend"]
         spy_bear_trend = _scalp_spy["bear_trend"]
 
-        df = yf.Ticker(sym).history(period="1d", interval="1m", prepost=True)
-        if df is None or len(df) < 25:
-            return None
-        df.columns = [c.lower() for c in df.columns]
-        closes  = df["close"].values.astype(float)
-        volumes = df["volume"].values.astype(float)
-        highs   = df["high"].values.astype(float)
-        lows    = df["low"].values.astype(float)
+        if _is_market_hours():
+            # ── Regular hours: yfinance ────────────────────────────────────
+            df = yf.Ticker(sym).history(period="1d", interval="1m", prepost=True)
+            if df is None or len(df) < 25:
+                return None
+            df.columns = [c.lower() for c in df.columns]
+            closes  = df["close"].values.astype(float)
+            volumes = df["volume"].values.astype(float)
+            highs   = df["high"].values.astype(float)
+            lows    = df["low"].values.astype(float)
+        else:
+            # ── Extended hours: Finnhub candles (real volume!) ─────────────
+            if sym not in _EXT_UNIVERSE:
+                return None      # only scan the focused extended-hours universe
+            result = _finnhub_candles_ext(sym, minutes_back=120)
+            if result is None:
+                return None
+            closes, _opens, highs, lows, volumes = result
+            if len(closes) < 15:
+                return None
+
         last_p  = closes[-1]
         if last_p <= 0 or last_p < 2.0:
             return None
@@ -4606,9 +4678,6 @@ def _scalp_fetch_one(sym):
 def _scalp_bg_loop():
     """Background thread: rotates through 4 buckets, scanning ~250 tickers every 15 s."""
     import concurrent.futures
-    n   = _SCALP_NUM_BUCKETS
-    sz  = math.ceil(len(_SCALP_UNIVERSE) / n)
-    buckets = [_SCALP_UNIVERSE[i*sz:(i+1)*sz] for i in range(n)]
     idx = 0
 
     # Kick off TimesFM load
@@ -4617,7 +4686,18 @@ def _scalp_bg_loop():
 
     while True:
         try:
-            bucket = buckets[idx % n]
+            # Choose universe + worker count based on market session
+            if _is_market_hours():
+                universe   = _SCALP_UNIVERSE
+                max_w      = 25
+            else:
+                universe   = _EXT_UNIVERSE   # Finnhub rate-limited — smaller set
+                max_w      = 1               # Finnhub calls are serialized by semaphore
+
+            n   = _SCALP_NUM_BUCKETS
+            sz  = math.ceil(len(universe) / n)
+            buckets = [universe[i*sz:(i+1)*sz] for i in range(n)]
+            bucket  = buckets[idx % n]
 
             # Refresh SPY once per full rotation (every 4 buckets ≈ 60 s)
             if idx % n == 0:
@@ -4626,9 +4706,9 @@ def _scalp_bg_loop():
             # Clear closes cache for this bucket batch
             _tfm_closes.clear()
 
-            # Scan bucket — 25 threads
+            # Scan bucket
             new_hits = {}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=25) as ex:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_w) as ex:
                 futures = {ex.submit(_scalp_fetch_one, sym): sym for sym in bucket}
                 for fut in concurrent.futures.as_completed(futures, timeout=35):
                     try:
@@ -4720,12 +4800,11 @@ def scalp_scanner():
                                    -x.get("score", 0),
                                    -x.get("vol_ratio", 0)))
 
-        last_ts    = _scalp_stats.get("ts", 0)
-        mkt_open   = _is_market_hours()
-        mins_away  = _minutes_to_open() if not mkt_open else 0
-        if not mkt_open:
-            status = "closed"
-        elif last_ts == 0:
+        last_ts   = _scalp_stats.get("ts", 0)
+        mkt_open  = _is_market_hours()
+        universe  = _SCALP_UNIVERSE if mkt_open else _EXT_UNIVERSE
+        session   = "regular" if mkt_open else "extended"
+        if last_ts == 0:
             status = "warming_up"
         elif time.time() - last_ts > 180:
             status = "stale"
@@ -4733,15 +4812,14 @@ def scalp_scanner():
             status = "live"
 
         payload = {
-            "alerts":      alerts[:25],
-            "total":       len(alerts),
-            "scanned":     len(_SCALP_UNIVERSE),
-            "ts":          last_ts if last_ts else int(time.time()),
-            "spy_ret1":    round(_scalp_spy.get("ret1", 0.0), 3),
-            "status":      status,
-            "market_open": mkt_open,
-            "mins_to_open": mins_away,
-            "bucket":      _scalp_stats.get("bucket", -1),
+            "alerts":   alerts[:25],
+            "total":    len(alerts),
+            "scanned":  len(universe),
+            "ts":       last_ts if last_ts else int(time.time()),
+            "spy_ret1": round(_scalp_spy.get("ret1", 0.0), 3),
+            "status":   status,
+            "session":  session,
+            "bucket":   _scalp_stats.get("bucket", -1),
         }
         return jsonify(payload)
     except Exception as e:
