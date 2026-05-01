@@ -5212,13 +5212,27 @@ function renderPredictions() {
   if (mdl) mdl.textContent = d.model || '';
 
   if (d.loading || d.total === 0) {
-    const msg = d.loading
-      ? '⏳ Models loading — Kronos + TimesFM initializing (1-2 min first run)…'
-      : '🔍 No predictions yet — auto-retrying in 60s';
+    // Track how long we've been loading to give user useful feedback
+    if (!window._predictLoadStart && d.loading) window._predictLoadStart = Date.now();
+    const elapsedSec = window._predictLoadStart ? Math.round((Date.now() - window._predictLoadStart) / 1000) : 0;
+    let msg;
+    if (!d.loading) {
+      window._predictLoadStart = null;
+      msg = '🔍 No predictions yet — auto-retrying in 60s';
+    } else if (elapsedSec < 30) {
+      msg = '⏳ Models loading — Kronos + TimesFM initializing (1-2 min first run)…';
+    } else if (elapsedSec < 120) {
+      msg = `⏳ Still loading… (${elapsedSec}s) — downloading 800MB TimesFM model on first deploy. Hang tight.`;
+    } else if (elapsedSec < 180) {
+      msg = `⏳ Almost there… (${elapsedSec}s) — model nearly loaded or switching to fast fallback shortly.`;
+    } else {
+      msg = `⚡ Switching to fast linear-regression mode (${elapsedSec}s elapsed) — predictions will appear very soon.`;
+    }
     body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px;line-height:1.8">${msg}</div>`;
-    badge.textContent = 'Loading…';
+    badge.textContent = elapsedSec > 0 ? `Loading… ${elapsedSec}s` : 'Loading…';
     return;
   }
+  window._predictLoadStart = null;  // reset on success
 
   const bulls = d.bulls || [];
   const bears = d.bears || [];

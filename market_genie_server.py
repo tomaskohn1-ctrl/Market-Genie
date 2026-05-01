@@ -4933,44 +4933,71 @@ _tfm_closes  = {}            # { sym: np.ndarray } populated during scalp scan
 
 _TFM_HORIZON = 5             # predict next 5 one-minute bars
 
+_TFM_LOAD_TIMEOUT = 180   # seconds — force fallback if model hasn't loaded by then
+
 def _tfm_load():
     """Download TimesFM 1.0-200M (PyTorch) in a background thread (called once).
     Falls back gracefully to a lightweight linear-regression forecast if model
-    fails to load (memory limit, download timeout, etc.)."""
+    fails to load (memory limit, download timeout, hang, etc.).
+    Hard timeout: if loading takes > _TFM_LOAD_TIMEOUT seconds, force fallback."""
     global _tfm_model, _tfm_ready, _tfm_loading
     with _tfm_lock:
         if _tfm_ready or _tfm_loading:
             return
         _tfm_loading = True
-    try:
-        print("[TFM] Loading TimesFM 1.0-200M (PyTorch CPU) …")
-        import timesfm
-        checkpoint = timesfm.TimesFmCheckpoint(
-            huggingface_repo_id="google/timesfm-1.0-200m-pytorch",
-        )
-        m = timesfm.TimesFm(
-            hparams=timesfm.TimesFmHparams(
-                backend="cpu",
-                per_core_batch_size=32,
-                horizon_len=_TFM_HORIZON,
-                context_len=512,
-            ),
-            checkpoint=checkpoint,
-        )
-        m.load_from_checkpoint(checkpoint=checkpoint)
-        with _tfm_lock:
-            _tfm_model   = m
-            _tfm_ready   = True
-            _tfm_loading = False
-        print("[TFM] ✓ TimesFM model ready")
-    except Exception as e:
-        print(f"[TFM] Load failed ({e}) — activating lightweight linear-regression fallback")
-        # Install a sentinel so _tfm_batch uses the fast fallback
-        with _tfm_lock:
-            _tfm_model   = "fallback"   # sentinel: use numpy linear regression
-            _tfm_ready   = True         # mark ready so badges fire
-            _tfm_loading = False
-        print("[TFM] ✓ Linear-regression fallback active")
+
+    load_start = time.time()
+
+    def _do_load():
+        """Inner loader — runs in its own thread so we can time it out."""
+        global _tfm_model, _tfm_ready, _tfm_loading
+        try:
+            print("[TFM] Loading TimesFM 1.0-200M (PyTorch CPU) …")
+            import timesfm
+            checkpoint = timesfm.TimesFmCheckpoint(
+                huggingface_repo_id="google/timesfm-1.0-200m-pytorch",
+            )
+            m = timesfm.TimesFm(
+                hparams=timesfm.TimesFmHparams(
+                    backend="cpu",
+                    per_core_batch_size=32,
+                    horizon_len=_TFM_HORIZON,
+                    context_len=512,
+                ),
+                checkpoint=checkpoint,
+            )
+            m.load_from_checkpoint(checkpoint=checkpoint)
+            with _tfm_lock:
+                _tfm_model   = m
+                _tfm_ready   = True
+                _tfm_loading = False
+            print("[TFM] ✓ TimesFM neural model ready")
+        except Exception as e:
+            print(f"[TFM] Load failed ({e}) — activating linear-regression fallback")
+            with _tfm_lock:
+                _tfm_model   = "fallback"
+                _tfm_ready   = True
+                _tfm_loading = False
+            print("[TFM] ✓ Linear-regression fallback active")
+
+    loader_thread = threading.Thread(target=_do_load, daemon=True)
+    loader_thread.start()
+
+    # Watchdog: if the loader hangs past the timeout, force fallback
+    def _watchdog():
+        global _tfm_model, _tfm_ready, _tfm_loading
+        loader_thread.join(timeout=_TFM_LOAD_TIMEOUT)
+        if loader_thread.is_alive():
+            elapsed = int(time.time() - load_start)
+            print(f"[TFM] ⏱ Load timed out after {elapsed}s — forcing linear-regression fallback")
+            with _tfm_lock:
+                if not _tfm_ready:          # only override if still not ready
+                    _tfm_model   = "fallback"
+                    _tfm_ready   = True
+                    _tfm_loading = False
+            print("[TFM] ✓ Linear-regression fallback active (timeout)")
+
+    threading.Thread(target=_watchdog, daemon=True).start()
 
 def _tfm_batch(sym_list):
     """
