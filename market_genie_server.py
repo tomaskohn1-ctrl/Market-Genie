@@ -6456,86 +6456,150 @@ _SHORT_WATCHLIST = [
 
 @app.route("/api/short_interest")
 def short_interest():
+    """Short Interest & Squeeze Screener.
+
+    Data sources:
+    - Price, change%, volume ratio → Massive/Polygon snapshot (real-time, one bulk call)
+    - Short float, DTC, shares short → yfinance/FINRA (monthly FINRA data, 24h cache)
+      Polygon does not carry FINRA short interest in their standard API.
+    """
     key = "short_interest"
     if (v := cached(key, ttl=1800)): return jsonify(v)   # 30-min cache
 
-    results = []
-    tickers_to_check = _SHORT_WATCHLIST[:20]  # limit to 20 to keep it fast
+    tickers_to_check = _SHORT_WATCHLIST[:30]
 
+    # ── Step 1: Bulk price + volume snapshot from Massive (one API call) ──────
+    massive_snap = {}
+    if MASSIVE_KEY:
+        try:
+            sym_csv = ",".join(tickers_to_check)
+            snap = massive_get("/v2/snapshot/locale/us/markets/stocks/tickers",
+                               {"tickers": sym_csv})
+            for t in (snap.get("tickers") or []):
+                sym = t.get("ticker", "")
+                if not sym:
+                    continue
+                day     = t.get("day") or {}
+                prev    = t.get("prevDay") or {}
+                last_q  = t.get("lastQuote") or {}
+                last_t  = t.get("lastTrade") or {}
+
+                # Price: last trade → last ask → day close
+                price = (float(last_t.get("p") or 0) or
+                         float(last_q.get("P") or 0) or
+                         float(day.get("c") or 0))
+                chg_pct = float(t.get("todaysChangePerc") or 0)
+
+                # Volume ratio: today vs prev day
+                today_vol = float(day.get("v") or 0)
+                prev_vol  = float(prev.get("v") or 0)
+                vol_ratio = round(today_vol / prev_vol, 2) if prev_vol > 0 else 1.0
+
+                massive_snap[sym] = {
+                    "price":     round(price, 2),
+                    "chg_pct":   round(chg_pct, 2),
+                    "vol_ratio": vol_ratio,
+                    "today_vol": int(today_vol),
+                }
+            print(f"[ShortInt] Massive snapshot: {len(massive_snap)}/{len(tickers_to_check)} tickers")
+        except Exception as e:
+            print(f"[ShortInt] Massive snapshot error: {e}")
+
+    # ── Step 2: Short interest data from yfinance (FINRA, monthly, cached 24h) ─
+    # Cache separately so price stays fresh (30 min) but short data only re-fetches daily
+    short_cache_key = "short_interest_finra"
+    short_data = cached(short_cache_key, ttl=86400) or {}  # 24h cache
+
+    missing_short = [s for s in tickers_to_check if s not in short_data]
+    if missing_short:
+        import concurrent.futures
+        def _fetch_short(sym):
+            try:
+                info = yf.Ticker(sym).info
+                return sym, {
+                    "short_float":        info.get("shortPercentOfFloat"),
+                    "short_ratio":        info.get("shortRatio"),
+                    "shares_short":       info.get("sharesShort"),
+                    "shares_short_prior": info.get("sharesShortPriorMonth"),
+                }
+            except Exception:
+                return sym, {}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            for sym, data in ex.map(lambda s: _fetch_short(s), missing_short):
+                short_data[sym] = data
+        set_cache(short_cache_key, short_data)
+
+    # ── Step 3: Merge and score ────────────────────────────────────────────────
+    results = []
     for sym in tickers_to_check:
         try:
-            info = yf.Ticker(sym).info
-            short_float = info.get("shortPercentOfFloat")   # e.g. 0.12 = 12%
-            short_ratio = info.get("shortRatio")            # days to cover
-            shares_short= info.get("sharesShort")           # raw share count
-            shares_short_prior = info.get("sharesShortPriorMonth")
-            price       = info.get("currentPrice") or info.get("regularMarketPrice") or 0
-            chg_pct     = info.get("regularMarketChangePercent") or 0
-            vol_ratio   = 1.0
-            try:
-                t       = yf.Ticker(sym)
-                hist    = t.history(period="21d", interval="1d")
-                if len(hist) >= 5:
-                    today_vol = float(hist["Volume"].iloc[-1])
-                    avg_vol   = float(hist["Volume"].iloc[:-1].mean())
-                    vol_ratio = round(today_vol / avg_vol, 2) if avg_vol > 0 else 1.0
-            except Exception:
-                pass
-
+            sd = short_data.get(sym, {})
+            short_float = sd.get("short_float")
             if short_float is None:
                 continue
 
-            sf_pct  = round(short_float * 100, 1)
-            dtc     = round(float(short_ratio), 1) if short_ratio else None
+            # Price/volume: Massive first, yfinance fallback
+            ms = massive_snap.get(sym)
+            if ms:
+                price     = ms["price"]
+                chg_pct   = ms["chg_pct"]
+                vol_ratio = ms["vol_ratio"]
+            else:
+                # yfinance fallback for price/vol if Massive missed this ticker
+                try:
+                    info      = yf.Ticker(sym).fast_info
+                    price     = float(getattr(info, "last_price", 0) or 0)
+                    chg_pct   = 0.0
+                    vol_ratio = 1.0
+                except Exception:
+                    price, chg_pct, vol_ratio = 0.0, 0.0, 1.0
+
+            sf_pct = round(short_float * 100, 1)
+            dtc    = round(float(sd.get("short_ratio") or 0), 1) or None
 
             # Squeeze Score (0–100)
-            # High short float → pressure; high DTC → harder to cover; vol spike + up → squeeze active
-            sf_score    = min(sf_pct * 1.5, 40)             # up to 40 pts (short float)
-            dtc_score   = min((dtc or 0) * 3, 20)           # up to 20 pts (days to cover)
-            vol_score   = min((vol_ratio - 1) * 10, 20)     # up to 20 pts (unusual volume)
-            mom_score   = max(0, min(chg_pct * 2, 20))      # up to 20 pts (positive momentum)
+            sf_score  = min(sf_pct * 1.5, 40)           # up to 40 pts — short float
+            dtc_score = min((dtc or 0) * 3, 20)         # up to 20 pts — days to cover
+            vol_score = min((vol_ratio - 1) * 10, 20)   # up to 20 pts — unusual volume
+            mom_score = max(0, min(chg_pct * 2, 20))    # up to 20 pts — positive momentum
             squeeze_score = round(sf_score + dtc_score + vol_score + mom_score, 1)
 
             # Short change MoM
-            short_chg = None
-            if shares_short and shares_short_prior and shares_short_prior > 0:
-                short_chg = round(((shares_short - shares_short_prior) / shares_short_prior) * 100, 1)
+            ss, ssp = sd.get("shares_short"), sd.get("shares_short_prior")
+            short_chg = round(((ss - ssp) / ssp) * 100, 1) if (ss and ssp and ssp > 0) else None
 
-            # Signal
             if squeeze_score >= 70:
-                signal = "🔥 ACTIVE SQUEEZE"
-                sig_color = "#ff6b3d"
+                signal, sig_color = "🔥 ACTIVE SQUEEZE",    "#ff6b3d"
             elif squeeze_score >= 50:
-                signal = "⚡ BUILDING PRESSURE"
-                sig_color = "var(--amber)"
+                signal, sig_color = "⚡ BUILDING PRESSURE", "var(--amber)"
             elif sf_pct >= 20:
-                signal = "👀 HIGH SHORT FLOAT"
-                sig_color = "var(--accent)"
+                signal, sig_color = "👀 HIGH SHORT FLOAT",  "var(--accent)"
             else:
-                signal = "📊 NORMAL"
-                sig_color = "var(--muted)"
+                signal, sig_color = "📊 NORMAL",            "var(--muted)"
 
             results.append({
-                "sym":          sym,
-                "price":        round(float(price), 2) if price else 0,
-                "chg_pct":      round(float(chg_pct), 2),
-                "short_float":  sf_pct,
-                "days_to_cover":dtc,
-                "vol_ratio":    vol_ratio,
-                "short_chg_mom":short_chg,
-                "squeeze_score":squeeze_score,
-                "signal":       signal,
-                "sig_color":    sig_color,
+                "sym":           sym,
+                "price":         round(float(price), 2) if price else 0,
+                "chg_pct":       round(float(chg_pct), 2),
+                "short_float":   sf_pct,
+                "days_to_cover": dtc,
+                "vol_ratio":     vol_ratio,
+                "short_chg_mom": short_chg,
+                "squeeze_score": squeeze_score,
+                "signal":        signal,
+                "sig_color":     sig_color,
             })
         except Exception as e:
-            print(f"[ShortInterest] {sym} error: {e}")
+            print(f"[ShortInt] {sym}: {e}")
 
-    # Sort by squeeze score descending
     results.sort(key=lambda x: x["squeeze_score"], reverse=True)
+    source = ("Massive (price/vol) + yfinance FINRA (short data)"
+              if massive_snap else "yfinance (FINRA short data)")
     result = {
-        "stocks":    results[:15],
-        "as_of":     datetime.now().strftime("%H:%M"),
-        "source":    "yfinance (FINRA short data)",
+        "stocks":  results[:15],
+        "as_of":   datetime.now().strftime("%H:%M"),
+        "source":  source,
     }
     set_cache(key, result)
     return jsonify(result)
