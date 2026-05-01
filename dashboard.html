@@ -5257,11 +5257,13 @@ function renderPredictions() {
   }
   window._predictLoadStart = null;  // reset on success
 
-  const bulls = d.bulls || [];
-  const bears = d.bears || [];
-  badge.textContent = `${bulls.length} BULL · ${bears.length} BEAR`;
-  badge.style.background = bulls.length > bears.length ? 'rgba(0,230,118,0.2)' : bears.length > bulls.length ? 'rgba(255,68,85,0.2)' : 'rgba(138,43,226,0.2)';
-  badge.style.color = bulls.length > bears.length ? '#00e676' : bears.length > bulls.length ? '#ff4455' : '#c084fc';
+  const bulls      = d.bulls || [];
+  const bears      = d.bears || [];
+  const bullTotal  = d.bull_total || bulls.length;
+  const bearTotal  = d.bear_total || bears.length;
+  badge.textContent = `${bullTotal} BULL · ${bearTotal} BEAR`;
+  badge.style.background = bullTotal > bearTotal ? 'rgba(0,230,118,0.2)' : bearTotal > bullTotal ? 'rgba(255,68,85,0.2)' : 'rgba(138,43,226,0.2)';
+  badge.style.color = bullTotal > bearTotal ? '#00e676' : bearTotal > bullTotal ? '#ff4455' : '#c084fc';
 
   const ts = d.ts ? new Date(d.ts*1000).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '--:--';
 
@@ -5349,8 +5351,13 @@ function renderPredictions() {
     ? `<div style="padding:4px 14px;font-size:9px;font-weight:700;color:#00e676;letter-spacing:0.5px;background:rgba(0,230,118,0.05);border-bottom:1px solid rgba(0,230,118,0.15)">── BULLISH ──</div>`
     : '';
 
+  const bucketInfo = d.bucket_total > 1
+    ? ` · Bucket ${d.bucket}/${d.bucket_total} · ~${d.bucket_total} min/cycle`
+    : '';
+  const topNote = (bullTotal > 15 || bearTotal > 15)
+    ? ` <span style="color:#ffd740">· Showing top 15 of ${bullTotal} bull / ${bearTotal} bear</span>` : '';
   const footer = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);text-align:center;border-top:1px solid rgba(255,255,255,0.04)">
-    🔮 ${d.model || 'Loading'} · ${d.total}/${d.watchlist} predicted · Updated ${ts} · Auto-refreshes 60s
+    🔮 ${d.model || 'Loading'} · ${d.total} of ${d.watchlist} scanned${bucketInfo} · Updated ${ts}${topNote}
     <span style="margin-left:8px;opacity:0.7">●●● = 5+ cycles confirmed · ↺ = counter-signal building · ⚠️ = price diverging</span>
   </div>`;
 

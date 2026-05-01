@@ -518,11 +518,10 @@ def _ws_build_sub_list():
     A.*  for scalp universe only (per-second bars — mid-bar surge detection).
     Regime tickers (SPY/QQQ/VXX) get AM only to conserve bandwidth.
     """
-    am_tickers = list(dict.fromkeys(
-        list(_PREDICT_WATCHLIST) + _EXT_UNIVERSE[:40]
-    ))[:100]
-    # Per-second A.* — only scalp universe (not regime tickers) to reduce load
-    a_tickers = [s for s in _EXT_UNIVERSE[:50] if s not in ("SPY","QQQ","VXX","IWM")][:50]
+    # Subscribe AM.* for full prediction universe (completed minute bars — surge detection)
+    am_tickers = list(dict.fromkeys(list(_PREDICT_WATCHLIST) + _EXT_UNIVERSE))
+    # Per-second A.* — scalp universe only (not regime tickers) to keep bandwidth manageable
+    a_tickers = [s for s in _EXT_UNIVERSE[:60] if s not in ("SPY","QQQ","VXX","IWM")][:60]
 
     am_subs = ",".join(f"AM.{s}" for s in am_tickers)
     a_subs  = ",".join(f"A.{s}"  for s in a_tickers)
@@ -530,34 +529,44 @@ def _ws_build_sub_list():
     return combined
 
 
+def _ws_seed_one(sym):
+    """Fetch and store volume history for a single ticker. Returns sym if seeded."""
+    try:
+        res = massive_1min_bars(sym, minutes_back=30)
+        if res is None:
+            return None
+        _, _, _, _, volumes = res
+        hist_vols = [int(v) for v in volumes[-9:-1] if v > 0]
+        if len(hist_vols) >= 2:
+            with _ws_lock:
+                h = _ws_minute_hist.setdefault(sym, _deque(maxlen=8))
+                for v in hist_vols:
+                    h.append(v)
+            return sym
+    except Exception:
+        pass
+    return None
+
+
 def _ws_seed_history():
     """
     Pre-populate _ws_minute_hist from Massive REST API right after WS auth.
-    This eliminates the 2-minute cold-start: the very first live AM bar can
-    immediately be compared against a real volume baseline.
-    Runs in a background thread — skipped if no MASSIVE_KEY or market closed.
+    Covers the full prediction universe (~350 tickers) using a thread pool so
+    it completes in ~20-30s rather than minutes.
     """
     if not MASSIVE_KEY:
+        with _ws_lock:
+            _ws_status["seed_done"] = True
         return
-    tickers = list(dict.fromkeys(list(_PREDICT_WATCHLIST) + _EXT_UNIVERSE[:40]))[:80]
+    import concurrent.futures
+    tickers = list(dict.fromkeys(list(_PREDICT_WATCHLIST) + _EXT_UNIVERSE))
+    print(f"[WS/Seed] Pre-seeding {len(tickers)} tickers in parallel…")
     seeded = 0
-    print(f"[WS/Seed] Pre-seeding volume history for {len(tickers)} tickers…")
-    for sym in tickers:
-        try:
-            res = massive_1min_bars(sym, minutes_back=30)
-            if res is None:
-                continue
-            _, _, _, _, volumes = res
-            # Use last 8 completed bars (exclude any in-progress current bar)
-            hist_vols = [int(v) for v in volumes[-9:-1] if v > 0]
-            if len(hist_vols) >= 2:
-                with _ws_lock:
-                    h = _ws_minute_hist.setdefault(sym, _deque(maxlen=8))
-                    for v in hist_vols:
-                        h.append(v)
+    # 8 workers — fast enough without hammering Massive rate limits
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        for result in pool.map(_ws_seed_one, tickers):
+            if result:
                 seeded += 1
-        except Exception as e:
-            pass  # Skip individual ticker failures silently
     with _ws_lock:
         _ws_status["seed_tickers"] = seeded
         _ws_status["seed_done"]    = True
@@ -4582,19 +4591,60 @@ def kronos_scanner():
 # Works 24/7: pre-market, regular hours, after-hours (price-only, no volume needed)
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Default watchlist — user can override via POST /api/predict/watchlist
+# Prediction engine universe — 350 liquid, high-beta tickers across sectors
+# Rotated through 7 buckets of 50; full cycle every ~7 minutes
 _PREDICT_WATCHLIST = [
-    "NVDA","TSLA","AMD","AAPL","META","MSFT","AMZN","GOOGL",
-    "PLTR","COIN","MARA","ARM","AVGO","MU","SMCI","CRWD",
-    "NET","SOXL","TQQQ","QQQ","SPY","IWM","ARKK",
-    "NFLX","UBER","RKLB","ASTS","IONQ","HOOD","SOFI",
+    # ── Mega-cap tech ──────────────────────────────────────────────────────────
+    "AAPL","MSFT","NVDA","TSLA","AMZN","META","AMD","GOOGL","GOOG","AVGO",
+    "QCOM","INTC","MU","SMCI","ARM","AMAT","CRM","ORCL","ADBE","MRVL",
+    "LRCX","KLAC","TXN","ON","SWKS","XLNX","MPWR","ENPH","FSLR","SEDG",
+    # ── AI / quantum / next-gen ────────────────────────────────────────────────
+    "PLTR","SOUN","IONQ","RGTI","BBAI","AI","ARRY","WOLF","MCHP","NXPI",
+    "SMTC","FORM","ACLS","CAMT","ONTO","RMBS","AMBA","AXTI","SITM","POWI",
+    # ── Software / cloud / cybersecurity ──────────────────────────────────────
+    "CRWD","PANW","NET","SNOW","DDOG","TEAM","ZS","MNDY","APP","AXON",
+    "FTNT","OKTA","CFLT","MDB","GTLB","PATH","BILL","HUBS","WDAY","NOW",
+    "VEEV","DSGX","PCTY","JAMF","S","SMAR","ASAN","BOX","DOCN","BRZE",
+    # ── Consumer internet / social / streaming ────────────────────────────────
+    "NFLX","ROKU","SPOT","TTD","PINS","SNAP","RDDT","RBLX","MTCH","IAC",
+    "UBER","LYFT","ABNB","DASH","GRUB","EXPE","BKNG","TRIP","YELP","ANGI",
+    # ── High-beta / meme / Reddit favorites ───────────────────────────────────
+    "GME","AMC","HIMS","RKLB","ASTS","SOFI","HOOD","OPEN","UPST","AFRM",
+    "LMND","ROOT","CLOV","WISH","SPCE","NKLA","WKHS","GOEV","RIDE","PTRA",
+    # ── Crypto-adjacent / Bitcoin miners ──────────────────────────────────────
+    "COIN","MARA","RIOT","MSTR","CLSK","BTBT","CIFR","WULF","HUT","CORZ",
+    "BTDR","IREN","HIVE","BSRT","SMLR","MGOL","BITI","BITO","GBTC","IBIT",
+    # ── Major ETFs (leveraged + sector) ───────────────────────────────────────
+    "SPY","QQQ","IWM","TQQQ","SQQQ","SOXL","SOXS","ARKK","VXX","UVXY",
+    "GLD","SLV","USO","XBI","XLF","XLE","XLK","IBB","SMH","TNA",
+    "TZA","LABU","LABD","FNGU","FNGD","TECL","TECS","NAIL","DPST","CURE",
+    # ── EV / clean energy ─────────────────────────────────────────────────────
+    "RIVN","LCID","NIO","LI","XPEV","FSR","TSLA","CHPT","BLNK","EVGO",
+    "PLUG","FCEL","BE","BLDP","BALLARD","RUN","NOVA","MAXN","CSIQ","JKS",
+    # ── Financials / banks / fintech ──────────────────────────────────────────
+    "JPM","BAC","GS","MS","C","WFC","SCHW","V","MA","PYPL",
+    "AXP","COF","DFS","SQ","NU","MELI","PAGS","STNE","XP","FLYW",
+    # ── Healthcare / biotech ──────────────────────────────────────────────────
+    "MRNA","BNTX","GILD","REGN","BIIB","ABBV","BMY","PFE","NVAX","CRSP",
+    "BEAM","EDIT","NTLA","FATE","SGEN","FOLD","RCUS","MRTX","KURA","ACMR",
+    # ── Energy / oil & gas ────────────────────────────────────────────────────
+    "XOM","CVX","COP","OXY","SLB","HAL","DVN","MRO","HES","FANG",
+    # ── Retail / consumer ─────────────────────────────────────────────────────
+    "WMT","TGT","COST","HD","LOW","SBUX","MCD","CMG","LULU","NKE",
+    "PTON","BIRK","ONON","SKX","UAA","UA","PVH","GPS","URBN","ANF",
+    # ── International ADRs / large-cap growth ─────────────────────────────────
+    "BABA","JD","PDD","TCEHY","BIDU","TSM","ASML","SHOP","SE","GRAB",
+    "MELI","NU","INFY","WIT","ERIC","NOK","STMICRO","LNVGF","HTHIY","SSNLF",
 ]
 
-_predict_results  = {}      # { sym: result_dict }
+_predict_results  = {}      # { sym: result_dict }  — accumulated across all buckets
 _predict_lock     = threading.Lock()
 _predict_bg_on    = False
 _predict_bg_lock  = threading.Lock()
-_predict_stats    = {"ts": 0, "model": "loading"}
+_predict_stats    = {"ts": 0, "model": "loading", "bucket": 0, "bucket_total": 0}
+_PREDICT_RESULT_TTL    = 900   # 15 min — covers 2+ full rotations; stale results auto-expire
+_PREDICT_BUCKET_SECS   = 60    # one bucket every 60s
+_PREDICT_NUM_BUCKETS   = 7     # 350 tickers ÷ 7 = 50/bucket → full rotation ~7 min
 
 # ── Direction streak / hysteresis ────────────────────────────────────────────
 # Prevents rapid bull↔bear flips from noisy single-bar readings.
@@ -4759,79 +4809,85 @@ def _predict_one(sym):
         "_ts":                time.time(),
     }
 
+def _predict_apply_streak(sym, res):
+    """Apply direction-streak hysteresis to a single prediction result (in-place)."""
+    raw_dir = res.get("direction") or res.get("kronos_dir") or ""
+    if raw_dir in ("bull", "bear"):
+        st = _predict_streak.get(sym)
+        if st is None:
+            st = {"dir": raw_dir, "count": 1, "candidate": raw_dir, "cand_count": 1}
+        else:
+            if raw_dir == st["dir"]:
+                st["count"]      = min(st["count"] + 1, 10)
+                st["candidate"]  = raw_dir
+                st["cand_count"] = 1
+            else:
+                if raw_dir == st.get("candidate") and raw_dir != st["dir"]:
+                    st["cand_count"] += 1
+                else:
+                    st["candidate"]  = raw_dir
+                    st["cand_count"] = 1
+                if st["cand_count"] >= _STREAK_FLIP_REQUIRED:
+                    st["dir"]        = raw_dir
+                    st["count"]      = _STREAK_FLIP_REQUIRED
+                    st["cand_count"] = 0
+                    st["candidate"]  = raw_dir
+        _predict_streak[sym] = st
+        res["consensus_dir"] = st["dir"]
+        res["streak_count"]  = st["count"]
+        res["flipping"]      = (st.get("candidate") != st["dir"] and st.get("cand_count", 0) > 0)
+        res["flip_progress"] = st.get("cand_count", 0)
+    else:
+        res["consensus_dir"] = raw_dir
+        res["streak_count"]  = 1
+        res["flipping"]      = False
+        res["flip_progress"] = 0
+    return res
+
+
 def _predict_bg_loop():
-    """Background thread: re-runs predictions every 60s."""
-    import concurrent.futures
-    # Linear regression is ready immediately (_tfm_ready=True at startup).
-    # Optionally wait for Kronos neural model to load (max 60s), then proceed
-    # — predictions run even if Kronos hasn't finished loading yet.
+    """Background thread: rotates through _PREDICT_NUM_BUCKETS, one bucket per 60s.
+    With 350 tickers in 7 buckets the full universe cycles every ~7 minutes.
+    Results accumulate in _predict_results; stale entries expire after _PREDICT_RESULT_TTL.
+    """
+    # Wait (max 60s) for Kronos neural model — then proceed with linreg regardless
     for _ in range(30):
         if _kronos_predictor is not None:
             break
         time.sleep(2)
 
+    bucket_idx = 0
     while True:
         try:
-            with _predict_lock:
-                watchlist = list(_PREDICT_WATCHLIST)
+            universe = list(_PREDICT_WATCHLIST)
+            n        = _PREDICT_NUM_BUCKETS
+            sz       = max(1, len(universe) // n + (1 if len(universe) % n else 0))
+            buckets  = [universe[i*sz:(i+1)*sz] for i in range(n)]
+            bucket   = buckets[bucket_idx % n]
 
-            new_results = {}
-            # Run predictions — serialised to avoid OOM with large models
-            for sym in watchlist:
+            bucket_results = {}
+            for sym in bucket:
                 try:
                     res = _predict_one(sym)
                     if res:
-                        # ── Direction streak / hysteresis ───────────────────────
-                        # Raw direction from this single prediction cycle
-                        raw_dir = res.get("direction") or res.get("kronos_dir") or ""
-                        if raw_dir in ("bull", "bear"):
-                            st = _predict_streak.get(sym)
-                            if st is None:
-                                # First reading — initialise streak
-                                st = {"dir": raw_dir, "count": 1, "candidate": raw_dir, "cand_count": 1}
-                            else:
-                                if raw_dir == st["dir"]:
-                                    # Agrees with committed direction — reinforce streak
-                                    st["count"]      = min(st["count"] + 1, 10)
-                                    st["candidate"]  = raw_dir
-                                    st["cand_count"] = 1
-                                else:
-                                    # Disagrees — build counter-candidate
-                                    if raw_dir == st.get("candidate") and raw_dir != st["dir"]:
-                                        st["cand_count"] += 1
-                                    else:
-                                        st["candidate"]  = raw_dir
-                                        st["cand_count"] = 1
-                                    # Flip committed direction only after N consecutive counter-signals
-                                    if st["cand_count"] >= _STREAK_FLIP_REQUIRED:
-                                        st["dir"]       = raw_dir
-                                        st["count"]     = _STREAK_FLIP_REQUIRED
-                                        st["cand_count"] = 0
-                                        st["candidate"] = raw_dir
-                            _predict_streak[sym] = st
-
-                            # Annotate result with consensus direction + strength
-                            res["consensus_dir"]    = st["dir"]
-                            res["streak_count"]     = st["count"]
-                            res["flipping"]         = (st.get("candidate") != st["dir"] and
-                                                       st.get("cand_count", 0) > 0)
-                            res["flip_progress"]    = st.get("cand_count", 0)
-                        else:
-                            res["consensus_dir"]  = raw_dir
-                            res["streak_count"]   = 1
-                            res["flipping"]       = False
-                            res["flip_progress"]  = 0
-
-                        new_results[sym] = res
+                        res["_ts"] = time.time()
+                        _predict_apply_streak(sym, res)
+                        bucket_results[sym] = res
                 except Exception:
                     pass
 
             now = time.time()
             with _predict_lock:
-                _predict_results.clear()
-                _predict_results.update(new_results)
-                _predict_stats["ts"]    = int(now)
-                tfm_label = ("TFM-Neural" if (_tfm_ready and _tfm_model not in (None,"fallback"))
+                # Merge new bucket results; expire old results beyond TTL
+                _predict_results.update(bucket_results)
+                stale = [s for s, r in _predict_results.items()
+                         if (now - r.get("_ts", 0)) > _PREDICT_RESULT_TTL]
+                for s in stale:
+                    del _predict_results[s]
+                _predict_stats["ts"]           = int(now)
+                _predict_stats["bucket"]       = bucket_idx % n
+                _predict_stats["bucket_total"] = n
+                tfm_label = ("TFM-Neural"  if (_tfm_ready and _tfm_model not in (None,"fallback"))
                              else "TFM-LinReg" if (_tfm_ready and _tfm_model == "fallback")
                              else None)
                 _predict_stats["model"] = (
@@ -4840,12 +4896,16 @@ def _predict_bg_loop():
                     tfm_label             if tfm_label else
                     "Loading"
                 )
-            print(f"[Predict] {len(new_results)}/{len(watchlist)} predictions complete "
-                  f"({_predict_stats['model']})")
+            total_live = len(_predict_results)
+            print(f"[Predict] Bucket {bucket_idx % n + 1}/{n}: "
+                  f"{len(bucket_results)}/{len(bucket)} scanned · "
+                  f"{total_live} total live ({_predict_stats['model']})")
+            bucket_idx += 1
+
         except Exception as e:
             print(f"[Predict BG] Error: {e}")
 
-        time.sleep(60)
+        time.sleep(_PREDICT_BUCKET_SECS)
 
 def _start_predict_bg():
     global _predict_bg_on
@@ -4859,10 +4919,14 @@ def _start_predict_bg():
 
 @app.route("/api/predict/scan")
 def predict_scan():
-    """Returns bull/bear predictions for the watchlist, ranked by confidence."""
+    """Returns bull/bear predictions for the rotating-bucket universe, ranked by confidence.
+    Top 15 bull + top 15 bear are returned for display; full list available via 'all'."""
     _start_predict_bg()
+    now = time.time()
     with _predict_lock:
-        results = [dict(v) for v in _predict_results.values()]
+        # Exclude expired results (belt-and-suspenders — bg loop also prunes)
+        results = [dict(v) for v in _predict_results.values()
+                   if (now - v.get("_ts", 0)) <= _PREDICT_RESULT_TTL]
         stats   = dict(_predict_stats)
         wl      = list(_PREDICT_WATCHLIST)
 
@@ -4873,30 +4937,39 @@ def predict_scan():
     conv_order = {"HIGH": 0, "MEDIUM": 1}
     results.sort(key=lambda x: (
         conv_order.get(x.get("conviction","MEDIUM"), 1),
-        1 if x.get("flipping") else 0,   # flipping signals go lower
-        -x.get("streak_count", 1),        # higher streak = more reliable = sort first
+        1 if x.get("flipping") else 0,
+        -x.get("streak_count", 1),
         -x.get("confidence", 0)
     ))
 
-    # Split bull / bear using consensus direction (streak-smoothed) when available
     def _display_dir(r):
         cd = r.get("consensus_dir", "")
         return (cd.upper() if cd else r.get("direction", ""))
 
-    bulls = [r for r in results if _display_dir(r) == "BULL"]
-    bears = [r for r in results if _display_dir(r) == "BEAR"]
+    all_bulls = [r for r in results if _display_dir(r) == "BULL"]
+    all_bears = [r for r in results if _display_dir(r) == "BEAR"]
+
+    # Cap display at top 15 each — strongest signals only
+    bulls = all_bulls[:15]
+    bears = all_bears[:15]
 
     loading = stats["ts"] == 0
+    bucket_num   = stats.get("bucket", 0) + 1
+    bucket_total = stats.get("bucket_total", _PREDICT_NUM_BUCKETS)
 
     return jsonify({
-        "bulls":     bulls,
-        "bears":     bears,
-        "all":       results,
-        "total":     len(results),
-        "watchlist": len(wl),
-        "ts":        stats["ts"],
-        "model":     stats["model"],
-        "loading":   loading,
+        "bulls":         bulls,
+        "bears":         bears,
+        "all":           results[:60],       # top 60 combined for any full-list views
+        "total":         len(results),
+        "bull_total":    len(all_bulls),
+        "bear_total":    len(all_bears),
+        "watchlist":     len(wl),
+        "bucket":        bucket_num,
+        "bucket_total":  bucket_total,
+        "ts":            stats["ts"],
+        "model":         stats["model"],
+        "loading":       loading,
     })
 
 # ── TimesFM — lazy-loaded Google foundation model for 5-bar price forecast ─────
