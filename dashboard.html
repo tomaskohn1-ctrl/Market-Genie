@@ -5284,8 +5284,8 @@ function renderPredictions() {
   const ts = d.ts ? new Date(d.ts*1000).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '--:--';
 
   // Header row
-  const hdr = `<div style="display:grid;grid-template-columns:70px 90px 70px 1fr 1fr;gap:4px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">
-    <div>TICKER</div><div>SIGNAL</div><div>CONF</div><div>KRONOS</div><div>TIMESFM</div>
+  const hdr = `<div style="display:grid;grid-template-columns:70px 90px 60px 56px 1fr 1fr;gap:4px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">
+    <div>TICKER</div><div>SIGNAL</div><div>CONF</div><div title="Consecutive cycles in this direction — higher = more reliable">STREAK ↑</div><div>KRONOS</div><div>TIMESFM</div>
   </div>`;
 
   function renderRow(r) {
@@ -5314,10 +5314,16 @@ function renderPredictions() {
     const tClr  = tDir === 'bull' ? '#00e676' : tDir === 'bear' ? '#ff4455' : '#718096';
     const tArrow= tDir === 'bull' ? '▲' : tDir === 'bear' ? '▼' : '—';
 
-    // ── Streak indicator — show strength of current direction ─────────────────
-    // streakCount: how many consecutive cycles the committed direction has held
-    const streakDots = streakCount >= 5 ? '●●●' : streakCount >= 3 ? '●●' : '●○';
+    // ── Streak indicator — dedicated column with color tier ──────────────────
     const streakTitle = `Direction held for ${streakCount} consecutive cycle${streakCount > 1 ? 's' : ''}`;
+    // Tier: 1 = new/dim, 2-3 = yellow, 4-6 = orange, 7+ = green fire
+    const streakTier  = streakCount >= 7 ? 'fire' : streakCount >= 4 ? 'hot' : streakCount >= 2 ? 'warm' : 'new';
+    const streakClr   = streakTier === 'fire' ? '#00e676' : streakTier === 'hot' ? '#ff9800' : streakTier === 'warm' ? '#ffd740' : 'rgba(255,255,255,0.3)';
+    const streakBg    = streakTier === 'fire' ? 'rgba(0,230,118,0.15)' : streakTier === 'hot' ? 'rgba(255,152,0,0.15)' : streakTier === 'warm' ? 'rgba(255,215,0,0.10)' : 'rgba(255,255,255,0.04)';
+    const streakIcon  = streakTier === 'fire' ? '🔥' : streakTier === 'hot' ? '▲' : streakTier === 'warm' ? '↑' : '·';
+    const streakCell  = `<div title="${streakTitle}" style="display:inline-flex;align-items:center;gap:3px;background:${streakBg};border:1px solid ${streakClr}44;border-radius:4px;padding:2px 6px;font-size:11px;font-weight:800;color:${streakClr};font-family:'JetBrains Mono',monospace">
+      ${streakIcon} ${streakCount}
+    </div>`;
 
     // ── FLIPPING badge — shows when a counter-signal is building ──────────────
     // "flipProgress" = how many consecutive readings have pointed the other way
@@ -5336,13 +5342,12 @@ function renderPredictions() {
     }
 
     const dirLabel   = isBull ? 'BULL' : 'BEAR';
-    // Dim the direction slightly when only 1 cycle has agreed (just became consensus)
-    const dirOpacity = streakCount >= 2 ? '1' : '0.75';
+    const dirOpacity = streakCount >= 2 ? '1' : '0.6';
 
-    return `<div style="display:grid;grid-template-columns:70px 90px 70px 1fr 1fr;gap:4px;padding:7px 14px;border-bottom:1px solid rgba(255,255,255,0.04);align-items:center;cursor:pointer;transition:background 0.15s" onmouseenter="this.style.background='rgba(255,255,255,0.03)'" onmouseleave="this.style.background=''" onclick="openTickerChart('${r.sym}')">
+    return `<div style="display:grid;grid-template-columns:70px 90px 60px 56px 1fr 1fr;gap:4px;padding:7px 14px;border-bottom:1px solid rgba(255,255,255,0.04);align-items:center;cursor:pointer;transition:background 0.15s" onmouseenter="this.style.background='rgba(255,255,255,0.03)'" onmouseleave="this.style.background=''" onclick="openTickerChart('${r.sym}')">
       <div style="font-size:13px;font-weight:700;color:var(--text-hi)">${r.sym}</div>
       <div style="display:flex;flex-direction:column;gap:2px">
-        <span title="${streakTitle}" style="font-size:12px;font-weight:800;color:${dirClr};background:${dirBg};padding:2px 7px;border-radius:4px;display:inline-block;letter-spacing:0.5px;opacity:${dirOpacity}">${dirLabel} ${streakDots}</span>
+        <span style="font-size:12px;font-weight:800;color:${dirClr};background:${dirBg};padding:2px 7px;border-radius:4px;display:inline-block;letter-spacing:0.5px;opacity:${dirOpacity}">${dirLabel}</span>
         ${statusBadge}
       </div>
       <div>
@@ -5351,6 +5356,7 @@ function renderPredictions() {
           <div style="width:${Math.min(confBar,100)}%;height:100%;background:${dirClr};border-radius:2px"></div>
         </div>
       </div>
+      ${streakCell}
       <div style="font-size:11px;color:${kClr};font-family:'JetBrains Mono',monospace">${kArrow} ${kPct}</div>
       <div style="font-size:11px;color:${tClr};font-family:'JetBrains Mono',monospace">${tArrow} ${tPct}</div>
     </div>`;
@@ -5374,7 +5380,7 @@ function renderPredictions() {
     ? ` <span style="color:#ffd740">· Showing top 15 of ${bullTotal} bull / ${bearTotal} bear</span>` : '';
   const footer = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);text-align:center;border-top:1px solid rgba(255,255,255,0.04)">
     🔮 ${d.model || 'Loading'} · ${d.total} of ${d.watchlist} scanned${bucketInfo} · Updated ${ts}${topNote}
-    <span style="margin-left:8px;opacity:0.7">●●● = 5+ cycles confirmed · ↺ = counter-signal building · ⚠️ = price diverging</span>
+    <span style="margin-left:8px;opacity:0.7">🔥 streak ≥7 · ▲ streak 4-6 · ↑ streak 2-3 · ↺ = flip building · ⚠️ = price diverging</span>
   </div>`;
 
   body.innerHTML = hdr + bullSep + bullRows + bearSep + bearRows + footer;
