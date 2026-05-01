@@ -5069,8 +5069,13 @@ def _wr_log_signal(res):
 
     if not sym or direction not in ("bull", "bear"):
         return
-    if streak < 2 or flipping:
-        return   # only log confirmed, non-flipping signals
+    if flipping:
+        return   # skip signals actively flipping direction
+    # Log streak >= 1 so data accumulates from the first scan.
+    # The streak value is stored in the DB so breakdown analysis still
+    # shows whether high-streak signals outperform streak=1 signals.
+    if streak < 1:
+        return
 
     now = time.time()
     with _wr_lock:
