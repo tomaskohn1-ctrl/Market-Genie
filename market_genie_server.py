@@ -312,18 +312,48 @@ def massive_get(path, params=None):
 
 
 def massive_snapshot(ticker):
-    """Single ticker snapshot via Massive v2.
-    NOTE: /v2/snapshot endpoints require an upgraded Massive plan (returns 403 on free).
-    Returns None so callers fall back gracefully."""
-    # Skip the API call — always 403 on current plan, saves ~300ms per scan
+    """Single ticker real-time snapshot via Massive v2 (upgraded plan required)."""
+    data = massive_get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
+    if data and data.get("ticker"):
+        return data["ticker"]
     return None
 
 
+def massive_1min_bars(ticker, minutes_back=120):
+    """Fetch up to `minutes_back` 1-minute OHLCV bars from Massive.
+    Includes pre/post-market data. Returns (closes, opens, highs, lows, volumes) or None."""
+    import time as _time, datetime as _dt
+    now_ms   = int(_time.time() * 1000)
+    from_ms  = now_ms - minutes_back * 60 * 1000
+    from_str = _dt.datetime.utcfromtimestamp(from_ms / 1000).strftime("%Y-%m-%d")
+    to_str   = _dt.datetime.utcnow().strftime("%Y-%m-%d")
+    data = massive_get(
+        f"/v2/aggs/ticker/{ticker}/range/1/minute/{from_str}/{to_str}",
+        {"adjusted": "true", "sort": "asc", "limit": str(minutes_back + 20),
+         "extended_hours": "true"}
+    )
+    if not data or not data.get("results"):
+        return None
+    import numpy as np
+    results = data["results"]
+    closes  = np.array([r["c"] for r in results], dtype=float)
+    opens   = np.array([r["o"] for r in results], dtype=float)
+    highs   = np.array([r["h"] for r in results], dtype=float)
+    lows    = np.array([r["l"] for r in results], dtype=float)
+    volumes = np.array([r.get("v", 0) for r in results], dtype=float)
+    if len(closes) < 10:
+        return None
+    return closes, opens, highs, lows, volumes
+
+
 def massive_gainers_losers():
-    """Top gainers/losers.
-    NOTE: Massive snapshot/gainers endpoints are NOT in the current plan (403).
-    Returns empty dict so api_gainers_losers() immediately falls back to yfinance."""
-    return {"gainers": {}, "losers": {}}
+    """Top gainers/losers snapshots from Massive (upgraded plan)."""
+    gainers = massive_get("/v2/snapshot/locale/us/markets/stocks/gainers")
+    losers  = massive_get("/v2/snapshot/locale/us/markets/stocks/losers")
+    return {
+        "gainers": gainers or {},
+        "losers":  losers  or {},
+    }
 
 
 def massive_daily_summary(date_str=None):
@@ -4225,8 +4255,20 @@ _predict_bg_lock  = threading.Lock()
 _predict_stats    = {"ts": 0, "model": "loading"}
 
 def _predict_fetch_closes(sym, bars=90):
-    """Fetch up to `bars` 1-min close prices including pre/post market."""
+    """Fetch up to `bars` 1-min close prices including pre/post market.
+    Tries Massive first (real extended-hours volume), falls back to yfinance."""
     try:
+        # Try Massive 1-min bars (real data, extended hours)
+        if MASSIVE_KEY:
+            result = massive_1min_bars(sym, minutes_back=bars + 30)
+            if result is not None:
+                closes = result[0]  # closes array
+                if len(closes) >= 20:
+                    last_p = float(closes[-1])
+                    if last_p > 0:
+                        return closes[-bars:], last_p
+
+        # Fall back to yfinance
         df = yf.Ticker(sym).history(period="2d", interval="1m", prepost=True)
         if df is None or len(df) < 20:
             return None, None
@@ -4710,25 +4752,33 @@ def _scalp_fetch_one(sym):
 
         extended_hours = not _is_market_hours()
 
-        if not extended_hours:
-            # ── Regular hours: fast 1-day fetch ───────────────────────────
-            df = yf.Ticker(sym).history(period="1d", interval="1m", prepost=True)
-            if df is None or len(df) < 25:
-                return None
-        else:
-            # ── Extended hours: 5-day fetch gives yesterday's real volume ──
-            # and today's pre/post-market price bars.
-            if sym not in _EXT_UNIVERSE:
-                return None   # focus on the curated extended-hours universe
-            df = yf.Ticker(sym).history(period="5d", interval="1m", prepost=True)
-            if df is None or len(df) < 30:
-                return None
+        closes = opens = highs = lows = volumes = None
+        used_massive = False
 
-        df.columns = [c.lower() for c in df.columns]
-        closes  = df["close"].values.astype(float)
-        volumes = df["volume"].values.astype(float)
-        highs   = df["high"].values.astype(float)
-        lows    = df["low"].values.astype(float)
+        # ── Try Massive 1-min bars first (real volume, extended hours) ────
+        if MASSIVE_KEY:
+            result = massive_1min_bars(sym, minutes_back=150)
+            if result is not None:
+                closes, opens, highs, lows, volumes = result
+                used_massive = True
+
+        # ── Fall back to yfinance ─────────────────────────────────────────
+        if closes is None:
+            if extended_hours:
+                if sym not in _EXT_UNIVERSE:
+                    return None
+                df = yf.Ticker(sym).history(period="5d", interval="1m", prepost=True)
+                if df is None or len(df) < 30:
+                    return None
+            else:
+                df = yf.Ticker(sym).history(period="1d", interval="1m", prepost=True)
+                if df is None or len(df) < 25:
+                    return None
+            df.columns = [c.lower() for c in df.columns]
+            closes  = df["close"].values.astype(float)
+            volumes = df["volume"].values.astype(float)
+            highs   = df["high"].values.astype(float)
+            lows    = df["low"].values.astype(float)
 
         last_p  = closes[-1]
         if last_p <= 0 or last_p < 2.0:
