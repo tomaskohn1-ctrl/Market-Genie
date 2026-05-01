@@ -500,7 +500,7 @@ _ws_minute_hist  = {}          # { SYM: deque([vol, ...], maxlen=8) }
 _ws_surges       = {}          # { SYM: {ratio, vol, avg, ts, dir, price} }
 _ws_near_misses  = {}          # { SYM: {ratio, vol, avg, ts, price} } — highest ratio < threshold
 _ws_lock         = threading.Lock()
-_ws_status       = {"connected": False, "ts": 0, "bars": 0, "second_bars": 0}
+_ws_status       = {"connected": False, "ts": 0, "bars": 0, "second_bars": 0, "seed_tickers": 0, "seed_done": False}
 _WS_URL          = "wss://socket.massive.com/stocks"
 
 # Surge tuning constants
@@ -558,6 +558,9 @@ def _ws_seed_history():
                 seeded += 1
         except Exception as e:
             pass  # Skip individual ticker failures silently
+    with _ws_lock:
+        _ws_status["seed_tickers"] = seeded
+        _ws_status["seed_done"]    = True
     print(f"[WS/Seed] Done — seeded {seeded}/{len(tickers)} tickers. Surges will fire on first spike.")
 
 
@@ -834,9 +837,11 @@ def api_live_surges():
         am_bars      = _ws_status["bars"]
         sec_bars     = _ws_status["second_bars"]
         live_tickers = len(_ws_live)
+        seed_done    = _ws_status["seed_done"]
+        seed_tickers = _ws_status["seed_tickers"]
     ranked = sorted(active.items(), key=lambda x: x[1]["ratio"], reverse=True)
     # Determine which mode is active
-    mode = "second_bars" if sec_bars > 0 else ("minute_bars" if am_bars > 0 else "waiting")
+    mode = "second_bars" if sec_bars > 0 else ("minute_bars" if am_bars > 0 else ("seeded" if seed_done else "waiting"))
     return jsonify({
         "surges":       [{"sym": sym, **data} for sym, data in ranked],
         "count":        len(ranked),
@@ -845,7 +850,9 @@ def api_live_surges():
         "second_bars":  sec_bars,
         "am_bars":      am_bars,
         "live_tickers": live_tickers,
-        "mode":         mode,   # "second_bars" | "minute_bars" | "waiting"
+        "seed_done":    seed_done,
+        "seed_tickers": seed_tickers,
+        "mode":         mode,   # "second_bars" | "minute_bars" | "seeded" | "waiting"
         "ts":           int(now),
     })
 

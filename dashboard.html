@@ -5456,6 +5456,11 @@ async function pollLiveSurges() {
       badge.style.background = 'rgba(255,68,85,0.15)';
       badge.style.color = '#ff4455';
       badge.style.borderColor = 'rgba(255,68,85,0.3)';
+    } else if (surges.length === 0 && mode === 'seeded') {
+      badge.textContent = '✅ Ready';
+      badge.style.background = 'rgba(0,230,118,0.10)';
+      badge.style.color = '#00e676';
+      badge.style.borderColor = 'rgba(0,230,118,0.3)';
     } else if (surges.length === 0) {
       badge.textContent = '📡 Live';
       badge.style.background = 'rgba(255,180,0,0.12)';
@@ -5476,6 +5481,10 @@ async function pollLiveSurges() {
         } else if (mode === 'minute_bars') {
           modeMsg = `📊 Minute-bar mode: watching ${liveTix} tickers · ${amBars.toLocaleString()} bars received. ` +
                     `<span style="color:#ffd740">Surges fire when a ticker's completed-minute volume hits 2× its recent average.</span>`;
+        } else if (mode === 'seeded') {
+          const seedTix = d.seed_tickers || 0;
+          modeMsg = `✅ Volume baselines loaded for <b style="color:var(--text-hi)">${seedTix} tickers</b> — watching for 2× spikes. ` +
+                    `<span style="color:var(--muted)">Surges fire on the next completed minute bar above 2× average volume.</span>`;
         } else {
           const tickerNote = liveTix > 0
             ? `${liveTix} tickers connected — seeding volume history from REST API.`
