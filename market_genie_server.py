@@ -5053,8 +5053,7 @@ def predict_scan():
 _WR_DB_PATH        = os.path.join(os.path.dirname(__file__), "winrate.db")
 _WR_RESOLVE_MINS   = 20    # resolve signal after this many minutes
 _WR_MIN_MOVE_PCT   = 0.30  # minimum move % to count as WIN/LOSS (else NEUTRAL)
-_WR_EDGE_MIN       = 70.0  # only log "best entry" quality signals (edge score ≥ 70)
-_wr_last_logged    = {}    # { sym: {"dir": str, "ts": float} } — dedup guard
+_wr_last_logged    = {}    # { sym: {"dir": str, "ts": float} } — in-memory dedup (per-worker)
 _wr_lock           = threading.Lock()
 
 
@@ -5172,6 +5171,16 @@ def _wr_log_signal(res):
 
     try:
         with sqlite3.connect(_WR_DB_PATH) as con:
+            # DB-level dedup: catches duplicate logs across Gunicorn workers
+            # (in-memory _wr_last_logged is per-worker, doesn't cross process boundaries)
+            recent = con.execute("""
+                SELECT id FROM signals
+                WHERE sym=? AND direction=? AND ts_entry > ?
+                LIMIT 1
+            """, (sym, direction, int(now) - 1800)).fetchone()
+            if recent:
+                return   # already logged this sym+direction within 30 min
+
             con.execute("""
                 INSERT INTO signals
                     (sym, direction, confidence, conviction, streak, both_agree,

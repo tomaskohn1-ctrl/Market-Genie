@@ -5597,8 +5597,7 @@ function renderWinRate() {
         <tr style="background:rgba(255,255,255,0.02)">
           <td colspan="4" style="padding:4px 10px;font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">BY MODEL AGREEMENT</td>
         </tr>
-        ${breakdownRow('Both Agree ✓', ba.both_agree, 'Kronos + LinReg align')}
-        ${breakdownRow('Single model', ba.single, '')}
+        ${breakdownRow('Both Agree ✓', ba.both_agree, 'Kronos + TFM align · 88% WR target')}
         <tr style="background:rgba(255,255,255,0.02)">
           <td colspan="4" style="padding:4px 10px;font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">BY DIRECTION</td>
         </tr>
@@ -5649,7 +5648,7 @@ function renderWinRate() {
     </div>` : '';
 
   const footNote = `<div style="padding:6px 12px 8px;font-size:9px;color:var(--muted);border-top:1px solid rgba(255,255,255,0.04);line-height:1.7">
-    📌 Every non-flipping prediction is logged · Resolved 20 min after entry · WIN/LOSS = ≥0.3% move in predicted direction · NEUTRAL = &lt;0.3% · Streak column shows signal age at time of logging · ⬇ Export CSV saves history before deploys.
+    📌 Only <b style="color:#ffd700">both_agree=1</b> signals logged (Kronos + TFM agree on direction) · Resolved 20 min after entry · WIN/LOSS = ≥0.3% move · NEUTRAL = &lt;0.3% · Same ticker+direction deduped within 30 min · ⬇ Export CSV before every deploy.
   </div>`;
 
   body.innerHTML = gaugeHtml + tableHtml + histHtml + footNote;
