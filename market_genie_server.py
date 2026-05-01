@@ -4375,7 +4375,7 @@ _scalp_bg_lock    = threading.Lock()
 _scalp_stats      = {"bucket": -1, "ts": 0}
 _SCALP_NUM_BUCKETS  = 4
 _SCALP_BUCKET_SECS  = 15   # scan one bucket every 15 s → full universe every 60 s
-_SCALP_RESULT_TTL   = 90   # drop alerts not refreshed in 90 s
+_SCALP_RESULT_TTL   = 300  # keep alerts for 5 min (full rotation ~120-140s, TTL must be longer)
 
 def _scalp_ema(arr, period):
     k = 2.0 / (period + 1)
@@ -4535,9 +4535,11 @@ def _scalp_fetch_one(sym):
             rsi_val = (100.0 - 100.0/(1.0 + g/ls)) if ls > 0 else (100.0 if g > 0 else 50.0)
 
         score = max(bull, bear)
-        if score < 3:
+        # Require score >= 3 normally; allow score >= 2 if vol_ratio is elevated (pre-market movers)
+        min_score = 2 if vol_ratio >= 1.5 else 3
+        if score < min_score:
             return None
-        grade = "A" if score >= 5 else "B"
+        grade = "A" if score >= 5 else ("B" if score >= 3 else "C")
 
         # Cache closes for TFM batch inference
         _tfm_closes[sym] = closes
@@ -4686,17 +4688,27 @@ def scalp_scanner():
         for a in alerts:
             a.pop("_ts", None)
 
-        grade_order = {"A": 0, "B": 1}
+        grade_order = {"A": 0, "B": 1, "C": 2}
         alerts.sort(key=lambda x: (grade_order.get(x.get("grade","C"), 2),
                                    -x.get("score", 0),
                                    -x.get("vol_ratio", 0)))
+
+        last_ts = _scalp_stats.get("ts", 0)
+        if last_ts == 0:
+            status = "warming_up"
+        elif time.time() - last_ts > 180:
+            status = "stale"
+        else:
+            status = "live"
 
         payload = {
             "alerts":   alerts[:25],
             "total":    len(alerts),
             "scanned":  len(_SCALP_UNIVERSE),
-            "ts":       _scalp_stats.get("ts", int(time.time())),
+            "ts":       last_ts if last_ts else int(time.time()),
             "spy_ret1": round(_scalp_spy.get("ret1", 0.0), 3),
+            "status":   status,
+            "bucket":   _scalp_stats.get("bucket", -1),
         }
         return jsonify(payload)
     except Exception as e:
@@ -6458,4 +6470,35 @@ Return ONLY valid JSON in this exact format (no markdown, no extra text):
 confidence is an integer 1-10. Be honest — use 5 for neutral/unclear setups, not 7+ for everything.
 """
 
-    # ── Call Claude via plain HTTP (no anthropic SDK needed) ─────�
+    # ── Call Claude via plain HTTP (no anthropic SDK needed) ──────
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["content"][0]["text"].strip()
+        # Strip markdown fences if present
+        if raw.startswith("```"):
+            parts = raw.split("```")
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
+        thesis = json.loads(raw)
+        thesis["ok"] = True
+        thesis["ticker"] = ticker
+        return jsonify(set_cache(cache_key, thesis))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "ticker": ticker}), 200
+�

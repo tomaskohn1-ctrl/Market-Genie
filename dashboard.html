@@ -5192,7 +5192,12 @@ function renderScalpAlerts() {
   badge.className   = aCount > 0 ? 'card-tag tag-bull' : (d.total > 0 ? 'card-tag tag-neutral' : 'card-tag tag-neutral');
 
   if (!d.alerts.length) {
-    body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">No setups found right now — auto-retrying in 60s.</div>`;
+    const warmMsg = d.status === 'warming_up'
+      ? '⏳ Scanner warming up — first pass takes ~60s…'
+      : d.status === 'stale'
+      ? '⚠️ Scanner may be restarting — check back in 30s.'
+      : '🔍 Market quiet right now — no setups meet criteria. Auto-retrying in 60s.';
+    body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">${warmMsg}</div>`;
     return;
   }
 
@@ -5341,8 +5346,9 @@ function renderScalpAlerts() {
     <span>${d.scanned} scanned · ${new Date(d.ts * 1000).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}</span>
   </div>`;
 
+  const statusDot = d.status === 'live' ? '🟢' : d.status === 'warming_up' ? '🟡' : '🔴';
   const footer = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);text-align:center;border-top:1px solid rgba(255,255,255,0.04)">
-    Auto-refreshes every 60s · Click any row to deep-scan · A=5+/11 · B=3-4/11 · TFM▲▼ = Google TimesFM 5-bar forecast
+    ${statusDot} Auto-refreshes every 60s · A=5+/11 · B=3-4/11 · C=2/11 pre-mkt · TFM▲▼ = Google AI forecast
   </div>`;
 
   body.innerHTML = spyBar + header + rows + footer;
