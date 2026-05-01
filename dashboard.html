@@ -2457,6 +2457,23 @@
   </div>
 
   <!-- ── Scalp Alerts — 5-10 min momentum scanner ──────────────── -->
+  <!-- ══ PREDICTION ENGINE ══ -->
+  <div class="card" data-tab="signal" id="predictCard" style="border-color:rgba(138,43,226,0.4);box-shadow:0 0 24px rgba(138,43,226,0.12)">
+    <div class="card-header" style="background:linear-gradient(135deg,rgba(138,43,226,0.12),rgba(0,180,255,0.08))">
+      <div class="card-title"><span class="card-icon">🔮</span> Prediction Engine <span style="font-size:10px;font-weight:400;color:var(--muted)">next 5-20 min</span></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="predictBadge" class="card-tag" style="background:rgba(138,43,226,0.2);color:#c084fc;border:1px solid rgba(138,43,226,0.4)">Loading…</span>
+        <span id="predictModel" style="font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace"></span>
+        <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="loadPredictions(true)">▶ Predict</button>
+      </div>
+    </div>
+    <div class="card-body" style="padding:0">
+      <div id="predictBody">
+        <div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">⏳ Prediction engine warming up — Kronos + TimesFM loading models…</div>
+      </div>
+    </div>
+  </div>
+
   <div class="card" data-tab="signal" id="scalpAlertCard">
     <div class="card-header">
       <div class="card-title"><span class="card-icon">⚡</span> Scalp Alerts <span style="font-size:10px;font-weight:400;color:var(--muted)">5-10 min</span></div>

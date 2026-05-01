@@ -4205,6 +4205,242 @@ def kronos_scanner():
     return jsonify(set_cache(key, payload))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ── PREDICTION ENGINE — Kronos + TimesFM combined bull/bear scanner ───────────
+# Works 24/7: pre-market, regular hours, after-hours (price-only, no volume needed)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Default watchlist — user can override via POST /api/predict/watchlist
+_PREDICT_WATCHLIST = [
+    "NVDA","TSLA","AMD","AAPL","META","MSFT","AMZN","GOOGL",
+    "PLTR","COIN","MARA","ARM","AVGO","MU","SMCI","CRWD",
+    "NET","SOXL","TQQQ","QQQ","SPY","IWM","ARKK",
+    "NFLX","UBER","RKLB","ASTS","IONQ","HOOD","SOFI",
+]
+
+_predict_results  = {}      # { sym: result_dict }
+_predict_lock     = threading.Lock()
+_predict_bg_on    = False
+_predict_bg_lock  = threading.Lock()
+_predict_stats    = {"ts": 0, "model": "loading"}
+
+def _predict_fetch_closes(sym, bars=90):
+    """Fetch up to `bars` 1-min close prices including pre/post market."""
+    try:
+        df = yf.Ticker(sym).history(period="2d", interval="1m", prepost=True)
+        if df is None or len(df) < 20:
+            return None, None
+        closes = df["Close"].values.astype(float)
+        last_p = float(closes[-1])
+        if last_p <= 0:
+            return None, None
+        return closes[-bars:], last_p
+    except Exception:
+        return None, None
+
+def _predict_one(sym):
+    """Run Kronos + TimesFM on one ticker. Returns result dict or None."""
+    import numpy as np
+    import pandas as pd
+
+    closes, last_p = _predict_fetch_closes(sym)
+    if closes is None or len(closes) < 20:
+        return None
+
+    kronos_dir = None
+    kronos_pct = None
+    kronos_prob = None
+    tfm_dir    = None
+    tfm_pct    = None
+
+    # ── Kronos (5-min OHLCV, 20-bar ahead) ───────────────────────────────────
+    try:
+        predictor = _kronos_predictor
+        if predictor is not None:
+            df_k, x_ts = _get_kronos_ohlcv(sym, lookback=200)
+            if df_k is not None and len(df_k) >= 50:
+                y_ts = _make_future_timestamps(x_ts.iloc[-1], n_bars=4, interval_min=5)
+                pred_df = predictor.predict(
+                    df=df_k, x_timestamp=x_ts, y_timestamp=y_ts,
+                    pred_len=4, T=1.0, top_k=0, top_p=0.9,
+                    sample_count=3, verbose=False
+                )
+                pred_close = float(pred_df["close"].iloc[-1])
+                kronos_pct  = round((pred_close - last_p) / last_p * 100, 3)
+                kronos_dir  = "bull" if kronos_pct > 0 else "bear"
+                kronos_prob = round(float(np.mean(pred_df["close"].values > last_p)) * 100, 1)
+                if kronos_prob in (0.0, 100.0):
+                    kronos_prob = 80.0 if kronos_dir == "bull" else 20.0
+    except Exception as e:
+        print(f"[Predict] Kronos {sym}: {e}")
+
+    # ── TimesFM (1-min closes, 5-bar ahead) ──────────────────────────────────
+    try:
+        if _tfm_ready and _tfm_model is not None:
+            import numpy as np
+            inp = [np.array(closes, dtype=np.float32)]
+            with _tfm_lock:
+                mean_fc, _ = _tfm_model.forecast(inputs=inp, freq=[0])
+            pred_mean = float(np.mean(mean_fc[0]))
+            tfm_pct   = round((pred_mean - last_p) / last_p * 100, 3)
+            tfm_dir   = "bull" if tfm_pct > 0 else "bear"
+    except Exception as e:
+        print(f"[Predict] TFM {sym}: {e}")
+
+    # ── Combine signals ───────────────────────────────────────────────────────
+    signals = []
+    pcts    = []
+    if kronos_dir:
+        signals.append(kronos_dir)
+        pcts.append(kronos_pct)
+    if tfm_dir:
+        signals.append(tfm_dir)
+        pcts.append(tfm_pct)
+
+    if not signals:
+        return None
+
+    bull_votes = signals.count("bull")
+    bear_votes = signals.count("bear")
+    total      = len(signals)
+
+    if bull_votes == total:
+        conviction = "HIGH"
+        direction  = "BULL"
+    elif bear_votes == total:
+        conviction = "HIGH"
+        direction  = "BEAR"
+    elif bull_votes > bear_votes:
+        conviction = "MEDIUM"
+        direction  = "BULL"
+    else:
+        conviction = "MEDIUM"
+        direction  = "BEAR"
+
+    avg_pct = round(sum(pcts) / len(pcts), 3)
+    # Confidence score 0-100 based on agreement + magnitude
+    mag_score  = min(abs(avg_pct) * 20, 40)   # up to 40 pts from magnitude
+    agr_score  = (bull_votes / total * 60) if direction == "BULL" else (bear_votes / total * 60)
+    confidence = round(mag_score + agr_score, 1)
+
+    return {
+        "sym":          sym,
+        "direction":    direction,
+        "conviction":   conviction,
+        "confidence":   confidence,
+        "avg_pct":      avg_pct,
+        "price":        round(last_p, 2),
+        "kronos_dir":   kronos_dir,
+        "kronos_pct":   kronos_pct,
+        "kronos_prob":  kronos_prob,
+        "tfm_dir":      tfm_dir,
+        "tfm_pct":      tfm_pct,
+        "_ts":          time.time(),
+    }
+
+def _predict_bg_loop():
+    """Background thread: re-runs predictions every 60s."""
+    import concurrent.futures
+    # Wait for at least one model to be ready before first scan
+    for _ in range(120):
+        if _kronos_predictor is not None or _tfm_ready:
+            break
+        time.sleep(2)
+
+    while True:
+        try:
+            with _predict_lock:
+                watchlist = list(_PREDICT_WATCHLIST)
+
+            new_results = {}
+            # Run predictions — serialised to avoid OOM with large models
+            for sym in watchlist:
+                try:
+                    res = _predict_one(sym)
+                    if res:
+                        new_results[sym] = res
+                except Exception:
+                    pass
+
+            now = time.time()
+            with _predict_lock:
+                _predict_results.clear()
+                _predict_results.update(new_results)
+                _predict_stats["ts"]    = int(now)
+                _predict_stats["model"] = (
+                    "Kronos+TFM" if (_kronos_predictor and _tfm_ready) else
+                    "Kronos"     if _kronos_predictor else
+                    "TimesFM"    if _tfm_ready else
+                    "GBM"
+                )
+            print(f"[Predict] {len(new_results)}/{len(watchlist)} predictions complete "
+                  f"({_predict_stats['model']})")
+        except Exception as e:
+            print(f"[Predict BG] Error: {e}")
+
+        time.sleep(60)
+
+def _start_predict_bg():
+    global _predict_bg_on
+    with _predict_bg_lock:
+        if _predict_bg_on:
+            return
+        _predict_bg_on = True
+    t = threading.Thread(target=_predict_bg_loop, daemon=True)
+    t.start()
+    print("[Predict] Background prediction engine started")
+
+@app.route("/api/predict/scan")
+def predict_scan():
+    """Returns bull/bear predictions for the watchlist, ranked by confidence."""
+    _start_predict_bg()
+    with _predict_lock:
+        results = [dict(v) for v in _predict_results.values()]
+        stats   = dict(_predict_stats)
+        wl      = list(_PREDICT_WATCHLIST)
+
+    for r in results:
+        r.pop("_ts", None)
+
+    # Sort: HIGH conviction first, then by confidence desc
+    conv_order = {"HIGH": 0, "MEDIUM": 1}
+    results.sort(key=lambda x: (
+        conv_order.get(x.get("conviction","MEDIUM"), 1),
+        -x.get("confidence", 0)
+    ))
+
+    # Split bull / bear
+    bulls = [r for r in results if r["direction"] == "BULL"]
+    bears = [r for r in results if r["direction"] == "BEAR"]
+
+    loading = stats["ts"] == 0
+
+    return jsonify({
+        "bulls":     bulls,
+        "bears":     bears,
+        "all":       results,
+        "total":     len(results),
+        "watchlist": len(wl),
+        "ts":        stats["ts"],
+        "model":     stats["model"],
+        "loading":   loading,
+    })
+
+@app.route("/api/predict/watchlist", methods=["GET", "POST"])
+def predict_watchlist():
+    """GET: return current watchlist. POST: replace with new list."""
+    global _PREDICT_WATCHLIST
+    if request.method == "POST":
+        data = request.get_json(force=True) or {}
+        tickers = [t.upper().strip() for t in data.get("tickers", []) if t.strip()]
+        if 1 <= len(tickers) <= 100:
+            with _predict_lock:
+                _PREDICT_WATCHLIST.clear()
+                _PREDICT_WATCHLIST.extend(tickers)
+            return jsonify({"ok": True, "watchlist": _PREDICT_WATCHLIST})
+        return jsonify({"ok": False, "error": "Provide 1-100 tickers"}), 400
+    return jsonify({"watchlist": _PREDICT_WATCHLIST, "model": _predict_stats.get("model","loading")})
+
 # ── TimesFM — lazy-loaded Google foundation model for 5-bar price forecast ─────
 # Uses timesfm 1.x PyPI API (TimesFmHparams / TimesFmCheckpoint / .forecast())
 # Model: google/timesfm-1.0-200m-pytorch (~800MB, downloaded once to HF cache)
