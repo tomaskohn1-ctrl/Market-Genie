@@ -5718,6 +5718,8 @@ async function pollLiveSurges() {
     const amBars     = d.am_bars || 0;
     const secBars    = d.second_bars || 0;
     const liveTix    = d.live_tickers || 0;
+    const histTix    = d.hist_tickers || 0;
+    const seedTix    = d.seed_tickers || 0;
 
     // Update feed mode indicator
     if (secEl) {
@@ -5736,6 +5738,11 @@ async function pollLiveSurges() {
       badge.style.background = 'rgba(255,68,85,0.15)';
       badge.style.color = '#ff4455';
       badge.style.borderColor = 'rgba(255,68,85,0.3)';
+      body.innerHTML = `<div style="padding:14px;text-align:center;color:#ff4455;font-size:11px;line-height:1.7">
+        🔴 WebSocket disconnected — server will reconnect automatically in ~15s.<br>
+        <span style="color:var(--muted);font-size:10px">Baselines for ${histTix} tickers remain in memory.</span>
+      </div>`;
+      return;
     } else if (surges.length === 0 && mode === 'seeded') {
       badge.textContent = '✅ Ready';
       badge.style.background = 'rgba(0,230,118,0.10)';
@@ -5776,14 +5783,15 @@ async function pollLiveSurges() {
         let nearHtml = '';
         if (nearMisses.length > 0) {
           const nmRows = nearMisses.map(n => {
-            const pct = Math.round((n.ratio / 2.0) * 100); // % of way to threshold
+            const pct = Math.round((n.ratio / 2.0) * 100); // % of way to 2× surge threshold
+            const barW = Math.min(100, pct);
             return `<span style="
               display:inline-flex;align-items:center;gap:4px;
               background:rgba(255,180,0,0.08);border:1px solid rgba(255,180,0,0.2);
               border-radius:4px;padding:2px 7px;font-size:10px;margin:2px">
               <b style="color:var(--text-hi)">${n.sym}</b>
               <span style="color:#ffd740">${n.ratio}×</span>
-              <span style="color:var(--muted);font-size:9px">(${pct}% of threshold)</span>
+              <span style="color:var(--muted);font-size:9px">${pct}% of 2× threshold</span>
             </span>`;
           }).join('');
           nearHtml = `<div style="margin-top:8px;color:var(--muted);font-size:10px">
@@ -5791,8 +5799,14 @@ async function pollLiveSurges() {
           </div>`;
         }
 
+        const modeLabel2 = mode === 'second_bars' ? '⚡ Per-sec' : mode === 'minute_bars' ? '📊 Min-bar' : mode === 'seeded' ? '✅ Seeded' : '⏳ Waiting';
         body.innerHTML = `<div style="text-align:center;padding:14px;color:var(--muted);font-size:11px;line-height:1.7">
           ${modeMsg}<br>No 2× volume surges right now.${nearHtml}
+        </div>
+        <div style="padding:5px 14px;font-size:9px;color:var(--muted);border-top:1px solid rgba(255,255,255,0.05);display:flex;gap:16px;flex-wrap:wrap">
+          <span>${modeLabel2} · ${histTix} baselines · ${liveTix} live tickers</span>
+          <span>${amBars.toLocaleString()} min-bars received</span>
+          <span style="margin-left:auto;opacity:0.6">fires at 2× avg · seeded: ${seedTix} tickers</span>
         </div>`;
       }
       return;
@@ -5848,7 +5862,16 @@ async function pollLiveSurges() {
       </div>`;
     });
 
-    body.innerHTML = rows.join('');
+    const modeLabel = mode === 'second_bars' ? '⚡ Per-sec' : mode === 'minute_bars' ? '📊 Min-bar' : mode === 'seeded' ? '✅ Seeded' : '⏳ Waiting';
+    const statusStrip = `<div style="
+        padding:5px 14px;font-size:9px;color:var(--muted);
+        border-top:1px solid rgba(255,255,255,0.05);
+        display:flex;gap:16px;flex-wrap:wrap">
+      <span>${modeLabel} · ${histTix} baselines · ${liveTix} live tickers</span>
+      <span>${amBars.toLocaleString()} min-bars${secBars > 0 ? ' · ' + secBars.toLocaleString() + ' sec-bars' : ''}</span>
+      <span style="margin-left:auto;opacity:0.6">2× = surge · 1.3–2× = near-miss · TTL 120s</span>
+    </div>`;
+    body.innerHTML = rows.join('') + statusStrip;
 
   } catch(e) { /* silent */ }
 }

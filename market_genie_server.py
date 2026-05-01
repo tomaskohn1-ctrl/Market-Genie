@@ -563,11 +563,20 @@ def _ws_seed_history():
     tickers = list(dict.fromkeys(list(_PREDICT_WATCHLIST) + _EXT_UNIVERSE))
     print(f"[WS/Seed] Pre-seeding {len(tickers)} tickers in parallel…")
     seeded = 0
-    # 8 workers — fast enough without hammering Massive rate limits
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        for result in pool.map(_ws_seed_one, tickers):
-            if result:
-                seeded += 1
+    # 6 workers — balanced: fast enough without hammering Massive rate limits
+    # Small stagger between submits avoids burst spike at t=0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        futures = []
+        for i, sym in enumerate(tickers):
+            if i > 0 and i % 12 == 0:
+                time.sleep(0.15)   # brief pause every 12 submits (~0.15s stagger)
+            futures.append(pool.submit(_ws_seed_one, sym))
+        for f in concurrent.futures.as_completed(futures):
+            try:
+                if f.result():
+                    seeded += 1
+            except Exception:
+                pass
     with _ws_lock:
         _ws_status["seed_tickers"] = seeded
         _ws_status["seed_done"]    = True
@@ -849,6 +858,7 @@ def api_live_surges():
         live_tickers = len(_ws_live)
         seed_done    = _ws_status["seed_done"]
         seed_tickers = _ws_status["seed_tickers"]
+        hist_tickers = len(_ws_minute_hist)  # tickers with volume baselines
     ranked = sorted(active.items(), key=lambda x: x[1]["ratio"], reverse=True)
     # Determine which mode is active
     mode = "second_bars" if sec_bars > 0 else ("minute_bars" if am_bars > 0 else ("seeded" if seed_done else "waiting"))
@@ -860,6 +870,7 @@ def api_live_surges():
         "second_bars":  sec_bars,
         "am_bars":      am_bars,
         "live_tickers": live_tickers,
+        "hist_tickers": hist_tickers,   # tickers with volume baseline in memory
         "seed_done":    seed_done,
         "seed_tickers": seed_tickers,
         "mode":         mode,   # "second_bars" | "minute_bars" | "seeded" | "waiting"
