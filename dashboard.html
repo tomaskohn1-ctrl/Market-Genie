@@ -5565,12 +5565,15 @@ function renderWinRate() {
   const wr = ov.win_rate;
 
   // Badge
+  const loggedToday = d.logged_today || 0;
   if (wr === null || ov.total === 0) {
-    badge.textContent = `⏳ ${d.pending || 0} pending`;
-    badge.style.color = 'var(--muted)';
+    badge.textContent = `⏳ ${d.pending || 0} pending · ${loggedToday} logged`;
+    badge.style.color = loggedToday > 0 ? '#ffd740' : 'var(--muted)';
+    badge.style.background = loggedToday > 0 ? 'rgba(255,215,0,0.10)' : '';
+    badge.style.borderColor = loggedToday > 0 ? 'rgba(255,215,0,0.3)' : '';
   } else {
     const clr = wr >= 55 ? '#00e676' : wr >= 45 ? '#ffd740' : '#ff4455';
-    badge.textContent = `${wr}% win rate · ${ov.total} resolved`;
+    badge.textContent = `${wr}% WR · ${ov.total} resolved · ${loggedToday} logged`;
     badge.style.color = clr;
     badge.style.background = wr >= 55 ? 'rgba(0,230,118,0.12)' : wr >= 45 ? 'rgba(255,215,0,0.12)' : 'rgba(255,68,85,0.12)';
     badge.style.borderColor = clr + '55';

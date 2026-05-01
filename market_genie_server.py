@@ -5146,6 +5146,12 @@ def _wr_log_signal(res):
     if not res.get("both_agree"):
         return
 
+    # Ensure DB table exists (guards against edge cases at startup)
+    try:
+        _wr_init_db()
+    except Exception:
+        pass
+
     now = time.time()
     with _wr_lock:
         last = _wr_last_logged.get(sym, {})
@@ -5278,9 +5284,16 @@ def _wr_resolve_loop():
 
 
 def _wr_start():
+    # Init DB synchronously BEFORE starting any threads.
+    # The prediction background loop calls _wr_log_signal immediately on first
+    # bucket scan. If the resolver thread hasn't run yet, the signals table
+    # doesn't exist → INSERT silently fails → first batch of signals lost.
+    # Calling _wr_init_db() here (in the main thread) guarantees the table
+    # exists before any logging can happen.
+    _wr_init_db()
     t = threading.Thread(target=_wr_resolve_loop, daemon=True)
     t.start()
-    print("[WinRate] Tracker started")
+    print("[WinRate] Tracker started — DB initialised, resolver thread running")
 
 # Start win rate tracker on import
 _wr_start()
@@ -5300,6 +5313,12 @@ def api_winrate():
             """).fetchall()
             pending = con.execute(
                 "SELECT COUNT(*) FROM signals WHERE outcome='PENDING'"
+            ).fetchone()[0]
+            # Total logged today (all outcomes inc. pending) — lets user verify
+            # logging is working even before the 20-min resolution window closes
+            today_start = int(time.time()) - 86400  # last 24h
+            logged_today = con.execute(
+                "SELECT COUNT(*) FROM signals WHERE ts_entry > ?", (today_start,)
             ).fetchone()[0]
 
         data = [dict(r) for r in rows]
@@ -5349,6 +5368,7 @@ def api_winrate():
             "by_agreement":  by_agreement,
             "by_direction":  by_direction,
             "pending":       pending,
+            "logged_today":  logged_today,
             "ts":            int(time.time()),
         })
     except Exception as e:
