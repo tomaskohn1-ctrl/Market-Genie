@@ -8,9 +8,10 @@ numpy>=1.26.0
 pytz>=2024.1
 gunicorn>=21.2.0
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch>=2.0.0
+torch>=2.0.0,<3.0.0
 einops>=0.7.0
 huggingface_hub>=0.20.0
 safetensors>=0.4.0
 tqdm>=4.65.0
-timesfm
+timesfm==1.2.2
+pandas>=2.0.0

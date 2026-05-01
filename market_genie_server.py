@@ -477,11 +477,10 @@ def massive_daily_summary(date_str=None):
 
 def get_quote(ticker):
     """
-    Real-time quote — three-layer approach, all live sources only.
+    Real-time quote — four-layer approach, all live sources only.
 
-    Layer 1: yfinance fast_info — proven live, handles Yahoo auth internally,
-             no disk cache, no library cache. This is the FASTEST and most
-             reliable path on Windows.
+    Layer 0: Massive/Polygon snapshot — fastest, most accurate, real-time.
+    Layer 1: yfinance fast_info — proven live, handles Yahoo auth internally.
     Layer 2: Yahoo Finance v8 REST API (direct) — requires crumb session.
     Layer 3: Finnhub REST — last resort.
 
@@ -491,6 +490,33 @@ def get_quote(ticker):
     """
     key = f"quote:{ticker}"
     if (v := cached(key, ttl=15)): return v
+
+    # ── Layer 0: Massive/Polygon snapshot — real-time, most accurate ──────────
+    if MASSIVE_KEY:
+        try:
+            snap = massive_get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
+            t = (snap or {}).get("ticker", {})
+            day = t.get("day", {})
+            prev = t.get("prevDay", {})
+            price = float(day.get("c") or t.get("lastTrade", {}).get("p") or 0)
+            prev_c = float(prev.get("c") or 0)
+            if price > 0 and prev_c > 0:
+                chg = round(price - prev_c, 4)
+                chg_pct = round((chg / prev_c) * 100, 4)
+                result = {
+                    "c": round(price, 4), "d": chg, "dp": chg_pct,
+                    "o": round(float(day.get("o") or prev_c), 4),
+                    "h": round(float(day.get("h") or price), 4),
+                    "l": round(float(day.get("l") or price), 4),
+                    "pc": round(prev_c, 4),
+                    "v": int(day.get("v") or 0),
+                    "avg_v": int(t.get("prevDay", {}).get("v") or 0),
+                    "_source": "massive_snapshot"
+                }
+                print(f"[Quote] {ticker} Massive ${price:.2f} ({chg_pct:+.2f}%)")
+                return set_cache(key, result)
+        except Exception as e:
+            print(f"[Quote] {ticker} Massive snapshot failed: {e}")
 
     # ── Layer 1: fast_info — live, no disk cache, yfinance handles auth ───────
     try:
@@ -4033,18 +4059,51 @@ def _load_kronos_predictor():
 
 
 def _get_kronos_ohlcv(ticker, lookback=200):
-    """Fetch 5-min OHLCV bars for a ticker; return (df, timestamps) or (None, None)."""
+    """Fetch 5-min OHLCV bars for a ticker; return (df, timestamps) or (None, None).
+    Tries Massive 1-min bars (aggregated to 5-min) first, falls back to yfinance."""
     import pandas as pd
+    import numpy as np
+
+    # ── Try Massive 1-min bars → aggregate to 5-min ──────────────────────────
+    if MASSIVE_KEY:
+        try:
+            result = massive_1min_bars(ticker, minutes_back=lookback * 5 + 60)
+            if result is not None:
+                closes, opens, highs, lows, volumes = result
+                n = len(closes)
+                if n >= 25:
+                    # Aggregate 1-min → 5-min OHLCV
+                    rows = []
+                    for i in range(4, n, 5):
+                        blk = slice(max(0, i-4), i+1)
+                        rows.append({
+                            "open":   float(opens[max(0, i-4)]),
+                            "high":   float(np.max(highs[blk])),
+                            "low":    float(np.min(lows[blk])),
+                            "close":  float(closes[i]),
+                            "volume": float(np.sum(volumes[blk])),
+                        })
+                    if len(rows) >= 50:
+                        rows = rows[-lookback:]
+                        df = pd.DataFrame(rows)
+                        now = pd.Timestamp.utcnow().replace(tzinfo=None)
+                        timestamps = pd.Series([
+                            now - pd.Timedelta(minutes=5*(len(rows)-1-i))
+                            for i in range(len(rows))
+                        ])
+                        return df, timestamps
+        except Exception as e:
+            print(f"[Kronos OHLCV] Massive error for {ticker}: {e}")
+
+    # ── Fall back to yfinance 5-min ───────────────────────────────────────────
     try:
         t    = yf.Ticker(ticker)
         hist = t.history(period="30d", interval="5m")
         hist = hist[hist["Volume"] >= 0].dropna(subset=["Close"])
         if len(hist) < 50:
             return None, None
-
         hist = hist.tail(lookback)
         hist.index = hist.index.tz_localize(None) if hist.index.tzinfo else hist.index
-
         df = pd.DataFrame({
             "open":   hist["Open"].values,
             "high":   hist["High"].values,
@@ -4420,16 +4479,23 @@ def _predict_one(sym):
     except Exception as e:
         print(f"[Predict] Kronos {sym}: {e}")
 
-    # ── TimesFM (1-min closes, 5-bar ahead) ──────────────────────────────────
+    # ── TimesFM (1-min closes, 5-bar ahead) or linear fallback ──────────────
     try:
         if _tfm_ready and _tfm_model is not None:
             import numpy as np
-            inp = [np.array(closes, dtype=np.float32)]
-            with _tfm_lock:
-                mean_fc, _ = _tfm_model.forecast(inputs=inp, freq=[0])
-            pred_mean = float(np.mean(mean_fc[0]))
-            tfm_pct   = round((pred_mean - last_p) / last_p * 100, 3)
-            tfm_dir   = "bull" if tfm_pct > 0 else "bear"
+            arr = np.array(closes, dtype=np.float32)
+            if _tfm_model == "fallback":
+                # Linear-regression fallback
+                x = np.arange(len(arr[-30:]))
+                slope, intercept = np.polyfit(x, arr[-30:].astype(np.float64), 1)
+                pred_mean = slope * (len(x) - 1 + _TFM_HORIZON) + intercept
+            else:
+                inp = [arr]
+                with _tfm_lock:
+                    mean_fc, _ = _tfm_model.forecast(inputs=inp, freq=[0])
+                pred_mean = float(np.mean(mean_fc[0]))
+            tfm_pct = round((float(pred_mean) - last_p) / last_p * 100, 3)
+            tfm_dir = "bull" if tfm_pct > 0 else "bear"
     except Exception as e:
         print(f"[Predict] TFM {sym}: {e}")
 
@@ -4513,11 +4579,14 @@ def _predict_bg_loop():
                 _predict_results.clear()
                 _predict_results.update(new_results)
                 _predict_stats["ts"]    = int(now)
+                tfm_label = ("TFM-Neural" if (_tfm_ready and _tfm_model not in (None,"fallback"))
+                             else "TFM-LinReg" if (_tfm_ready and _tfm_model == "fallback")
+                             else None)
                 _predict_stats["model"] = (
-                    "Kronos+TFM" if (_kronos_predictor and _tfm_ready) else
-                    "Kronos"     if _kronos_predictor else
-                    "TimesFM"    if _tfm_ready else
-                    "GBM"
+                    f"Kronos+{tfm_label}" if (_kronos_predictor and tfm_label) else
+                    "Kronos"              if _kronos_predictor else
+                    tfm_label             if tfm_label else
+                    "Loading"
                 )
             print(f"[Predict] {len(new_results)}/{len(watchlist)} predictions complete "
                   f"({_predict_stats['model']})")
@@ -4599,7 +4668,9 @@ _tfm_closes  = {}            # { sym: np.ndarray } populated during scalp scan
 _TFM_HORIZON = 5             # predict next 5 one-minute bars
 
 def _tfm_load():
-    """Download TimesFM 1.0-200M (PyTorch) in a background thread (called once)."""
+    """Download TimesFM 1.0-200M (PyTorch) in a background thread (called once).
+    Falls back gracefully to a lightweight linear-regression forecast if model
+    fails to load (memory limit, download timeout, etc.)."""
     global _tfm_model, _tfm_ready, _tfm_loading
     with _tfm_lock:
         if _tfm_ready or _tfm_loading:
@@ -4625,18 +4696,22 @@ def _tfm_load():
             _tfm_model   = m
             _tfm_ready   = True
             _tfm_loading = False
-        print("[TFM] Model ready ✓")
+        print("[TFM] ✓ TimesFM model ready")
     except Exception as e:
-        print(f"[TFM] Load failed — TFM signals disabled: {e}")
+        print(f"[TFM] Load failed ({e}) — activating lightweight linear-regression fallback")
+        # Install a sentinel so _tfm_batch uses the fast fallback
         with _tfm_lock:
+            _tfm_model   = "fallback"   # sentinel: use numpy linear regression
+            _tfm_ready   = True         # mark ready so badges fire
             _tfm_loading = False
+        print("[TFM] ✓ Linear-regression fallback active")
 
 def _tfm_batch(sym_list):
     """
     Run TFM on a batch of symbols whose closes are in _tfm_closes.
+    If full model loaded: uses TimesFM neural forecast.
+    If fallback mode: uses numpy linear regression over last 20 bars.
     Returns { sym: (direction, delta_pct) } for symbols that succeed.
-    API: tfm.forecast(inputs=[array, ...], freq=[0, ...])
-         → (mean_fc, quantile_fc) where mean_fc.shape = (n, horizon_len)
     """
     if not _tfm_ready or _tfm_model is None:
         return {}
@@ -4646,11 +4721,32 @@ def _tfm_batch(sym_list):
         valid = [s for s in sym_list if s in _tfm_closes]
         if not valid:
             return {}
+
+        # ── Fallback: linear regression forecast ──────────────────────────
+        if _tfm_model == "fallback":
+            for sym in valid:
+                closes = np.array(_tfm_closes[sym][-30:], dtype=np.float64)
+                if len(closes) < 5:
+                    continue
+                current = float(closes[-1])
+                if current <= 0:
+                    continue
+                x = np.arange(len(closes))
+                slope, intercept = np.polyfit(x, closes, 1)
+                # Project 5 bars ahead using slope
+                pred = slope * (len(closes) - 1 + _TFM_HORIZON) + intercept
+                delta_pct = (pred - current) / current * 100
+                results[sym] = (
+                    "up" if delta_pct > 0 else "down",
+                    round(delta_pct, 3),
+                )
+            return results
+
+        # ── Full TimesFM neural forecast ──────────────────────────────────
         inputs = [np.array(_tfm_closes[s][-60:], dtype=np.float32) for s in valid]
         freq   = [0] * len(inputs)   # 0 = high frequency (sub-daily / 1-min)
         with _tfm_lock:
             mean_fc, _ = _tfm_model.forecast(inputs=inputs, freq=freq)
-        # mean_fc shape: (n, _TFM_HORIZON)
         for i, sym in enumerate(valid):
             current = float(_tfm_closes[sym][-1])
             if current <= 0:
@@ -4825,14 +4921,23 @@ def _scalp_ema(arr, period):
     return e
 
 def _scalp_refresh_spy():
-    """Update the cached SPY ret1 and EMA trend (called once per full rotation)."""
+    """Update the cached SPY ret1 and EMA trend (called once per full rotation).
+    Uses Massive 1-min bars first (real-time), falls back to yfinance."""
     try:
         import numpy as np
-        raw = yf.Ticker("SPY").history(period="1d", interval="1m", prepost=True)
-        if raw is None or len(raw) < 25:
-            return
-        raw.columns = [c.lower() for c in raw.columns]
-        sc = raw["close"].values.astype(float)
+        sc = None
+        # Try Massive first
+        if MASSIVE_KEY:
+            result = massive_1min_bars("SPY", minutes_back=60)
+            if result is not None:
+                sc = result[0]  # closes
+        # Fall back to yfinance
+        if sc is None or len(sc) < 25:
+            raw = yf.Ticker("SPY").history(period="1d", interval="1m", prepost=True)
+            if raw is None or len(raw) < 25:
+                return
+            raw.columns = [c.lower() for c in raw.columns]
+            sc = raw["close"].values.astype(float)
         ret1 = float((sc[-1] - sc[-2]) / sc[-2] * 100) if sc[-2] > 0 else 0.0
         e9  = _scalp_ema(sc, 9)
         e20 = _scalp_ema(sc, 20)
@@ -5108,8 +5213,8 @@ def _scalp_bg_loop():
                 universe   = _SCALP_UNIVERSE
                 max_w      = 25
             else:
-                universe   = _EXT_UNIVERSE   # Finnhub rate-limited — smaller set
-                max_w      = 1               # Finnhub calls are serialized by semaphore
+                universe   = _EXT_UNIVERSE   # focused 80-ticker extended-hours universe
+                max_w      = 12              # Massive/yfinance: safe concurrency level
 
             n   = _SCALP_NUM_BUCKETS
             sz  = math.ceil(len(universe) / n)
