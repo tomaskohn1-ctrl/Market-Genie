@@ -4840,7 +4840,7 @@ def _predict_one(sym):
 
 def _predict_apply_streak(sym, res):
     """Apply direction-streak hysteresis to a single prediction result (in-place)."""
-    raw_dir = res.get("direction") or res.get("kronos_dir") or ""
+    raw_dir = (res.get("direction") or res.get("kronos_dir") or "").lower()
     if raw_dir in ("bull", "bear"):
         st = _predict_streak.get(sym)
         if st is None:
