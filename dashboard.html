@@ -5279,6 +5279,60 @@ function renderPredictions() {
 setTimeout(() => loadPredictions(), 500);
 
 // ══════════════════════════════════════════════════════════════════════════════
+// ── LIVE PRICE FEED — Massive WebSocket relay ─────────────────────────────────
+// Polls /api/live/prices every 5s and updates prices on visible alert rows
+// ══════════════════════════════════════════════════════════════════════════════
+let _liveConnected = false;
+
+async function pollLivePrices() {
+  if (!SERVER_MODE) return;
+  try {
+    const r = await fetch('/api/live/prices');
+    const d = await r.json();
+    _liveConnected = d.connected || false;
+
+    // Update WS indicator in footer
+    const wsEl = document.getElementById('wsStatusDot');
+    if (wsEl) {
+      wsEl.textContent  = _liveConnected ? '🟢 LIVE' : '🔴 WS OFF';
+      wsEl.style.color  = _liveConnected ? '#00e676' : '#ff4455';
+    }
+
+    if (!d.prices || !Object.keys(d.prices).length) return;
+
+    // Update price cells on scalp alert rows
+    document.querySelectorAll('[data-scalp-sym]').forEach(row => {
+      const sym  = row.getAttribute('data-scalp-sym');
+      const bar  = d.prices[sym];
+      if (!bar) return;
+      const priceEl = row.querySelector('.live-price');
+      const chgEl   = row.querySelector('.live-chg');
+      if (priceEl) priceEl.textContent = `$${bar.c.toFixed(2)}`;
+      if (chgEl) {
+        const pct = bar.chg_pct || 0;
+        chgEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+        chgEl.style.color = pct >= 0 ? '#00e676' : '#ff4455';
+      }
+    });
+
+    // Update prediction engine rows
+    document.querySelectorAll('[data-predict-sym]').forEach(row => {
+      const sym = row.getAttribute('data-predict-sym');
+      const bar = d.prices[sym];
+      if (!bar) return;
+      const priceEl = row.querySelector('.live-price');
+      if (priceEl) priceEl.textContent = `$${bar.c.toFixed(2)}`;
+    });
+
+  } catch(e) { /* silent */ }
+}
+
+// Poll every 5 seconds
+setInterval(pollLivePrices, 5000);
+setTimeout(pollLivePrices, 2000);
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════════════════
 
 async function loadScalpAlerts(force = false) {
   if (!SERVER_MODE) return;
@@ -5457,7 +5511,7 @@ function renderScalpAlerts() {
       <!-- Ticker + price -->
       <div>
         <div style="font-size:13px;font-weight:800;color:var(--text-hi);font-family:'JetBrains Mono',monospace">${a.sym}</div>
-        <div style="font-size:10px;color:var(--muted)">$${a.price}</div>
+        <div class="live-price" style="font-size:10px;color:var(--muted)">$${a.price}</div>
       </div>
 
       <!-- Direction box + bar directions -->
@@ -5505,7 +5559,7 @@ function renderScalpAlerts() {
     ? '<span style="background:rgba(100,180,255,0.15);color:#64b4ff;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;border:1px solid rgba(100,180,255,0.3);margin-left:4px">EXT HRS</span>'
     : '';
   const footer = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);text-align:center;border-top:1px solid rgba(255,255,255,0.04)">
-    ${statusDot}${sessionTag} Auto-refreshes every 60s · A=5+/11 · B=3-4/11 · TFM▲▼ = Google AI forecast
+    ${statusDot}${sessionTag} Auto-refreshes every 60s · A=5+/11 · B=3-4/11 · TFM▲▼ = AI forecast · <span id="wsStatusDot" style="color:var(--muted)">🔴 WS OFF</span>
   </div>`;
 
   body.innerHTML = spyBar + header + rows + footer;

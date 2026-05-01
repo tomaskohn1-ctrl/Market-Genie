@@ -475,6 +475,110 @@ def massive_daily_summary(date_str=None):
     return set_cache(key, data)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ── Massive WebSocket — real-time per-minute bar feed (AM.* channel) ──────────
+# Connects to wss://socket.massive.com/stocks, authenticates, subscribes to
+# AM.{sym} for all watchlist + scalp universe tickers.
+# Each AM message: {ev,sym,v,o,c,h,l,a(vwap),s(start_ms),e(end_ms)}
+# Updates _ws_live cache used by get_quote() and the scalp scanner.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_ws_live   = {}          # { SYM: {c,o,h,l,v,a,ts,chg_pct} }
+_ws_lock   = threading.Lock()
+_ws_status = {"connected": False, "ts": 0, "bars": 0}
+_WS_URL    = "wss://socket.massive.com/stocks"
+
+def _ws_build_sub_list():
+    """Return comma-separated AM.SYM subscription string for all key tickers."""
+    core = list(dict.fromkeys(
+        list(_PREDICT_WATCHLIST) + _EXT_UNIVERSE[:40]
+    ))
+    return ",".join(f"AM.{s}" for s in core[:100])   # cap at 100 to avoid overload
+
+def _ws_on_message(ws, raw):
+    try:
+        import json
+        msgs = json.loads(raw)
+        now  = time.time()
+        for m in msgs:
+            ev = m.get("ev")
+            if ev == "status":
+                st = m.get("status","")
+                if st == "auth_success":
+                    print("[WS] Authenticated — subscribing to AM feeds")
+                    ws.send(json.dumps({"action":"subscribe","params":_ws_build_sub_list()}))
+                    _ws_status["connected"] = True
+                elif st == "connected":
+                    print("[WS] Connected — sending auth")
+                    ws.send(json.dumps({"action":"auth","params":MASSIVE_KEY}))
+            elif ev == "AM":
+                sym   = m.get("sym","")
+                close = float(m.get("c") or 0)
+                if sym and close > 0:
+                    prev_c = (_ws_live.get(sym,{}).get("c") or close)
+                    chg_pct = round((close - prev_c) / prev_c * 100, 3) if prev_c else 0.0
+                    with _ws_lock:
+                        _ws_live[sym] = {
+                            "c":       close,
+                            "o":       float(m.get("o") or close),
+                            "h":       float(m.get("h") or close),
+                            "l":       float(m.get("l") or close),
+                            "v":       int(m.get("v") or 0),
+                            "a":       float(m.get("a") or close),  # vwap
+                            "ts":      now,
+                            "chg_pct": chg_pct,
+                        }
+                    _ws_status["bars"] += 1
+                    _ws_status["ts"]    = int(now)
+    except Exception as e:
+        print(f"[WS] message error: {e}")
+
+def _ws_on_error(ws, err):
+    print(f"[WS] error: {err}")
+    _ws_status["connected"] = False
+
+def _ws_on_close(ws, code, msg):
+    print(f"[WS] closed ({code}) — will reconnect in 15s")
+    _ws_status["connected"] = False
+
+def _ws_runner():
+    """Background thread: connects and auto-reconnects WebSocket."""
+    if not MASSIVE_KEY:
+        print("[WS] No MASSIVE_KEY — WebSocket disabled")
+        return
+    import json
+    while True:
+        try:
+            import websocket
+            ws = websocket.WebSocketApp(
+                _WS_URL,
+                on_open=lambda ws: print("[WS] Connection opened"),
+                on_message=_ws_on_message,
+                on_error=_ws_on_error,
+                on_close=_ws_on_close,
+            )
+            ws.run_forever(ping_interval=30, ping_timeout=10)
+        except Exception as e:
+            print(f"[WS] runner error: {e}")
+        time.sleep(15)   # wait before reconnect
+
+# Start WebSocket thread on module load
+threading.Thread(target=_ws_runner, daemon=True).start()
+
+@app.route("/api/live/prices")
+def api_live_prices():
+    """Return latest WebSocket bar data for all subscribed tickers."""
+    with _ws_lock:
+        data = dict(_ws_live)
+    return jsonify({
+        "prices":    data,
+        "connected": _ws_status["connected"],
+        "bars":      _ws_status["bars"],
+        "ts":        _ws_status["ts"],
+        "count":     len(data),
+    })
+
+
 def get_quote(ticker):
     """
     Real-time quote — four-layer approach, all live sources only.
@@ -491,7 +595,19 @@ def get_quote(ticker):
     key = f"quote:{ticker}"
     if (v := cached(key, ttl=15)): return v
 
-    # ── Layer 0: Massive/Polygon snapshot — real-time, most accurate ──────────
+    # ── Layer 0a: WebSocket live cache — freshest possible (sub-second) ───────
+    with _ws_lock:
+        ws_bar = _ws_live.get(ticker)
+    if ws_bar and (time.time() - ws_bar.get("ts", 0)) < 90:
+        result = {
+            "c": ws_bar["c"], "d": 0, "dp": ws_bar["chg_pct"],
+            "o": ws_bar["o"], "h": ws_bar["h"], "l": ws_bar["l"],
+            "pc": ws_bar["c"], "v": ws_bar["v"], "avg_v": 0,
+            "_source": "ws_live"
+        }
+        return set_cache(key, result)
+
+    # ── Layer 0b: Massive/Polygon snapshot — real-time, most accurate ─────────
     if MASSIVE_KEY:
         try:
             snap = massive_get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
