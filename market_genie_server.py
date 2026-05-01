@@ -4873,9 +4873,9 @@ def _predict_one_safe(sym):
 
 
 def _predict_bg_loop():
-    """Background thread: rotates through _PREDICT_NUM_BUCKETS, one bucket per 60s.
-    Each bucket runs in parallel (6 workers) so 50 tickers complete in ~15s
-    instead of ~150s serial. Full 350-ticker cycle every ~7 minutes.
+    """Background thread: rotates through _PREDICT_NUM_BUCKETS, one bucket per 30s.
+    Each bucket runs in parallel (6 workers) so ~25 tickers complete in ~10s.
+    Full 350-ticker cycle every ~7 minutes.
     Results accumulate in _predict_results; stale entries expire after _PREDICT_RESULT_TTL.
     """
     import concurrent.futures
@@ -5012,7 +5012,8 @@ def predict_scan():
 
 _WR_DB_PATH        = os.path.join(os.path.dirname(__file__), "winrate.db")
 _WR_RESOLVE_MINS   = 20    # resolve signal after this many minutes
-_WR_MIN_MOVE_PCT   = 0.05  # minimum move % to count as WIN/LOSS (else NEUTRAL)
+_WR_MIN_MOVE_PCT   = 0.30  # minimum move % to count as WIN/LOSS (else NEUTRAL)
+                            # 0.30% = 30¢ on a $100 stock — meaningful day-trade threshold
 _wr_last_logged    = {}    # { sym: {"dir": str, "ts": float} } — dedup guard
 _wr_lock           = threading.Lock()
 
@@ -5276,6 +5277,41 @@ def api_winrate_history():
                 LIMIT ?
             """, (limit,)).fetchall()
         return jsonify({"signals": [dict(r) for r in rows], "ts": int(time.time())})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/winrate/export")
+def api_winrate_export():
+    """Export all win-rate signals as CSV — use before deploying to preserve history.
+    Railway filesystem is ephemeral; this lets you download the DB before it resets."""
+    import csv, io
+    from flask import Response
+    try:
+        _wr_init_db()
+        with sqlite3.connect(_WR_DB_PATH) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute("""
+                SELECT id, sym, direction, confidence, conviction, streak,
+                       both_agree, kronos_pct, tfm_pct,
+                       price_entry, price_exit, ts_entry, ts_exit,
+                       outcome, pct_move
+                FROM signals ORDER BY ts_entry DESC
+            """).fetchall()
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        if rows:
+            writer.writerow(rows[0].keys())
+            for row in rows:
+                writer.writerow(list(row))
+
+        dt = datetime.utcnow().strftime("%Y%m%d_%H%M")
+        return Response(
+            buf.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=winrate_{dt}.csv"}
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

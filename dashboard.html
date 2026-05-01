@@ -2481,6 +2481,7 @@
       <div style="display:flex;align-items:center;gap:8px">
         <span id="winrateBadge" class="card-tag" style="background:rgba(0,200,160,0.15);color:#00c8a0;border:1px solid rgba(0,200,160,0.3)">Loading…</span>
         <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="loadWinRate()">↻ Refresh</button>
+        <a href="/api/winrate/export" download title="Download all signals as CSV — save before deploying" class="btn secondary" style="padding:4px 10px;font-size:10px;text-decoration:none">⬇ Export CSV</a>
       </div>
     </div>
     <div class="card-body" style="padding:0">
@@ -5683,7 +5684,11 @@ function renderWinRate() {
     </table>
     </div>` : '';
 
-  body.innerHTML = gaugeHtml + tableHtml + histHtml;
+  const footNote = `<div style="padding:6px 12px 8px;font-size:9px;color:var(--muted);border-top:1px solid rgba(255,255,255,0.04);line-height:1.7">
+    📌 Signals logged when streak ≥ 2 &amp; not flipping · Resolved 20 min after entry · WIN/LOSS = ≥0.3% move in predicted direction · NEUTRAL = &lt;0.3% · ⬇ Export CSV saves history before deploys.
+  </div>`;
+
+  body.innerHTML = gaugeHtml + tableHtml + histHtml + footNote;
 }
 
 // Load win rate on page load and every 3 minutes
