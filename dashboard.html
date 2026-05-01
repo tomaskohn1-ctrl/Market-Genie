@@ -5164,6 +5164,122 @@ function _startScalpCountdown() {
   }, 1000);
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// ── PREDICTION ENGINE ─────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+let _predictData     = null;
+let _predictInterval = null;
+const PREDICT_REFRESH_MS = 60 * 1000;
+
+async function loadPredictions(force = false) {
+  if (!SERVER_MODE) return;
+  try {
+    const r = await fetch('/api/predict/scan');
+    const d = await r.json();
+    _predictData = d;
+    renderPredictions();
+    if (!_predictInterval) {
+      _predictInterval = setInterval(() => loadPredictions(true), PREDICT_REFRESH_MS);
+    }
+  } catch(e) {
+    console.warn('[Predict] fetch error', e);
+  }
+}
+
+function renderPredictions() {
+  const d     = _predictData;
+  const badge = document.getElementById('predictBadge');
+  const body  = document.getElementById('predictBody');
+  const mdl   = document.getElementById('predictModel');
+  if (!d || !body) return;
+
+  if (mdl) mdl.textContent = d.model || '';
+
+  if (d.loading || d.total === 0) {
+    const msg = d.loading
+      ? '⏳ Models loading — Kronos + TimesFM initializing (1-2 min first run)…'
+      : '🔍 No predictions yet — auto-retrying in 60s';
+    body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px;line-height:1.8">${msg}</div>`;
+    badge.textContent = 'Loading…';
+    return;
+  }
+
+  const bulls = d.bulls || [];
+  const bears = d.bears || [];
+  badge.textContent = `${bulls.length} BULL · ${bears.length} BEAR`;
+  badge.style.background = bulls.length > bears.length ? 'rgba(0,230,118,0.2)' : bears.length > bulls.length ? 'rgba(255,68,85,0.2)' : 'rgba(138,43,226,0.2)';
+  badge.style.color = bulls.length > bears.length ? '#00e676' : bears.length > bulls.length ? '#ff4455' : '#c084fc';
+
+  const ts = d.ts ? new Date(d.ts*1000).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '--:--';
+
+  // Header row
+  const hdr = `<div style="display:grid;grid-template-columns:70px 90px 70px 1fr 1fr;gap:4px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:9px;font-weight:700;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase">
+    <div>TICKER</div><div>SIGNAL</div><div>CONF</div><div>KRONOS</div><div>TIMESFM</div>
+  </div>`;
+
+  function renderRow(r) {
+    const isBull  = r.direction === 'BULL';
+    const dirClr  = isBull ? '#00e676' : '#ff4455';
+    const dirBg   = isBull ? 'rgba(0,230,118,0.12)' : 'rgba(255,68,85,0.12)';
+    const convClr = r.conviction === 'HIGH' ? dirClr : '#ffb300';
+    const convBg  = r.conviction === 'HIGH' ? dirBg  : 'rgba(255,179,0,0.1)';
+    const confBar = Math.round(r.confidence);
+
+    const kDir  = r.kronos_dir;
+    const kPct  = r.kronos_pct != null ? (r.kronos_pct >= 0 ? '+' : '') + r.kronos_pct.toFixed(2) + '%' : '—';
+    const kClr  = kDir === 'bull' ? '#00e676' : kDir === 'bear' ? '#ff4455' : '#718096';
+    const kArrow= kDir === 'bull' ? '▲' : kDir === 'bear' ? '▼' : '—';
+
+    const tDir  = r.tfm_dir;
+    const tPct  = r.tfm_pct != null ? (r.tfm_pct >= 0 ? '+' : '') + r.tfm_pct.toFixed(2) + '%' : '—';
+    const tClr  = tDir === 'bull' ? '#00e676' : tDir === 'bear' ? '#ff4455' : '#718096';
+    const tArrow= tDir === 'bull' ? '▲' : tDir === 'bear' ? '▼' : '—';
+
+    const bothAgree = kDir && tDir && kDir === tDir;
+    const agreeBadge = bothAgree
+      ? `<span style="font-size:8px;font-weight:700;background:${convBg};color:${convClr};padding:1px 4px;border-radius:3px;border:1px solid ${convClr}44">BOTH AGREE</span>`
+      : '';
+
+    return `<div style="display:grid;grid-template-columns:70px 90px 70px 1fr 1fr;gap:4px;padding:7px 14px;border-bottom:1px solid rgba(255,255,255,0.04);align-items:center;cursor:pointer;transition:background 0.15s" onmouseenter="this.style.background='rgba(255,255,255,0.03)'" onmouseleave="this.style.background=''" onclick="openTickerChart('${r.sym}')">
+      <div style="font-size:13px;font-weight:700;color:var(--text-hi)">${r.sym}</div>
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <span style="font-size:12px;font-weight:800;color:${dirClr};background:${dirBg};padding:2px 7px;border-radius:4px;display:inline-block;letter-spacing:0.5px">${r.direction} ${r.conviction === 'HIGH' ? '●●' : '●○'}</span>
+        ${agreeBadge}
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;color:${convClr};font-family:'JetBrains Mono',monospace">${confBar}%</div>
+        <div style="width:36px;height:3px;background:rgba(255,255,255,0.1);border-radius:2px;margin-top:2px">
+          <div style="width:${Math.min(confBar,100)}%;height:100%;background:${dirClr};border-radius:2px"></div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:${kClr};font-family:'JetBrains Mono',monospace">${kArrow} ${kPct}</div>
+      <div style="font-size:11px;color:${tClr};font-family:'JetBrains Mono',monospace">${tArrow} ${tPct}</div>
+    </div>`;
+  }
+
+  // Separator between BULL and BEAR
+  const bullRows = bulls.map(renderRow).join('');
+  const bearRows = bears.map(renderRow).join('');
+
+  const bearSep = bears.length
+    ? `<div style="padding:4px 14px;font-size:9px;font-weight:700;color:#ff4455;letter-spacing:0.5px;background:rgba(255,68,85,0.05);border-top:1px solid rgba(255,68,85,0.15);border-bottom:1px solid rgba(255,68,85,0.15)">── BEARISH ──</div>`
+    : '';
+  const bullSep = bulls.length
+    ? `<div style="padding:4px 14px;font-size:9px;font-weight:700;color:#00e676;letter-spacing:0.5px;background:rgba(0,230,118,0.05);border-bottom:1px solid rgba(0,230,118,0.15)">── BULLISH ──</div>`
+    : '';
+
+  const footer = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);text-align:center;border-top:1px solid rgba(255,255,255,0.04)">
+    🔮 ${d.model || 'Loading'} · ${d.total}/${d.watchlist} predicted · Updated ${ts} · Auto-refreshes 60s · ●● = HIGH conviction (both models agree)
+  </div>`;
+
+  body.innerHTML = hdr + bullSep + bullRows + bearSep + bearRows + footer;
+}
+
+// Auto-start predictions on page load
+setTimeout(() => loadPredictions(), 500);
+
+// ══════════════════════════════════════════════════════════════════════════════
+
 async function loadScalpAlerts(force = false) {
   if (!SERVER_MODE) return;
   const badge = document.getElementById('scalpBadge');
