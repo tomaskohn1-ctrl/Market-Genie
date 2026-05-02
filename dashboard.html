@@ -8110,11 +8110,13 @@ function toggleTheme() {
 }
 
 // Restore saved theme on load
+// Mobile defaults to light (cleaner for trading on phone), desktop defaults to dark
 (function() {
-  const saved = localStorage.getItem('mg_theme');
-  if (saved === 'light') {
+  const saved   = localStorage.getItem('mg_theme');
+  const isMobile = window.innerWidth <= 640 || /iPhone|iPad|Android/i.test(navigator.userAgent);
+  const useLight = saved ? (saved === 'light') : isMobile;
+  if (useLight) {
     document.documentElement.setAttribute('data-theme', 'light');
-    // Button text updated after DOM is ready
     window.addEventListener('DOMContentLoaded', () => {
       const btn = document.getElementById('themeToggleBtn');
       if (btn) btn.textContent = '☀️';
