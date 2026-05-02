@@ -5053,6 +5053,7 @@ def predict_scan():
 _WR_DB_PATH        = os.path.join(os.path.dirname(__file__), "winrate.db")
 _WR_RESOLVE_MINS   = 20    # resolve signal after this many minutes
 _WR_MIN_MOVE_PCT   = 0.30  # minimum move % to count as WIN/LOSS (else NEUTRAL)
+_WR_BLACKLIST      = {"MAXN"}  # tickers with confirmed Kronos calibration failure (100% conf, chronic loser)
 _wr_last_logged    = {}    # { sym: {"dir": str, "ts": float} } — in-memory dedup (per-worker)
 _wr_lock           = threading.Lock()
 
@@ -5139,6 +5140,8 @@ def _wr_log_signal(res):
 
     if not sym or direction not in ("bull", "bear"):
         return
+    if sym in _WR_BLACKLIST:
+        return  # Known Kronos calibration failure — excluded from stats
     if flipping:
         return
 
