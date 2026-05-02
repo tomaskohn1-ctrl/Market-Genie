@@ -5057,6 +5057,31 @@ _WR_BLACKLIST      = {"MAXN"}  # tickers with confirmed Kronos calibration failu
 _wr_last_logged    = {}    # { sym: {"dir": str, "ts": float} } — in-memory dedup (per-worker)
 _wr_lock           = threading.Lock()
 
+# NYSE market-hours gate: Mon-Fri 09:30-16:00 ET
+# ET = UTC-5 (EST) or UTC-4 (EDT).  We derive the offset via stdlib only —
+# no pytz required.  DST in the US runs from 2nd Sun Mar → 1st Sun Nov.
+def _us_market_open() -> bool:
+    """Return True only during NYSE regular session (Mon-Fri 09:30-16:00 ET)."""
+    utc_now = datetime.utcnow()
+    # Determine EST/EDT offset: EDT (UTC-4) during DST, EST (UTC-5) otherwise
+    year = utc_now.year
+    # DST start: 2nd Sunday of March
+    mar1   = datetime(year, 3, 1)
+    dst_start = mar1 + timedelta(days=(6 - mar1.weekday()) % 7 + 7)
+    # DST end: 1st Sunday of November
+    nov1   = datetime(year, 11, 1)
+    dst_end   = nov1 + timedelta(days=(6 - nov1.weekday()) % 7)
+    in_dst    = dst_start <= utc_now.replace(tzinfo=None) < dst_end
+    et_offset = timedelta(hours=-4 if in_dst else -5)
+    et_now    = utc_now + et_offset
+    # Weekday check (Monday=0, Friday=4)
+    if et_now.weekday() > 4:
+        return False
+    # Time window 09:30 – 16:00
+    open_t  = dtime(9, 30)
+    close_t = dtime(16, 0)
+    return open_t <= et_now.time() < close_t
+
 
 def _wr_edge_score(res):
     """
@@ -5143,6 +5168,11 @@ def _wr_log_signal(res):
     if sym in _WR_BLACKLIST:
         return  # Known Kronos calibration failure — excluded from stats
     if flipping:
+        return
+
+    # MARKET HOURS GATE: only log during NYSE regular session (Mon-Fri 09:30-16:00 ET)
+    # After-hours data has different volatility characteristics and can't be acted on
+    if not _us_market_open():
         return
 
     # PRIMARY GATE: only log when both models agree (88.4% WR vs 50.0% for non-agree)
