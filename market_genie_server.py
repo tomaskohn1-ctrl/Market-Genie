@@ -4821,6 +4821,13 @@ def _predict_one(sym):
     else:
         data_source = "yfinance"
 
+    # Grab 3-month avg daily volume from fast_info for spread gate downstream
+    try:
+        _fi = yf.Ticker(sym).fast_info
+        avg_volume = int(getattr(_fi, 'three_month_average_volume', None) or 0)
+    except Exception:
+        avg_volume = 0
+
     return {
         "sym":                sym,
         "direction":          direction,
@@ -4828,6 +4835,7 @@ def _predict_one(sym):
         "confidence":         confidence,
         "avg_pct":            avg_pct,
         "price":              round(last_p, 2),
+        "avg_volume":         avg_volume,
         "kronos_dir":         kronos_dir,
         "kronos_pct":         kronos_pct,
         "kronos_prob":        kronos_prob,
@@ -5054,8 +5062,45 @@ _WR_DB_PATH        = os.path.join(os.path.dirname(__file__), "winrate.db")
 _WR_RESOLVE_MINS   = 20    # resolve signal after this many minutes
 _WR_MIN_MOVE_PCT   = 0.30  # minimum move % to count as WIN/LOSS (else NEUTRAL)
 _WR_BLACKLIST      = {"MAXN"}  # tickers with confirmed Kronos calibration failure (100% conf, chronic loser)
+_WR_MAX_SPREAD_PCT = 0.25  # max bid-ask spread % to log (wider = spread eats >50% of stop)
+_WR_MIN_AVG_VOL    = 200_000  # fast-reject micro-caps below this 3-month avg daily volume
 _wr_last_logged    = {}    # { sym: {"dir": str, "ts": float} } — in-memory dedup (per-worker)
 _wr_lock           = threading.Lock()
+_wr_spread_cache   = {}    # { sym: {"spread_pct": float, "ts": float} } — 10-min TTL
+_WR_SPREAD_TTL     = 600   # seconds
+
+def _wr_check_spread(sym: str, avg_vol: float = 0) -> bool:
+    """
+    Return True if the ticker is liquid enough to trade (spread within threshold).
+    Uses cached yfinance .info bid/ask with 10-min TTL.
+    Fast-rejects micro-caps by avg volume before making any API call.
+    """
+    # Fast-reject: skip micro-caps (wide spreads guaranteed)
+    if avg_vol > 0 and avg_vol < _WR_MIN_AVG_VOL:
+        print(f"[Spread] {sym} rejected — avg_vol {avg_vol:,.0f} < {_WR_MIN_AVG_VOL:,}")
+        return False
+
+    now = time.time()
+    cached = _wr_spread_cache.get(sym)
+    if cached and (now - cached["ts"]) < _WR_SPREAD_TTL:
+        ok = cached["spread_pct"] <= _WR_MAX_SPREAD_PCT
+        if not ok:
+            print(f"[Spread] {sym} cached spread {cached['spread_pct']:.3f}% > {_WR_MAX_SPREAD_PCT}% — skipped")
+        return ok
+
+    try:
+        info = yf.Ticker(sym).info
+        bid  = float(info.get("bid") or 0)
+        ask  = float(info.get("ask") or 0)
+        mid  = (bid + ask) / 2
+        spread_pct = round((ask - bid) / mid * 100, 4) if mid > 0 else 0.0
+        _wr_spread_cache[sym] = {"spread_pct": spread_pct, "ts": now}
+        ok = spread_pct <= _WR_MAX_SPREAD_PCT
+        print(f"[Spread] {sym} bid={bid} ask={ask} spread={spread_pct:.3f}% — {'OK' if ok else 'WIDE, skipped'}")
+        return ok
+    except Exception as e:
+        print(f"[Spread] {sym} lookup failed: {e} — allowing signal")
+        return True   # fail open: don't block on API errors
 
 # NYSE market-hours gate: Mon-Fri 09:30-16:00 ET
 # ET = UTC-5 (EST) or UTC-4 (EDT).  We derive the offset via stdlib only —
@@ -5173,6 +5218,12 @@ def _wr_log_signal(res):
     # MARKET HOURS GATE: only log during NYSE regular session (Mon-Fri 09:30-16:00 ET)
     # After-hours data has different volatility characteristics and can't be acted on
     if not _us_market_open():
+        return
+
+    # SPREAD GATE: skip tickers with bid-ask spread > _WR_MAX_SPREAD_PCT (0.25%)
+    # Wide spread eats into the stop loss before the trade even starts
+    avg_vol = res.get("avg_volume") or res.get("avg_vol") or 0
+    if not _wr_check_spread(sym, avg_vol):
         return
 
     # PRIMARY GATE: only log when both models agree (88.4% WR vs 50.0% for non-agree)

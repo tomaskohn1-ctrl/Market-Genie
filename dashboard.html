@@ -5154,6 +5154,24 @@ function renderPredictions() {
     const confBar     = Math.round(r.confidence || 0);
     const streakCount = r.streak_count || 1;
 
+    // ── Liquidity / spread proxy ─────────────────────────────────────────────
+    // avg_volume = 3-month avg daily volume from fast_info
+    // Tight spreads: >5M = green, 1-5M = yellow, <1M = red
+    const avgVol = r.avg_volume || 0;
+    const volFmt = avgVol >= 1_000_000 ? (avgVol / 1_000_000).toFixed(1) + 'M'
+                 : avgVol >= 1_000     ? (avgVol / 1_000).toFixed(0) + 'K'
+                 : avgVol > 0          ? avgVol.toString()
+                 : '—';
+    const volClr = avgVol >= 5_000_000 ? '#00e676'
+                 : avgVol >= 1_000_000 ? '#ffd740'
+                 : avgVol > 0          ? '#ff4455'
+                 : 'var(--muted)';
+    const volTitle = avgVol >= 5_000_000 ? 'High liquidity — tight spread expected'
+                   : avgVol >= 1_000_000 ? 'Moderate liquidity — verify spread before entry'
+                   : avgVol > 0          ? 'Low liquidity — wide spread risk'
+                   : 'Volume unavailable';
+    const volPill = `<span title="${volTitle}" style="font-size:8px;color:${volClr};font-family:'JetBrains Mono',monospace">vol ${volFmt}</span>`;
+
     const kDir   = r.kronos_dir;
     const kPctRaw= r.kronos_pct != null ? r.kronos_pct : null;
     const kPct   = kPctRaw != null ? (kPctRaw >= 0 ? '+' : '') + kPctRaw.toFixed(2) + '%' : '—';
@@ -5230,10 +5248,11 @@ function renderPredictions() {
       <div style="display:grid;grid-template-columns:70px 56px 1fr 52px 80px 80px;gap:4px;align-items:center">
         <div style="display:flex;flex-direction:column;gap:2px">
           <span style="font-size:13px;font-weight:700;color:var(--text-hi)">${r.sym}</span>
-          <div style="display:flex;gap:3px;align-items:center">
+          <div style="display:flex;gap:3px;align-items:center;flex-wrap:wrap">
             ${srcPill}
             <span style="font-size:9px;color:${streakClr};font-family:'JetBrains Mono',monospace">${streakIcon}${streakCount}</span>
           </div>
+          ${volPill}
         </div>
         <div>
           <span style="font-size:12px;font-weight:800;color:${dirClr};background:${dirBg};padding:2px 6px;border-radius:4px;display:inline-block;letter-spacing:0.5px">${dir}</span>
