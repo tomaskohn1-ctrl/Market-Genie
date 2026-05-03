@@ -5288,6 +5288,13 @@ def _wr_log_signal(res):
             con.commit()
     except Exception as e:
         print(f"[WinRate] Log error: {e}")
+        return
+
+    # Fire Alpaca bracket order for every signal that passes all WR gates
+    try:
+        _alp_execute_signal(res)
+    except Exception as e:
+        print(f"[Alpaca] Execute error: {e}")
 
 
 def _wr_resolve_pending():
@@ -5381,6 +5388,217 @@ def _wr_start():
 
 # Start win rate tracker on import
 _wr_start()
+
+
+# ── Alpaca Paper Trading Executor ─────────────────────────────────────────────
+# Automatically places bracket orders on Alpaca Paper when Alpha Engine fires
+# a high-conviction signal (conf ≥ 65, both_agree=1, streak ≥ 2).
+# All constants are tunable without code changes via Railway Variables.
+
+_ALPACA_KEY      = os.getenv("ALPACA_API_KEY", "")
+_ALPACA_SECRET   = os.getenv("ALPACA_SECRET_KEY", "")
+_ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets").rstrip("/")
+
+# Execution settings (override via Railway Variables)
+_ALP_ENABLED          = os.getenv("ALPACA_EXEC_ENABLED", "true").lower() == "true"
+_ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "5000"))   # $ per trade
+_ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "5"))         # max open at once
+_ALP_STOP_PCT         = float(os.getenv("ALPACA_STOP_PCT", "0.005"))        # 0.5% stop loss
+_ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.010"))      # 1.0% target
+_ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.020"))# 2.0% for STRONG
+_ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "65"))             # min confidence
+_ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak count
+_ALP_DEDUP_SECS       = 1800   # don't re-enter same ticker+direction within 30 min
+
+_alp_last_traded = {}   # { sym: {"dir": str, "ts": float} }
+_alp_lock        = threading.Lock()
+
+
+def _alp_headers():
+    return {
+        "APCA-API-KEY-ID":     _ALPACA_KEY,
+        "APCA-API-SECRET-KEY": _ALPACA_SECRET,
+        "Content-Type":        "application/json",
+    }
+
+
+def _alp_get_open_positions():
+    """Return set of currently open position symbols from Alpaca."""
+    try:
+        r = requests.get(f"{_ALPACA_BASE_URL}/v2/positions",
+                         headers=_alp_headers(), timeout=8)
+        if r.status_code == 200:
+            return {p["symbol"] for p in r.json()}
+    except Exception as e:
+        print(f"[Alpaca] positions fetch error: {e}")
+    return set()
+
+
+def _alp_count_open_orders():
+    """Count pending bracket orders (not yet filled)."""
+    try:
+        r = requests.get(f"{_ALPACA_BASE_URL}/v2/orders?status=open",
+                         headers=_alp_headers(), timeout=8)
+        if r.status_code == 200:
+            return len(r.json())
+    except Exception as e:
+        print(f"[Alpaca] orders fetch error: {e}")
+    return 0
+
+
+def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
+    """
+    Place a bracket order (market entry + OCO stop/target) on Alpaca.
+    direction: 'bull' → buy, 'bear' → sell short
+    is_strong: True if |Kronos| ≥ 1% → use 2% target instead of 1%
+    """
+    if not _ALPACA_KEY or not _ALPACA_SECRET:
+        print("[Alpaca] Keys not configured — skipping order")
+        return False
+
+    side       = "buy" if direction == "bull" else "sell"
+    qty        = max(1, int(_ALP_POSITION_SIZE_USD / price)) if price > 0 else 1
+    target_pct = _ALP_STRONG_TARGET_PCT if is_strong else _ALP_TARGET_PCT
+
+    if direction == "bull":
+        stop_px   = round(price * (1 - _ALP_STOP_PCT), 2)
+        target_px = round(price * (1 + target_pct), 2)
+    else:
+        stop_px   = round(price * (1 + _ALP_STOP_PCT), 2)
+        target_px = round(price * (1 - target_pct), 2)
+
+    order = {
+        "symbol":        sym,
+        "qty":           str(qty),
+        "side":          side,
+        "type":          "market",
+        "time_in_force": "day",
+        "order_class":   "bracket",
+        "take_profit":   {"limit_price": str(target_px)},
+        "stop_loss":     {"stop_price": str(stop_px)},
+    }
+
+    try:
+        r = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
+                          headers=_alp_headers(),
+                          json=order, timeout=10)
+        if r.status_code in (200, 201):
+            resp = r.json()
+            print(f"[Alpaca] ORDER PLACED — {side.upper()} {qty}x {sym} @ ~${price:.2f} "
+                  f"| stop ${stop_px} | target ${target_px} | id={resp.get('id','?')[:8]}")
+            return True
+        else:
+            print(f"[Alpaca] Order rejected {r.status_code}: {r.text[:300]}")
+            return False
+    except Exception as e:
+        print(f"[Alpaca] Order exception: {e}")
+        return False
+
+
+def _alp_execute_signal(res: dict):
+    """
+    Called for every signal that passes all win-rate gates.
+    Applies additional execution checks then places a bracket order.
+    """
+    if not _ALP_ENABLED:
+        return
+    if not _us_market_open():
+        return
+
+    sym       = res.get("sym", "")
+    direction = (res.get("consensus_dir") or res.get("direction") or "").lower()
+    conf      = res.get("confidence") or res.get("conf") or 0
+    streak    = res.get("streak_count", 1)
+    kpct_raw  = res.get("kronos_pct")
+    is_strong = abs(kpct_raw) >= 1.0 if kpct_raw is not None else False
+    price     = res.get("last_price") or res.get("price") or 0.0
+
+    if not sym or direction not in ("bull", "bear"):
+        return
+    if conf < _ALP_MIN_CONF:
+        return
+    if streak < _ALP_MIN_STREAK:
+        return
+    if not price:
+        return
+
+    now = time.time()
+    with _alp_lock:
+        last = _alp_last_traded.get(sym, {})
+        if last.get("dir") == direction and (now - last.get("ts", 0)) < _ALP_DEDUP_SECS:
+            return  # already in or recently exited this ticker+direction
+        _alp_last_traded[sym] = {"dir": direction, "ts": now}
+
+    # Check concurrent position limit
+    open_positions = _alp_get_open_positions()
+    if sym in open_positions:
+        print(f"[Alpaca] {sym} already in open positions — skipping")
+        return
+    total_exposure = len(open_positions) + _alp_count_open_orders()
+    if total_exposure >= _ALP_MAX_POSITIONS:
+        print(f"[Alpaca] Max positions reached ({total_exposure}/{_ALP_MAX_POSITIONS}) — skipping {sym}")
+        return
+
+    _alp_place_bracket(sym, direction, price, is_strong)
+
+
+@app.route("/api/alpaca/status")
+def api_alpaca_status():
+    """Return Alpaca account status and open positions — used by dashboard."""
+    if not _ALPACA_KEY or not _ALPACA_SECRET:
+        return jsonify({"enabled": False, "error": "Keys not configured"})
+    try:
+        acc = requests.get(f"{_ALPACA_BASE_URL}/v2/account",
+                           headers=_alp_headers(), timeout=8)
+        pos = requests.get(f"{_ALPACA_BASE_URL}/v2/positions",
+                           headers=_alp_headers(), timeout=8)
+        orders = requests.get(f"{_ALPACA_BASE_URL}/v2/orders?status=open",
+                              headers=_alp_headers(), timeout=8)
+        acc_data = acc.json() if acc.status_code == 200 else {}
+        pos_data = pos.json() if pos.status_code == 200 else []
+        ord_data = orders.json() if orders.status_code == 200 else []
+
+        return jsonify({
+            "enabled":        _ALP_ENABLED,
+            "paper":          "paper" in _ALPACA_BASE_URL,
+            "equity":         float(acc_data.get("equity", 0)),
+            "buying_power":   float(acc_data.get("buying_power", 0)),
+            "cash":           float(acc_data.get("cash", 0)),
+            "pnl_today":      float(acc_data.get("equity", 0)) - float(acc_data.get("last_equity", 0)),
+            "open_positions": len(pos_data),
+            "open_orders":    len(ord_data),
+            "max_positions":  _ALP_MAX_POSITIONS,
+            "position_size":  _ALP_POSITION_SIZE_USD,
+            "positions": [
+                {
+                    "sym":    p["symbol"],
+                    "side":   p["side"],
+                    "qty":    p["qty"],
+                    "entry":  float(p.get("avg_entry_price", 0)),
+                    "pnl":    float(p.get("unrealized_pl", 0)),
+                    "pnl_pct":float(p.get("unrealized_plpc", 0)) * 100,
+                }
+                for p in pos_data
+            ],
+        })
+    except Exception as e:
+        return jsonify({"enabled": _ALP_ENABLED, "error": str(e)}), 500
+
+
+@app.route("/api/alpaca/toggle", methods=["POST"])
+def api_alpaca_toggle():
+    """Enable or disable live execution without redeploying."""
+    global _ALP_ENABLED
+    data = request.get_json(force=True) or {}
+    _ALP_ENABLED = bool(data.get("enabled", not _ALP_ENABLED))
+    state = "ENABLED" if _ALP_ENABLED else "DISABLED"
+    print(f"[Alpaca] Execution {state} via API toggle")
+    return jsonify({"enabled": _ALP_ENABLED})
+
+
+print(f"[Alpaca] Executor loaded — enabled={_ALP_ENABLED}, "
+      f"paper={'yes' if 'paper' in _ALPACA_BASE_URL else 'NO — LIVE'}, "
+      f"position_size=${_ALP_POSITION_SIZE_USD:.0f}, max_positions={_ALP_MAX_POSITIONS}")
 
 
 @app.route("/api/winrate")

@@ -2495,6 +2495,23 @@
     </div>
   </div>
 
+  <!-- Alpaca Paper Trading Status -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-header" style="background:linear-gradient(135deg,rgba(255,198,0,0.10),rgba(255,140,0,0.07))">
+      <div class="card-title"><span class="card-icon">🤖</span> Alpaca Auto-Trader <span style="font-size:10px;font-weight:400;color:var(--muted)">paper trading</span></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="alpacaStatusBadge" class="card-tag" style="background:rgba(255,198,0,0.15);color:#ffc600;border:1px solid rgba(255,198,0,0.3)">Loading…</span>
+        <button id="alpacaToggleBtn" class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="toggleAlpaca()">⏸ Pause</button>
+        <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="loadAlpaca()">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="card-body" style="padding:12px 16px">
+      <div id="alpacaBody">
+        <div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">⏳ Loading Alpaca account…</div>
+      </div>
+    </div>
+  </div>
+
   <!-- ══ LIVE SURGES ══ -->
   <div class="card" data-tab="signal" id="surgeCard" style="border-color:rgba(255,200,0,0.35);box-shadow:0 0 18px rgba(255,200,0,0.08)">
     <div class="card-header" style="background:linear-gradient(135deg,rgba(255,180,0,0.10),rgba(255,80,0,0.07))">
@@ -5612,6 +5629,108 @@ function renderWinRate() {
 // Load win rate on page load and every 3 minutes
 loadWinRate();
 setInterval(loadWinRate, 180000);
+
+// ── ALPACA AUTO-TRADER ────────────────────────────────────────────────────────
+let _alpacaEnabled = true;
+
+async function loadAlpaca() {
+  try {
+    const r = await fetch('/api/alpaca/status');
+    const d = await r.json();
+    _alpacaEnabled = d.enabled;
+    renderAlpaca(d);
+  } catch(e) {
+    document.getElementById('alpacaBody').innerHTML =
+      `<div style="padding:12px;color:var(--muted);font-size:12px">⚠ Could not reach Alpaca API</div>`;
+  }
+}
+
+function renderAlpaca(d) {
+  const badge = document.getElementById('alpacaStatusBadge');
+  const btn   = document.getElementById('alpacaToggleBtn');
+
+  if (!d.enabled) {
+    badge.textContent = '⏸ PAUSED';
+    badge.style.background = 'rgba(120,120,120,0.15)';
+    badge.style.color = 'var(--muted)';
+    btn.textContent = '▶ Resume';
+  } else {
+    badge.textContent = d.paper ? '🟡 PAPER LIVE' : '🟢 LIVE';
+    badge.style.background = 'rgba(255,198,0,0.15)';
+    badge.style.color = '#ffc600';
+    btn.textContent = '⏸ Pause';
+  }
+
+  if (d.error && !d.equity) {
+    document.getElementById('alpacaBody').innerHTML =
+      `<div style="font-size:12px;color:var(--muted);padding:8px">${d.error}</div>`;
+    return;
+  }
+
+  const pnlColor = d.pnl_today >= 0 ? 'var(--green)' : 'var(--red)';
+  const pnlSign  = d.pnl_today >= 0 ? '+' : '';
+  const posRows  = (d.positions || []).map(p => {
+    const pnlC = p.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const pnlS = p.pnl >= 0 ? '+' : '';
+    return `<tr>
+      <td style="padding:4px 8px;font-weight:500">${p.sym}</td>
+      <td style="padding:4px 8px;color:${p.side==='long'?'var(--green)':'var(--red)'}">${p.side.toUpperCase()}</td>
+      <td style="padding:4px 8px">${p.qty}</td>
+      <td style="padding:4px 8px">$${p.entry.toFixed(2)}</td>
+      <td style="padding:4px 8px;color:${pnlC}">${pnlS}$${p.pnl.toFixed(2)} (${pnlS}${p.pnl_pct.toFixed(2)}%)</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('alpacaBody').innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px">
+      <div style="text-align:center;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:8px">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">Equity</div>
+        <div style="font-size:15px;font-weight:500">$${(d.equity||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+      </div>
+      <div style="text-align:center;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:8px">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">Today's P&L</div>
+        <div style="font-size:15px;font-weight:500;color:${pnlColor}">${pnlSign}$${(d.pnl_today||0).toFixed(2)}</div>
+      </div>
+      <div style="text-align:center;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:8px">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">Open Positions</div>
+        <div style="font-size:15px;font-weight:500">${d.open_positions||0} / ${d.max_positions||5}</div>
+      </div>
+      <div style="text-align:center;background:var(--card-bg);border:1px solid var(--border);border-radius:6px;padding:8px">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">Position Size</div>
+        <div style="font-size:15px;font-weight:500">$${(d.position_size||5000).toLocaleString()}</div>
+      </div>
+    </div>
+    ${posRows ? `
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead>
+        <tr style="border-bottom:1px solid var(--border);color:var(--muted)">
+          <th style="padding:4px 8px;text-align:left;font-weight:400">Symbol</th>
+          <th style="padding:4px 8px;text-align:left;font-weight:400">Side</th>
+          <th style="padding:4px 8px;text-align:left;font-weight:400">Qty</th>
+          <th style="padding:4px 8px;text-align:left;font-weight:400">Entry</th>
+          <th style="padding:4px 8px;text-align:left;font-weight:400">Unrealized P&L</th>
+        </tr>
+      </thead>
+      <tbody>${posRows}</tbody>
+    </table>` :
+    `<div style="font-size:12px;color:var(--muted);text-align:center;padding:8px">No open positions right now</div>`}
+  `;
+}
+
+async function toggleAlpaca() {
+  _alpacaEnabled = !_alpacaEnabled;
+  try {
+    await fetch('/api/alpaca/toggle', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({enabled: _alpacaEnabled})
+    });
+    await loadAlpaca();
+  } catch(e) { console.error('Toggle failed', e); }
+}
+
+loadAlpaca();
+setInterval(loadAlpaca, 30000);  // refresh every 30s during market hours
 
 // ── LIVE SURGES — second-bar mid-bar volume spike feed ────────────────────────
 // Polls /api/live/surges every 3s and renders a mini alert card.
