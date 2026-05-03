@@ -4658,6 +4658,16 @@ _PREDICT_RESULT_TTL    = 900   # 15 min — covers 2+ full rotations; stale resu
 _PREDICT_BUCKET_SECS   = 30    # one bucket every 30s
 _PREDICT_NUM_BUCKETS   = 14    # 350 tickers ÷ 14 = 25/bucket → full rotation ~7 min, ~10s per bucket with 6 workers
 
+# ── Hot-ticker fast lane ──────────────────────────────────────────────────────
+# When a ticker reaches streak_count=1 (first confirmation) it is promoted to
+# the hot list and rescanned every 15 seconds by a dedicated thread.
+# The moment streak_count reaches 2 the bracket order fires — cutting signal→order
+# latency from up to 7 minutes down to ~15 seconds.
+_HOT_TICKERS      = {}          # { sym: ts_added } — tickers with streak_count=1
+_HOT_TICKER_TTL   = 300         # drop from hot list after 5 min with no promotion
+_HOT_RESCAN_SECS  = 15          # rescan hot tickers every 15 seconds
+_hot_lock         = threading.Lock()
+
 # ── Direction streak / hysteresis ────────────────────────────────────────────
 # Prevents rapid bull↔bear flips from noisy single-bar readings.
 # A direction must appear N consecutive times before the committed direction changes.
@@ -4874,6 +4884,16 @@ def _predict_apply_streak(sym, res):
         res["streak_count"]  = st["count"]
         res["flipping"]      = (st.get("candidate") != st["dir"] and st.get("cand_count", 0) > 0)
         res["flip_progress"] = st.get("cand_count", 0)
+
+        # Hot-lane promotion: streak=1 → add to fast-rescan list so the NEXT
+        # confirmation (streak=2) fires within 15s instead of up to 7 minutes.
+        # streak≥2 means already confirmed — remove from hot list (order fired).
+        if st["count"] == 1 and not res["flipping"] and _us_market_open():
+            with _hot_lock:
+                _HOT_TICKERS[sym] = time.time()
+        elif st["count"] >= 2:
+            with _hot_lock:
+                _HOT_TICKERS.pop(sym, None)
     else:
         res["consensus_dir"] = raw_dir
         res["streak_count"]  = 1
@@ -4976,6 +4996,58 @@ def _predict_bg_loop():
 
         time.sleep(_PREDICT_BUCKET_SECS)
 
+def _hot_lane_loop():
+    """
+    Fast-rescan thread: checks hot tickers every 15 seconds.
+    Hot tickers are those that reached streak_count=1 in the main scan.
+    When one reaches streak_count=2 here, _wr_log_signal fires immediately
+    instead of waiting up to 7 minutes for the next main bucket cycle.
+    This cuts signal→order latency from ~7 min to ~15 seconds.
+    """
+    import concurrent.futures
+    while True:
+        try:
+            if not _us_market_open():
+                time.sleep(_HOT_RESCAN_SECS)
+                continue
+
+            now = time.time()
+            with _hot_lock:
+                # Expire stale hot tickers
+                expired = [s for s, ts in _HOT_TICKERS.items()
+                           if now - ts > _HOT_TICKER_TTL]
+                for s in expired:
+                    del _HOT_TICKERS[s]
+                hot = list(_HOT_TICKERS.keys())
+
+            if not hot:
+                time.sleep(_HOT_RESCAN_SECS)
+                continue
+
+            print(f"[HotLane] Rescanning {len(hot)} hot tickers: {', '.join(hot[:10])}")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+                for sym, res in pool.map(_predict_one_safe, hot):
+                    if not res:
+                        continue
+                    res["_ts"] = time.time()
+                    _predict_apply_streak(sym, res)
+
+                    # Only log/trade when streak reaches 2 (confirmation)
+                    if res.get("streak_count", 0) >= 2 and res.get("both_agree"):
+                        print(f"[HotLane] {sym} confirmed streak≥2 — firing signal")
+                        with _predict_lock:
+                            _predict_results[sym] = res
+                        try:
+                            _wr_log_signal(res)
+                        except Exception as e:
+                            print(f"[HotLane] log error {sym}: {e}")
+
+        except Exception as e:
+            print(f"[HotLane] Error: {e}")
+
+        time.sleep(_HOT_RESCAN_SECS)
+
+
 def _start_predict_bg():
     global _predict_bg_on
     with _predict_bg_lock:
@@ -4985,6 +5057,11 @@ def _start_predict_bg():
     t = threading.Thread(target=_predict_bg_loop, daemon=True)
     t.start()
     print("[Predict] Background prediction engine started")
+
+    # Start hot-lane fast-rescan thread alongside the main engine
+    hl = threading.Thread(target=_hot_lane_loop, daemon=True)
+    hl.start()
+    print(f"[HotLane] Fast-rescan thread started — {_HOT_RESCAN_SECS}s interval")
 
 @app.route("/api/predict/scan")
 def predict_scan():
@@ -5062,7 +5139,8 @@ _WR_DB_PATH        = os.path.join(os.path.dirname(__file__), "winrate.db")
 _WR_RESOLVE_MINS   = 20    # resolve signal after this many minutes
 _WR_MIN_MOVE_PCT   = 0.30  # minimum move % to count as WIN/LOSS (else NEUTRAL)
 _WR_BLACKLIST      = {"MAXN"}  # tickers with confirmed Kronos calibration failure (100% conf, chronic loser)
-_WR_MAX_SPREAD_PCT = 0.25  # max bid-ask spread % to log (wider = spread eats >50% of stop)
+_WR_MAX_SPREAD_PCT = 0.35  # max bid-ask spread % to log — raised 0.25→0.35 for more opportunity
+                           # stop is 0.5% so 0.35% spread still leaves meaningful edge
 _WR_MIN_AVG_VOL    = 200_000  # fast-reject micro-caps below this 3-month avg daily volume
 _wr_last_logged    = {}    # { sym: {"dir": str, "ts": float} } — in-memory dedup (per-worker)
 _wr_lock           = threading.Lock()
