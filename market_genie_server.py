@@ -5300,6 +5300,9 @@ def _wr_init_db():
         con.commit()
 
 
+_wr_gate_stats = {"flipping": 0, "mkt_closed": 0, "spread": 0, "no_agree": 0, "dedup": 0, "logged": 0}
+_wr_gate_last_print = [0.0]
+
 def _wr_log_signal(res):
     """
     Log ONLY both_agree=1 signals — the 88.4% WR tier confirmed by live data.
@@ -5315,22 +5318,37 @@ def _wr_log_signal(res):
     if sym in _WR_BLACKLIST:
         return  # Known Kronos calibration failure — excluded from stats
     if flipping:
+        _wr_gate_stats["flipping"] += 1
         return
 
     # MARKET HOURS GATE: only log during NYSE regular session (Mon-Fri 09:30-16:00 ET)
     # After-hours data has different volatility characteristics and can't be acted on
     if not _us_market_open():
+        _wr_gate_stats["mkt_closed"] += 1
         return
 
     # SPREAD GATE: skip tickers with bid-ask spread > _WR_MAX_SPREAD_PCT (0.25%)
     # Wide spread eats into the stop loss before the trade even starts
     avg_vol = res.get("avg_volume") or res.get("avg_vol") or 0
     if not _wr_check_spread(sym, avg_vol):
+        _wr_gate_stats["spread"] += 1
         return
 
     # PRIMARY GATE: only log when both models agree (88.4% WR vs 50.0% for non-agree)
     if not res.get("both_agree"):
+        _wr_gate_stats["no_agree"] += 1
         return
+
+    # ── Print gate summary every 5 minutes so Railway logs show what's blocking ─
+    now_gs = time.time()
+    if now_gs - _wr_gate_last_print[0] > 300:
+        _wr_gate_last_print[0] = now_gs
+        print(f"[WR Gates] flipping={_wr_gate_stats['flipping']} "
+              f"mkt_closed={_wr_gate_stats['mkt_closed']} "
+              f"spread={_wr_gate_stats['spread']} "
+              f"no_agree={_wr_gate_stats['no_agree']} "
+              f"dedup={_wr_gate_stats['dedup']} "
+              f"logged={_wr_gate_stats['logged']}")
 
     # Ensure DB table exists (guards against edge cases at startup)
     try:
@@ -5342,8 +5360,10 @@ def _wr_log_signal(res):
     with _wr_lock:
         last = _wr_last_logged.get(sym, {})
         if last.get("dir") == direction and (now - last.get("ts", 0)) < 1800:
+            _wr_gate_stats["dedup"] += 1
             return   # same direction within 30 min → skip
         _wr_last_logged[sym] = {"dir": direction, "ts": now}
+    _wr_gate_stats["logged"] += 1
 
     # Get current price for entry
     price = res.get("last_price") or res.get("price") or 0.0
@@ -5812,6 +5832,46 @@ print(f"[Alpaca] Executor loaded — enabled={_ALP_ENABLED}, "
 _eod_thread = threading.Thread(target=_alp_eod_loop, daemon=True)
 _eod_thread.start()
 print("[EOD] Flattener thread started — all positions will close at 15:55 ET daily")
+
+
+@app.route("/api/debug/signals")
+def api_debug_signals():
+    """Diagnostic: shows live scanner output + gate rejection counts.
+    Visit <your-railway-url>/api/debug/signals to see what's blocking."""
+    with _predict_lock:
+        results = list(_predict_results.values())
+    now = time.time()
+    # Summarise what the scanner is currently seeing
+    total       = len(results)
+    both_agree  = sum(1 for r in results if r.get("both_agree") == 1)
+    flipping    = sum(1 for r in results if r.get("flipping"))
+    streak2plus = sum(1 for r in results if r.get("streak_count", 0) >= 2)
+    high_conf   = sum(1 for r in results if r.get("confidence", 0) >= 65)
+    # Top 10 both_agree signals sorted by confidence
+    candidates = sorted(
+        [r for r in results if r.get("both_agree") == 1 and not r.get("flipping")],
+        key=lambda x: -x.get("confidence", 0)
+    )[:10]
+    return jsonify({
+        "scanner_live_count":  total,
+        "both_agree_1":        both_agree,
+        "flipping":            flipping,
+        "streak_ge2":          streak2plus,
+        "conf_ge65":           high_conf,
+        "market_open":         _us_market_open(),
+        "safe_to_enter":       _safe_to_enter(),
+        "gate_rejections":     dict(_wr_gate_stats),
+        "open_positions":      len(_alp_get_open_positions()),
+        "top_candidates": [{
+            "sym":        r.get("sym"),
+            "dir":        r.get("consensus_dir"),
+            "conf":       r.get("confidence"),
+            "streak":     r.get("streak_count"),
+            "both_agree": r.get("both_agree"),
+            "k_dir":      r.get("kronos_dir"),
+            "t_dir":      r.get("tfm_dir"),
+        } for r in candidates],
+    })
 
 
 @app.route("/api/winrate")
