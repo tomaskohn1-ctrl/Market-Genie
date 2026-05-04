@@ -5033,8 +5033,11 @@ def _hot_lane_loop():
                     _predict_apply_streak(sym, res)
 
                     # Only log/trade when streak reaches 2 (confirmation)
-                    if res.get("streak_count", 0) >= 2 and res.get("both_agree"):
-                        print(f"[HotLane] {sym} confirmed streak≥2 — firing signal")
+                    # Note: both_agree gate is enforced inside _wr_log_signal →
+                    # _alp_execute_signal, so we pass all streak≥2 signals here.
+                    if res.get("streak_count", 0) >= 2:
+                        agree = res.get("both_agree", 0)
+                        print(f"[HotLane] {sym} confirmed streak≥2 both_agree={agree} — firing signal")
                         with _predict_lock:
                             _predict_results[sym] = res
                         try:
