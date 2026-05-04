@@ -5152,15 +5152,29 @@ def _wr_check_spread(sym: str, avg_vol: float = 0) -> bool:
     Return True if the ticker is liquid enough to trade (spread within threshold).
     Uses cached yfinance .info bid/ask with 10-min TTL.
     Fast-rejects micro-caps by avg volume before making any API call.
+
+    Volume bypass: stocks with avg_vol > 1M shares/day are always liquid —
+    Massive/yfinance bid-ask data is often stale/bad for large-caps, so we
+    skip the spread check entirely and trust the edge (both_agree + streak).
     """
     # Fast-reject: skip micro-caps (wide spreads guaranteed)
     if avg_vol > 0 and avg_vol < _WR_MIN_AVG_VOL:
         print(f"[Spread] {sym} rejected — avg_vol {avg_vol:,.0f} < {_WR_MIN_AVG_VOL:,}")
         return False
 
+    # Volume bypass: highly liquid stocks always pass — bad bid/ask data from
+    # Massive (stale quotes, single limit orders) causes false-wide spreads on
+    # AAPL, MSFT, INTC, MU etc. Skip the check for stocks > 1M avg daily vol.
+    _LIQUID_VOL_BYPASS = 1_000_000
+    if avg_vol >= _LIQUID_VOL_BYPASS:
+        return True
+
     now = time.time()
     cached = _wr_spread_cache.get(sym)
     if cached and (now - cached["ts"]) < _WR_SPREAD_TTL:
+        # Sanity check: cached spread > 5% on non-micro-cap = bad data, allow it
+        if cached["spread_pct"] > 5.0:
+            return True
         ok = cached["spread_pct"] <= _WR_MAX_SPREAD_PCT
         if not ok:
             print(f"[Spread] {sym} cached spread {cached['spread_pct']:.3f}% > {_WR_MAX_SPREAD_PCT}% — skipped")
@@ -5172,8 +5186,10 @@ def _wr_check_spread(sym: str, avg_vol: float = 0) -> bool:
         ask  = float(info.get("ask") or 0)
         mid  = (bid + ask) / 2
         spread_pct = round((ask - bid) / mid * 100, 4) if mid > 0 else 0.0
-        _wr_spread_cache[sym] = {"spread_pct": spread_pct, "ts": now}
-        ok = spread_pct <= _WR_MAX_SPREAD_PCT
+        # Don't cache clearly bad data (spread > 5% = stale quote, single order)
+        if spread_pct <= 5.0:
+            _wr_spread_cache[sym] = {"spread_pct": spread_pct, "ts": now}
+        ok = spread_pct <= _WR_MAX_SPREAD_PCT or spread_pct > 5.0
         print(f"[Spread] {sym} bid={bid} ask={ask} spread={spread_pct:.3f}% — {'OK' if ok else 'WIDE, skipped'}")
         return ok
     except Exception as e:
