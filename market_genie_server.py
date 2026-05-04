@@ -5564,20 +5564,21 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
         "stop_loss":     {"stop_price": str(stop_px)},
     }
 
+    print(f"[Alpaca] POST /v2/orders → {sym} {side.upper()} qty={qty} stop=${stop_px} target=${target_px}")
     try:
         r = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
                           headers=_alp_headers(),
                           json=order, timeout=10)
         if r.status_code in (200, 201):
             resp = r.json()
-            print(f"[Alpaca] ORDER PLACED — {side.upper()} {qty}x {sym} @ ~${price:.2f} "
+            print(f"[Alpaca] ✅ ORDER PLACED — {side.upper()} {qty}x {sym} @ ~${price:.2f} "
                   f"| stop ${stop_px} | target ${target_px} | id={resp.get('id','?')[:8]}")
             return True
         else:
-            print(f"[Alpaca] Order rejected {r.status_code}: {r.text[:300]}")
+            print(f"[Alpaca] ❌ Order rejected HTTP {r.status_code}: {r.text[:500]}")
             return False
     except Exception as e:
-        print(f"[Alpaca] Order exception: {e}")
+        print(f"[Alpaca] ❌ Order exception: {e}")
         return False
 
 
@@ -5639,16 +5640,19 @@ def _alp_execute_signal(res: dict):
     Called for every signal that passes all win-rate gates.
     Applies additional execution checks then places a bracket order.
     """
+    sym = res.get("sym", "UNKNOWN")
+
     if not _ALP_ENABLED:
+        print(f"[Alpaca] {sym} — SKIPPED: executor disabled (ALPACA_EXEC_ENABLED=false)")
         return
     if not _us_market_open():
+        print(f"[Alpaca] {sym} — SKIPPED: market closed")
         return
     # No new entries after 15:30 ET — not enough time to reach target before close
     if not _safe_to_enter():
-        print(f"[Alpaca] {res.get('sym')} skipped — past 15:30 ET entry cutoff")
+        print(f"[Alpaca] {sym} — SKIPPED: past 15:30 ET entry cutoff")
         return
 
-    sym       = res.get("sym", "")
     direction = (res.get("consensus_dir") or res.get("direction") or "").lower()
     conf      = res.get("confidence") or res.get("conf") or 0
     streak    = res.get("streak_count", 1)
@@ -5657,32 +5661,69 @@ def _alp_execute_signal(res: dict):
     price     = res.get("last_price") or res.get("price") or 0.0
 
     if not sym or direction not in ("bull", "bear"):
+        print(f"[Alpaca] {sym} — SKIPPED: bad sym or direction='{direction}'")
         return
     if conf < _ALP_MIN_CONF:
+        print(f"[Alpaca] {sym} — SKIPPED: conf {conf:.1f} < min {_ALP_MIN_CONF}")
         return
     if streak < _ALP_MIN_STREAK:
+        print(f"[Alpaca] {sym} — SKIPPED: streak {streak} < min {_ALP_MIN_STREAK}")
         return
     if not price:
+        print(f"[Alpaca] {sym} — SKIPPED: no price available")
         return
 
     now = time.time()
     with _alp_lock:
         last = _alp_last_traded.get(sym, {})
         if last.get("dir") == direction and (now - last.get("ts", 0)) < _ALP_DEDUP_SECS:
-            return  # already in or recently exited this ticker+direction
+            age_min = int((now - last.get("ts", 0)) / 60)
+            print(f"[Alpaca] {sym} — SKIPPED: dedup ({age_min}m ago, same dir={direction})")
+            return
+        # NOTE: dedup entry is written AFTER successful order (see _alp_place_bracket)
+        # Storing tentative here to prevent race, will clear on failure
         _alp_last_traded[sym] = {"dir": direction, "ts": now}
 
     # Check concurrent position limit
     open_positions = _alp_get_open_positions()
     if sym in open_positions:
-        print(f"[Alpaca] {sym} already in open positions — skipping")
+        print(f"[Alpaca] {sym} — SKIPPED: already in open positions")
+        with _alp_lock:
+            _alp_last_traded.pop(sym, None)  # clear dedup so retry works
         return
     total_exposure = len(open_positions) + _alp_count_open_orders()
     if total_exposure >= _ALP_MAX_POSITIONS:
-        print(f"[Alpaca] Max positions reached ({total_exposure}/{_ALP_MAX_POSITIONS}) — skipping {sym}")
+        print(f"[Alpaca] {sym} — SKIPPED: max positions reached ({total_exposure}/{_ALP_MAX_POSITIONS})")
+        with _alp_lock:
+            _alp_last_traded.pop(sym, None)  # clear dedup so retry works
         return
 
-    _alp_place_bracket(sym, direction, price, is_strong)
+    print(f"[Alpaca] {sym} — FIRING bracket: {direction.upper()} conf={conf:.1f} streak={streak} price=${price:.2f} strong={is_strong}")
+    ok = _alp_place_bracket(sym, direction, price, is_strong)
+    if not ok:
+        # Order failed — remove dedup so the next signal attempt can retry
+        with _alp_lock:
+            _alp_last_traded.pop(sym, None)
+        print(f"[Alpaca] {sym} — order failed, dedup cleared for retry")
+
+
+@app.route("/api/alpaca/test")
+def api_alpaca_test():
+    """Diagnostic endpoint — shows raw Alpaca API response to debug auth issues."""
+    if not _ALPACA_KEY or not _ALPACA_SECRET:
+        return jsonify({"error": "Keys not configured", "key_set": False, "secret_set": False})
+    try:
+        r = requests.get(f"{_ALPACA_BASE_URL}/v2/account",
+                         headers=_alp_headers(), timeout=8)
+        return jsonify({
+            "http_status":  r.status_code,
+            "base_url":     _ALPACA_BASE_URL,
+            "key_prefix":   _ALPACA_KEY[:6] + "..." if _ALPACA_KEY else "(empty)",
+            "secret_set":   bool(_ALPACA_SECRET),
+            "response":     r.json() if r.headers.get("content-type","").startswith("application/json") else r.text[:500],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 
 @app.route("/api/alpaca/status")
