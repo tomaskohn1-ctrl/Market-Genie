@@ -5321,6 +5321,12 @@ def _wr_log_signal(res):
         _wr_gate_stats["flipping"] += 1
         return
 
+    # STREAK GATE: only log confirmed signals (streak≥2 = seen same direction twice)
+    # streak=1 is a first sighting — hot lane will re-check in 15s for confirmation
+    streak = res.get("streak_count", 1)
+    if streak < 2:
+        return
+
     # MARKET HOURS GATE: only log during NYSE regular session (Mon-Fri 09:30-16:00 ET)
     # After-hours data has different volatility characteristics and can't be acted on
     if not _us_market_open():
@@ -5334,10 +5340,9 @@ def _wr_log_signal(res):
         _wr_gate_stats["spread"] += 1
         return
 
-    # PRIMARY GATE: only log when both models agree (88.4% WR vs 50.0% for non-agree)
-    if not res.get("both_agree"):
-        _wr_gate_stats["no_agree"] += 1
-        return
+    # NOTE: both_agree is NOT a logging gate — we log all streak≥2 signals so the
+    # WR tracker always has data. The both_agree filter is enforced inside
+    # _alp_execute_signal so only high-confidence signals actually trade.
 
     # ── Print gate summary every 5 minutes so Railway logs show what's blocking ─
     now_gs = time.time()
@@ -5705,6 +5710,10 @@ def _alp_execute_signal(res: dict):
         return
     if streak < _ALP_MIN_STREAK:
         print(f"[Alpaca] {sym} — SKIPPED: streak {streak} < min {_ALP_MIN_STREAK}")
+        return
+    # both_agree gate: only trade when Kronos + TFM agree — 88.4% WR vs 50% without
+    if not res.get("both_agree"):
+        print(f"[Alpaca] {sym} — SKIPPED: both_agree=0 (models disagree on direction)")
         return
     if not price:
         print(f"[Alpaca] {sym} — SKIPPED: no price available")
