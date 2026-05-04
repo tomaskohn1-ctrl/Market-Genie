@@ -5183,27 +5183,35 @@ def _wr_check_spread(sym: str, avg_vol: float = 0) -> bool:
 # NYSE market-hours gate: Mon-Fri 09:30-16:00 ET
 # ET = UTC-5 (EST) or UTC-4 (EDT).  We derive the offset via stdlib only —
 # no pytz required.  DST in the US runs from 2nd Sun Mar → 1st Sun Nov.
-def _us_market_open() -> bool:
-    """Return True only during NYSE regular session (Mon-Fri 09:30-16:00 ET)."""
+def _get_et_now():
+    """Return current datetime in US Eastern Time (DST-aware, stdlib only)."""
     utc_now = datetime.utcnow()
-    # Determine EST/EDT offset: EDT (UTC-4) during DST, EST (UTC-5) otherwise
     year = utc_now.year
-    # DST start: 2nd Sunday of March
-    mar1   = datetime(year, 3, 1)
+    mar1      = datetime(year, 3, 1)
     dst_start = mar1 + timedelta(days=(6 - mar1.weekday()) % 7 + 7)
-    # DST end: 1st Sunday of November
-    nov1   = datetime(year, 11, 1)
+    nov1      = datetime(year, 11, 1)
     dst_end   = nov1 + timedelta(days=(6 - nov1.weekday()) % 7)
     in_dst    = dst_start <= utc_now.replace(tzinfo=None) < dst_end
     et_offset = timedelta(hours=-4 if in_dst else -5)
-    et_now    = utc_now + et_offset
-    # Weekday check (Monday=0, Friday=4)
+    return utc_now + et_offset
+
+
+def _us_market_open() -> bool:
+    """Return True only during NYSE regular session (Mon-Fri 09:30-16:00 ET)."""
+    et_now = _get_et_now()
     if et_now.weekday() > 4:
         return False
-    # Time window 09:30 – 16:00
-    open_t  = dtime(9, 30)
-    close_t = dtime(16, 0)
-    return open_t <= et_now.time() < close_t
+    return dtime(9, 30) <= et_now.time() < dtime(16, 0)
+
+
+def _safe_to_enter() -> bool:
+    """Return True only if there is enough time to enter a new scalp position.
+    Stops new entries at 15:30 ET — leaves 30 min for existing positions to
+    hit their target or stop before the EOD flattener runs at 15:55."""
+    et_now = _get_et_now()
+    if et_now.weekday() > 4:
+        return False
+    return dtime(9, 30) <= et_now.time() < dtime(15, 30)
 
 
 def _wr_edge_score(res):
@@ -5573,6 +5581,59 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
         return False
 
 
+def _alp_flatten_all():
+    """
+    Cancel all open orders and close all open positions.
+    Called by EOD flattener at 15:55 ET to ensure no overnight holds.
+    """
+    if not _ALPACA_KEY or not _ALPACA_SECRET:
+        return
+    try:
+        # 1. Cancel all open orders first (stops bracket legs from re-opening)
+        r = requests.delete(f"{_ALPACA_BASE_URL}/v2/orders",
+                            headers=_alp_headers(), timeout=10)
+        cancelled = r.json() if r.status_code == 207 else []
+        print(f"[EOD] Cancelled {len(cancelled) if isinstance(cancelled, list) else '?'} open orders")
+    except Exception as e:
+        print(f"[EOD] Cancel orders error: {e}")
+
+    try:
+        # 2. Close all open positions at market
+        r = requests.delete(f"{_ALPACA_BASE_URL}/v2/positions",
+                            headers=_alp_headers(), timeout=10)
+        closed = r.json() if r.status_code == 207 else []
+        print(f"[EOD] Closed {len(closed) if isinstance(closed, list) else '?'} positions — all flat for EOD")
+    except Exception as e:
+        print(f"[EOD] Close positions error: {e}")
+
+
+def _alp_eod_loop():
+    """
+    EOD flattener: runs every 60s, triggers close-all at 15:55 ET.
+    Ensures Market Genie never holds a scalp position overnight.
+    15:55 gives 5-min buffer before 16:00 close for market orders to fill.
+    """
+    _flattened_today = set()   # track which dates we've already flattened
+    while True:
+        try:
+            et_now = _get_et_now()
+            date_key = et_now.strftime("%Y-%m-%d")
+            # Trigger flatten window: 15:55–15:59 ET, once per trading day
+            if (et_now.weekday() <= 4
+                    and dtime(15, 55) <= et_now.time() < dtime(16, 0)
+                    and date_key not in _flattened_today
+                    and _ALP_ENABLED):
+                print(f"[EOD] {et_now.strftime('%H:%M')} ET — flattening all positions before close")
+                _alp_flatten_all()
+                _flattened_today.add(date_key)
+                # Keep set small — only keep last 5 dates
+                if len(_flattened_today) > 5:
+                    _flattened_today.pop()
+        except Exception as e:
+            print(f"[EOD] Loop error: {e}")
+        time.sleep(60)
+
+
 def _alp_execute_signal(res: dict):
     """
     Called for every signal that passes all win-rate gates.
@@ -5581,6 +5642,10 @@ def _alp_execute_signal(res: dict):
     if not _ALP_ENABLED:
         return
     if not _us_market_open():
+        return
+    # No new entries after 15:30 ET — not enough time to reach target before close
+    if not _safe_to_enter():
+        print(f"[Alpaca] {res.get('sym')} skipped — past 15:30 ET entry cutoff")
         return
 
     sym       = res.get("sym", "")
@@ -5677,6 +5742,11 @@ def api_alpaca_toggle():
 print(f"[Alpaca] Executor loaded — enabled={_ALP_ENABLED}, "
       f"paper={'yes' if 'paper' in _ALPACA_BASE_URL else 'NO — LIVE'}, "
       f"position_size=${_ALP_POSITION_SIZE_USD:.0f}, max_positions={_ALP_MAX_POSITIONS}")
+
+# Start EOD flattener — ensures no overnight holds on scalp positions
+_eod_thread = threading.Thread(target=_alp_eod_loop, daemon=True)
+_eod_thread.start()
+print("[EOD] Flattener thread started — all positions will close at 15:55 ET daily")
 
 
 @app.route("/api/winrate")
