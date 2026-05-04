@@ -5584,6 +5584,33 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
         print("[Alpaca] Keys not configured — skipping order")
         return False
 
+    # ── Fetch fresh real-time price from Finnhub for accurate bracket levels ──
+    # Scanner price can be 1-5 min stale. If the stock moved since the signal,
+    # using the stale price anchors stop/target to the wrong level, creating
+    # bad R:R (e.g. fill at +1.5% above signal = stop already 2% away at fill).
+    signal_price = price   # keep for logging
+    if FINNHUB_KEY:
+        try:
+            fh_q = requests.get("https://finnhub.io/api/v1/quote",
+                                params={"symbol": sym, "token": FINNHUB_KEY},
+                                timeout=3)
+            if fh_q.status_code == 200:
+                fh_data = fh_q.json()
+                fresh = float(fh_data.get("c") or fh_data.get("l") or 0)
+                if fresh > 0:
+                    price = fresh
+                    print(f"[Alpaca] {sym} fresh quote ${fresh:.2f} "
+                          f"(signal was ${signal_price:.2f}, Δ={((fresh-signal_price)/signal_price*100):+.2f}%)")
+        except Exception as _fq_err:
+            print(f"[Alpaca] {sym} fresh quote failed ({_fq_err}), using signal price")
+
+    # Stale-price guard: if fresh price has moved >2% from signal price, skip.
+    # A 2%+ move means the thesis already played out — entering now is chasing.
+    if signal_price > 0 and abs(price - signal_price) / signal_price > 0.02:
+        print(f"[Alpaca] {sym} — SKIPPED: price moved {((price-signal_price)/signal_price*100):+.2f}% "
+              f"since signal (>${signal_price:.2f} → ${price:.2f}) — thesis already played out")
+        return False
+
     side       = "buy" if direction == "bull" else "sell"
     qty        = max(1, int(_ALP_POSITION_SIZE_USD / price)) if price > 0 else 1
     target_pct = _ALP_STRONG_TARGET_PCT if is_strong else _ALP_TARGET_PCT
