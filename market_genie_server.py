@@ -5822,11 +5822,14 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
         except Exception as _fq_err:
             print(f"[Alpaca] {sym} fresh quote failed ({_fq_err}), using signal price")
 
-    # Stale-price guard: if fresh price has moved >2% from signal price, skip.
-    # A 2%+ move means the thesis already played out — entering now is chasing.
-    if signal_price > 0 and abs(price - signal_price) / signal_price > 0.02:
+    # Stale-price guard: if fresh price has moved >1% from signal price, skip.
+    # At 0.5% stop + 1% target, a 1%+ move means the bracket is already anchored
+    # to the wrong level — stop would be 1.5% away and target only 0.5% away at fill,
+    # producing a 1:3 R:R (inverted). Reduced from 2% after a live INTC trade where
+    # a 1.53% quote lag caused a stop 2% below actual fill, resulting in a $104 loss.
+    if signal_price > 0 and abs(price - signal_price) / signal_price > 0.01:
         print(f"[Alpaca] {sym} — SKIPPED: price moved {((price-signal_price)/signal_price*100):+.2f}% "
-              f"since signal (>${signal_price:.2f} → ${price:.2f}) — thesis already played out")
+              f"since signal (>${signal_price:.2f} → ${price:.2f}) — bracket would be anchored incorrectly")
         return False
 
     side       = "buy" if direction == "bull" else "sell"
