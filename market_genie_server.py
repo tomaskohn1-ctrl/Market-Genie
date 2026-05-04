@@ -5236,13 +5236,16 @@ def _us_market_open() -> bool:
 
 
 def _safe_to_enter() -> bool:
-    """Return True only if there is enough time to enter a new scalp position.
-    Stops new entries at 15:30 ET — leaves 30 min for existing positions to
-    hit their target or stop before the EOD flattener runs at 15:55."""
+    """Return True only during the core tradeable window (Mon-Fri 10:00-15:30 ET).
+    - First 30 min (9:30-10:00) excluded: opening volatility flush, wide spreads,
+      and erratic price action cause rapid stop-outs (confirmed May 4: 5 consecutive
+      bear stops in the opening 46 min, -$154 total).
+    - Last 30 min (15:30-16:00) excluded: not enough time to reach target before
+      EOD flattener at 15:55."""
     et_now = _get_et_now()
     if et_now.weekday() > 4:
         return False
-    return dtime(9, 30) <= et_now.time() < dtime(15, 30)
+    return dtime(10, 0) <= et_now.time() < dtime(15, 30)
 
 
 def _wr_edge_score(res):
@@ -5716,7 +5719,7 @@ _ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.market
 
 # Execution settings (override via Railway Variables)
 _ALP_ENABLED          = os.getenv("ALPACA_EXEC_ENABLED", "true").lower() == "true"
-_ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "5000"))   # $ per trade
+_ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "10000"))  # $10K per trade → 5 positions = $50K deployed
 _ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "5"))         # max open at once
 _ALP_STOP_PCT         = float(os.getenv("ALPACA_STOP_PCT", "0.005"))        # 0.5% stop loss
 _ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.010"))      # 1.0% target
@@ -6081,9 +6084,14 @@ def _alp_execute_signal(res: dict):
     with _alp_order_lock:
         open_positions = _alp_get_open_positions()
         if sym in open_positions:
-            print(f"[Alpaca] {sym} — SKIPPED: already in open positions")
-            with _alp_lock:
-                _alp_last_traded.pop(sym, None)  # clear dedup so retry works
+            # Already holding this ticker — do NOT clear dedup here.
+            # Clearing dedup while the position is open lets a stop-out be
+            # immediately followed by a re-entry on the next scanner pass
+            # (root cause of NVDA double-dip on May 4: stop at 11:20, re-entry
+            # 3 min later because dedup was wiped by this exact block).
+            # The 30-min dedup will expire naturally, and _alp_time_exit_loop
+            # clears it when OUR code closes the position.
+            print(f"[Alpaca] {sym} — SKIPPED: already in open positions (dedup preserved)")
             return
         # Use position count only — bracket orders create 2 open child orders
         # (stop + target) per position, so counting open orders inflates exposure

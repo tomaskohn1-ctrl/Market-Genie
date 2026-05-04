@@ -5628,7 +5628,7 @@ function renderWinRate() {
     </div>` : '';
 
   const footNote = `<div style="padding:6px 12px 8px;font-size:9px;color:var(--muted);border-top:1px solid rgba(255,255,255,0.04);line-height:1.7">
-    📌 Only <b style="color:#ffd700">both_agree=1</b> signals logged (Kronos + TFM agree on direction) · Resolved 20 min after entry · WIN/LOSS = ≥0.3% move · NEUTRAL = &lt;0.3% · Same ticker+direction deduped within 30 min · ⬇ Export CSV before every deploy.
+    📌 Only <b style="color:#ffd700">both_agree=1</b> signals logged (Kronos + TFM agree on direction) · Resolved 20 min after entry · WIN/LOSS = ≥0.3% move · NEUTRAL = &lt;0.3% · Same ticker+direction deduped within 30 min · No entries 9:30–10:00 AM (opening cooldown) · ⬇ Export CSV before every deploy.
   </div>`;
 
   body.innerHTML = gaugeHtml + tableHtml + histHtml + footNote;
