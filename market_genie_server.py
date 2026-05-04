@@ -5707,7 +5707,9 @@ def _alp_execute_signal(res: dict):
         with _alp_lock:
             _alp_last_traded.pop(sym, None)  # clear dedup so retry works
         return
-    total_exposure = len(open_positions) + _alp_count_open_orders()
+    # Use position count only — bracket orders create 2 open child orders (stop+target)
+    # per position, so counting open orders inflates exposure 3x and blocks new entries.
+    total_exposure = len(open_positions)
     if total_exposure >= _ALP_MAX_POSITIONS:
         print(f"[Alpaca] {sym} — SKIPPED: max positions reached ({total_exposure}/{_ALP_MAX_POSITIONS})")
         with _alp_lock:
