@@ -143,7 +143,7 @@ SCANNER_UNIVERSE = [
     "BAC","ORCL","CRM","CVX","MRK","ABBV","TMO","ACN","ADBE","TXN",
     # ── Semiconductors ──────────────────────────────────────────────────────
     "AMD","INTC","QCOM","MU","AMAT","LRCX","KLAC","MRVL","ARM","SMCI",
-    "ASML","TSM","ON","WOLF","CDNS","SNPS",
+    "ASML","TSM","ON","CDNS","SNPS","CRDO","MCHP","MPWR",
     # ── AI / Cloud / SaaS ───────────────────────────────────────────────────
     "PLTR","SNOW","DDOG","NET","CRWD","PANW","ZS","AI","PATH",
     "TWLO","HUBS","MDB","CFLT","S","GTLB","DOCN",
@@ -159,7 +159,7 @@ SCANNER_UNIVERSE = [
     # ── China ADRs ──────────────────────────────────────────────────────────
     "BABA","JD","PDD","BIDU","KWEB",
     # ── Meme / High Short Interest ──────────────────────────────────────────
-    "GME","AMC","BBAI","DJT","FFIE",
+    "GME","AMC","BBAI","DJT","SOUN","HIMS",
     # ── Quantum / Space / Emerging Tech ────────────────────────────────────
     "IONQ","QUBT","RGTI","LUNR","RKLB","SPCE","JOBY",
     # ── Sector ETFs ─────────────────────────────────────────────────────────
@@ -4609,20 +4609,20 @@ _PREDICT_WATCHLIST = [
     # ── Mega-cap tech ──────────────────────────────────────────────────────────
     "AAPL","MSFT","NVDA","TSLA","AMZN","META","AMD","GOOGL","GOOG","AVGO",
     "QCOM","INTC","MU","SMCI","ARM","AMAT","CRM","ORCL","ADBE","MRVL",
-    "LRCX","KLAC","TXN","ON","SWKS","XLNX","MPWR","ENPH","FSLR","SEDG",
+    "LRCX","KLAC","TXN","ON","SWKS","MPWR","ENPH","FSLR","SEDG","CRDO",
     # ── AI / quantum / next-gen ────────────────────────────────────────────────
-    "PLTR","SOUN","IONQ","RGTI","BBAI","AI","ARRY","WOLF","MCHP","NXPI",
+    "PLTR","SOUN","IONQ","RGTI","BBAI","AI","ARRY","NBIS","MCHP","NXPI",
     "SMTC","FORM","ACLS","CAMT","ONTO","RMBS","AMBA","AXTI","SITM","POWI",
     # ── Software / cloud / cybersecurity ──────────────────────────────────────
     "CRWD","PANW","NET","SNOW","DDOG","TEAM","ZS","MNDY","APP","AXON",
     "FTNT","OKTA","CFLT","MDB","GTLB","PATH","BILL","HUBS","WDAY","NOW",
-    "VEEV","DSGX","PCTY","JAMF","S","SMAR","ASAN","BOX","DOCN","BRZE",
+    "VEEV","DSGX","PCTY","CELH","S","MNDY","ASAN","BOX","DOCN","BRZE",
     # ── Consumer internet / social / streaming ────────────────────────────────
     "NFLX","ROKU","SPOT","TTD","PINS","SNAP","RDDT","RBLX","MTCH","IAC",
     "UBER","LYFT","ABNB","DASH","GRUB","EXPE","BKNG","TRIP","YELP","ANGI",
     # ── High-beta / meme / Reddit favorites ───────────────────────────────────
     "GME","AMC","HIMS","RKLB","ASTS","SOFI","HOOD","OPEN","UPST","AFRM",
-    "LMND","ROOT","CLOV","WISH","SPCE","NKLA","WKHS","GOEV","RIDE","PTRA",
+    "LMND","ROOT","CLOV","SPCE","CORZ","ACHR","JOBY","ASTS","DJT","GRAB",
     # ── Crypto-adjacent / Bitcoin miners ──────────────────────────────────────
     "COIN","MARA","RIOT","MSTR","CLSK","BTBT","CIFR","WULF","HUT","CORZ",
     "BTDR","IREN","HIVE","BSRT","SMLR","MGOL","BITI","BITO","GBTC","IBIT",
@@ -6101,7 +6101,7 @@ _SCALP_UNIVERSE = [
     "PLTR","SOFI","COIN","HOOD","MARA","RIOT","MSTR","CLSK","HUT",
     "GME","AMC","SOUN","IONQ","QBTS","RGTI","BBAI","RBLX","SNAP","PINS",
     "RDDT","HIMS","OPEN","SPCE","RKLB","ASTS","ACHR","JOBY","LUNR",
-    "WKHS","BLNK","CHPT","EVGO","NKLA","CLOV","WOOF","BARK","NKTR",
+    "BLNK","CHPT","EVGO","CLOV","CORZ","IREN","CIFR","DJT","NBIS",
     # ── ETFs — leveraged, sector, volatility ─────────────────────────────
     "SPY","QQQ","IWM","TQQQ","SQQQ","SPXL","SPXS","LABU","LABD",
     "UVXY","VXX","ARKK","ARKG","SOXL","SOXS","TNA","TZA","FAS","FAZ",
@@ -6113,16 +6113,17 @@ _SCALP_UNIVERSE = [
     "SHOP","SNOW","DDOG","NET","CRWD","OKTA","ZS","PANW","S",
     "BILL","HUBS","MDB","APP","TTD","ROKU","TWLO","VEEV","WDAY","NOW",
     "INTU","ZM","DOCU","GTLB","CFLT","ESTC","BRZE","AMPL","TOST",
-    "PCTY","PAYC","SMAR","NCNO","ALTR","LPSN","DOMO","PEGA","APPF",
+    "PCTY","PAYC","NCNO","MNDY","CELH","CAVA","CART","ALTR","LPSN","APPF",
     # ── Financials ───────────────────────────────────────────────────────
     "JPM","BAC","GS","MS","C","WFC","BX","KKR","SCHW","AXP","COF",
     "USB","PNC","TFC","STT","BK","SYF","ALLY","FITB","KEY","RF","HBAN",
     "CFG","MTB","TROW","BEN","IVZ","AMG","NU","AFRM","UPST","PYPL",
     "V","MA","SQ","FIS","FISV","GPN","WEX","FOUR","RELY","FLYW",
     # ── EV / Autos ───────────────────────────────────────────────────────
-    "RIVN","LCID","NIO","XPEV","LI","F","GM","TSLA",
-    # ── Energy ───────────────────────────────────────────────────────────
+    "RIVN","LCID","NIO","XPEV","LI","F","GM",
+    # ── Energy / Power ───────────────────────────────────────────────────
     "XOM","CVX","SLB","HAL","OXY","DVN","FANG","AR","COP","EOG",
+    "VST","GEV","ETN","PWR","CEG","NRG","TRGP",
     "MPC","PSX","VLO","HES","PXD","CTRA","APA","MRO","WMB","KMI",
     "LNG","OKE","ET","EPD","TRGP","RRC","EQT","CRK","SM","NOG",
     # ── Healthcare / Large-cap Pharma ─────────────────────────────────────
@@ -6138,14 +6139,14 @@ _SCALP_UNIVERSE = [
     "ITCI","JANX","LEGN","MNKD","MYOV","NRIX","PCVX","PMVP","PRTA",
     "RVNC","SIGA","SILK","SMMT","TARS","TELA","TRIL","TSVT","TYRA",
     "VCYT","VERU","VSTM","VTGN","VTRS","VXRT","UTHR","NKTR","AKRO",
-    "ALNY","INCY","ACAD","SAGE","NBIX","HRTX","ZAFG","DAWN","IRON",
+    "ALNY","INCY","SAGE","NBIX","HRTX","DAWN","IRON",
     # ── Consumer / Retail / Media ────────────────────────────────────────
     "NFLX","DIS","UBER","LYFT","ABNB","DASH","SPOT","CHWY","ETSY",
     "PARA","FOXA","WBD","CMCSA","T","VZ","TMUS","SIRI","CHTR",
     "WMT","COST","TGT","HD","LOW","MCD","SBUX","YUM","CMG","NKE",
     "LULU","ONON","TJX","ROST","BURL","ANF","AEO","URBN","GPS","BOOT",
     "DKNG","MGM","CZR","WYNN","LVS","PENN","NCLH","CCL","RCL","UAL",
-    "DAL","AAL","LUV","JBLU","SAVE","HA","CPNG","MELI","SE","GRAB",
+    "DAL","AAL","LUV","JBLU","CPNG","MELI","SE","GRAB","BKNG","EXPE",
     # ── China ADRs ───────────────────────────────────────────────────────
     "BABA","JD","PDD","BIDU","BILI","EDU","TAL","FUTU","TIGR","UP",
     "ZH","KC","VNET","GDS","BEKE","MNSO","RLX","QFIN","CNF","CANG",
@@ -6162,7 +6163,7 @@ _SCALP_UNIVERSE = [
     "NEE","DUK","SO","D","EXC","PCG","PEG","ES","XEL","WEC",
     "AEE","CMS","LNT","EVRG","NI","ETR","FE","PPL","EIX","AES",
     "ENPH","SEDG","FSLR","CSIQ","JKS","SPWR","NOVA","RUN","BE","PLUG",
-    "BLDP","FCEL","HTOO","CWEN","NEP","BEP","CWEN","AY","ARRY",
+    "BLDP","FCEL","HTOO","CWEN","NEP","BEP","AY","ARRY",
     # ── Real Estate / REITs ───────────────────────────────────────────────
     "AMT","PLD","EQIX","CCI","WELL","O","SPG","DLR","IRM","VICI",
     "GLPI","TRNO","EGP","REXR","COLD","CUBE","EXR","PSA","LSI","NSA",
@@ -6187,6 +6188,8 @@ _EXT_UNIVERSE = [
     "CELH","ENPH","TSLA","UBER","LYFT","ABNB","DASH","SPOT","TTD","ROKU",
     # Financials / banks (move on macro news)
     "JPM","BAC","GS","MS","C","WFC","SCHW","V","MA","PYPL",
+    # Power / momentum names active in pre/after market
+    "VST","GEV","CORZ","NBIS","DJT","CAVA","CART",
 ]
 
 # ── Finnhub 1-min candle fetch for extended hours ─────────────────────────────
@@ -7402,7 +7405,7 @@ def dark_pool(ticker):
 # ── Short Interest Squeeze Screener ───────────────────────────────────────────
 # High-short-interest watchlist (commonly shorted stocks worth monitoring)
 _SHORT_WATCHLIST = [
-    "GME","AMC","BBBY","UPST","SOFI","LCID","RIVN","NKLA","HOOD","CLOV",
+    "GME","AMC","UPST","SOFI","LCID","RIVN","CORZ","HOOD","CLOV","NBIS",
     "MARA","RIOT","COIN","PLTR","ARKK","NIO","XPEV","OPEN","WISH","SPCE",
     "TSLA","NVDA","META","AAPL","MSFT","AMZN","AMD","SMCI","CVNA","W",
 ]
