@@ -5520,6 +5520,179 @@ def _wr_start():
 _wr_start()
 
 
+# ── Market Breadth Regime Engine ───────────────────────────────────────────────
+# Computes a 0-100 breadth score every 15 minutes using:
+#   1. SPY intraday % change (via Finnhub) — tape direction
+#   2. QQQ intraday % change (via Finnhub) — tech tape direction
+#   3. Scanner signal ratio — % of signals in last 60 min that are BEAR
+#
+# Score buckets:
+#   < 35  → BEARISH  regime: bull needs 80% conf, bear needs 60%
+#   35-65 → NEUTRAL  regime: both need 65%
+#   > 65  → BULLISH  regime: bull needs 60%, bear needs 80%
+#
+# This lets the system self-adjust to market conditions without manual overrides.
+
+_breadth_state = {
+    "score":        50.0,   # 0=max bearish, 100=max bullish; starts neutral
+    "regime":       "NEUTRAL",
+    "spy_chg":      0.0,    # SPY % change from prior close
+    "qqq_chg":      0.0,    # QQQ % change from prior close
+    "bear_ratio":   0.5,    # fraction of last-60-min signals that are BEAR
+    "bull_conf":    65,     # current bull min-confidence threshold
+    "bear_conf":    65,     # current bear min-confidence threshold
+    "updated_at":   0,      # epoch of last update
+}
+_breadth_lock = threading.Lock()
+
+# Overrideable via Railway Variables
+_BREADTH_BEAR_CONF_BEARISH  = int(os.getenv("BREADTH_BEAR_CONF_BEARISH",  "60"))
+_BREADTH_BULL_CONF_BEARISH  = int(os.getenv("BREADTH_BULL_CONF_BEARISH",  "80"))
+_BREADTH_BEAR_CONF_NEUTRAL  = int(os.getenv("BREADTH_BEAR_CONF_NEUTRAL",  "65"))
+_BREADTH_BULL_CONF_NEUTRAL  = int(os.getenv("BREADTH_BULL_CONF_NEUTRAL",  "65"))
+_BREADTH_BEAR_CONF_BULLISH  = int(os.getenv("BREADTH_BEAR_CONF_BULLISH",  "80"))
+_BREADTH_BULL_CONF_BULLISH  = int(os.getenv("BREADTH_BULL_CONF_BULLISH",  "60"))
+
+
+def _breadth_fetch_intraday_chg(sym: str) -> float:
+    """Return intraday % change for sym using Finnhub quote. Returns 0.0 on failure."""
+    if not FINNHUB_KEY:
+        return 0.0
+    try:
+        r = requests.get("https://finnhub.io/api/v1/quote",
+                         params={"symbol": sym, "token": FINNHUB_KEY},
+                         timeout=4)
+        if r.status_code == 200:
+            d = r.json()
+            c  = float(d.get("c") or 0)
+            pc = float(d.get("pc") or 0)
+            if c > 0 and pc > 0:
+                return round((c - pc) / pc * 100, 3)
+    except Exception as e:
+        print(f"[Breadth] {sym} quote error: {e}")
+    return 0.0
+
+
+def _breadth_scanner_ratio() -> float:
+    """
+    Return fraction of signals logged in last 60 min that are BEAR.
+    Uses the win-rate SQLite DB — no extra API call needed.
+    Returns 0.5 (neutral) if not enough data.
+    """
+    try:
+        cutoff = int(time.time()) - 3600  # last 60 min
+        with sqlite3.connect(_WR_DB_PATH) as con:
+            total = con.execute(
+                "SELECT COUNT(*) FROM signals WHERE ts_entry >= ?", (cutoff,)
+            ).fetchone()[0]
+            bears = con.execute(
+                "SELECT COUNT(*) FROM signals WHERE ts_entry >= ? AND direction='bear'",
+                (cutoff,)
+            ).fetchone()[0]
+        if total >= 10:
+            return round(bears / total, 3)
+    except Exception as e:
+        print(f"[Breadth] scanner ratio error: {e}")
+    return 0.5  # not enough data → neutral
+
+
+def _compute_breadth_score() -> None:
+    """
+    Recalculate breadth score and update _breadth_state.
+    Called every 15 minutes by _breadth_loop().
+    """
+    spy_chg = _breadth_fetch_intraday_chg("SPY")
+    qqq_chg = _breadth_fetch_intraday_chg("QQQ")
+    bear_ratio = _breadth_scanner_ratio()
+
+    # ── Component 1: SPY contribution (-25 to +25) ───────────────────────────
+    if   spy_chg <= -1.5: spy_pts = -25
+    elif spy_chg <= -0.75: spy_pts = -15
+    elif spy_chg <= -0.25: spy_pts = -8
+    elif spy_chg <   0.25: spy_pts = 0
+    elif spy_chg <   0.75: spy_pts = 8
+    elif spy_chg <   1.5:  spy_pts = 15
+    else:                  spy_pts = 25
+
+    # ── Component 2: QQQ contribution (-15 to +15) ───────────────────────────
+    if   qqq_chg <= -1.5: qqq_pts = -15
+    elif qqq_chg <= -0.5: qqq_pts = -8
+    elif qqq_chg <   0.0: qqq_pts = -4
+    elif qqq_chg <   0.5: qqq_pts = 4
+    elif qqq_chg <   1.5: qqq_pts = 8
+    else:                  qqq_pts = 15
+
+    # ── Component 3: Scanner signal ratio (-10 to +10) ───────────────────────
+    # bear_ratio: 1.0 = all bear (very bearish), 0.0 = all bull (very bullish)
+    if   bear_ratio >= 0.80: sig_pts = -10
+    elif bear_ratio >= 0.65: sig_pts = -5
+    elif bear_ratio >= 0.55: sig_pts = -2
+    elif bear_ratio >= 0.45: sig_pts = 2
+    elif bear_ratio >= 0.35: sig_pts = 5
+    else:                    sig_pts = 10
+
+    score = max(0.0, min(100.0, 50.0 + spy_pts + qqq_pts + sig_pts))
+
+    # Determine regime + thresholds
+    if score < 35:
+        regime    = "BEARISH"
+        bull_conf = _BREADTH_BULL_CONF_BEARISH   # 80 — harder to go long
+        bear_conf = _BREADTH_BEAR_CONF_BEARISH   # 60 — easier to go short
+    elif score > 65:
+        regime    = "BULLISH"
+        bull_conf = _BREADTH_BULL_CONF_BULLISH   # 60 — easier to go long
+        bear_conf = _BREADTH_BEAR_CONF_BULLISH   # 80 — harder to go short
+    else:
+        regime    = "NEUTRAL"
+        bull_conf = _BREADTH_BULL_CONF_NEUTRAL   # 65
+        bear_conf = _BREADTH_BEAR_CONF_NEUTRAL   # 65
+
+    with _breadth_lock:
+        _breadth_state.update({
+            "score":      round(score, 1),
+            "regime":     regime,
+            "spy_chg":    spy_chg,
+            "qqq_chg":    qqq_chg,
+            "bear_ratio": bear_ratio,
+            "bull_conf":  bull_conf,
+            "bear_conf":  bear_conf,
+            "updated_at": int(time.time()),
+        })
+
+    print(f"[Breadth] Score={score:.1f} Regime={regime} "
+          f"SPY={spy_chg:+.2f}% QQQ={qqq_chg:+.2f}% "
+          f"BearRatio={bear_ratio:.0%} → "
+          f"bull_conf≥{bull_conf} bear_conf≥{bear_conf}")
+
+
+def _breadth_loop():
+    """Background thread: recompute breadth every 15 minutes."""
+    # Initial compute on startup so thresholds are set before first signal
+    try:
+        _compute_breadth_score()
+    except Exception as e:
+        print(f"[Breadth] Startup compute error: {e}")
+    while True:
+        time.sleep(900)   # 15 minutes
+        try:
+            _compute_breadth_score()
+        except Exception as e:
+            print(f"[Breadth] Loop error: {e}")
+
+
+def _get_dynamic_thresholds(direction: str) -> int:
+    """Return the current min-confidence threshold for the given direction."""
+    with _breadth_lock:
+        if direction == "bull":
+            return _breadth_state["bull_conf"]
+        return _breadth_state["bear_conf"]
+
+
+# Start breadth engine on import
+threading.Thread(target=_breadth_loop, daemon=True, name="breadth-engine").start()
+print("[Breadth] Regime engine started")
+
+
 # ── Alpaca Paper Trading Executor ─────────────────────────────────────────────
 # Automatically places bracket orders on Alpaca Paper when Alpha Engine fires
 # a high-conviction signal (conf ≥ 65, both_agree=1, streak ≥ 2).
@@ -5735,9 +5908,19 @@ def _alp_execute_signal(res: dict):
     if not sym or direction not in ("bull", "bear"):
         print(f"[Alpaca] {sym} — SKIPPED: bad sym or direction='{direction}'")
         return
-    if conf < _ALP_MIN_CONF:
-        print(f"[Alpaca] {sym} — SKIPPED: conf {conf:.1f} < min {_ALP_MIN_CONF}")
+
+    # ── Dynamic breadth-adjusted confidence gate ──────────────────────────────
+    # Threshold shifts based on market regime so the system naturally favors
+    # the tape direction without manual overrides. e.g. bearish day → bulls
+    # need 80% conf while bears only need 60%.
+    min_conf = _get_dynamic_thresholds(direction)
+    with _breadth_lock:
+        regime = _breadth_state["regime"]
+    if conf < min_conf:
+        print(f"[Alpaca] {sym} — SKIPPED: conf {conf:.1f} < {min_conf} "
+              f"({direction.upper()} threshold in {regime} regime)")
         return
+
     if streak < _ALP_MIN_STREAK:
         print(f"[Alpaca] {sym} — SKIPPED: streak {streak} < min {_ALP_MIN_STREAK}")
         return
@@ -5781,13 +5964,34 @@ def _alp_execute_signal(res: dict):
                 _alp_last_traded.pop(sym, None)  # clear dedup so retry works
             return
 
-        print(f"[Alpaca] {sym} — FIRING bracket: {direction.upper()} conf={conf:.1f} streak={streak} price=${price:.2f} strong={is_strong}")
+        print(f"[Alpaca] {sym} — FIRING bracket: {direction.upper()} conf={conf:.1f} "
+              f"streak={streak} price=${price:.2f} strong={is_strong} "
+              f"regime={regime} min_conf={min_conf}")
         ok = _alp_place_bracket(sym, direction, price, is_strong)
         if not ok:
             # Order failed — remove dedup so the next signal attempt can retry
             with _alp_lock:
                 _alp_last_traded.pop(sym, None)
             print(f"[Alpaca] {sym} — order failed, dedup cleared for retry")
+
+
+@app.route("/api/breadth")
+def api_breadth():
+    """Current market breadth regime and dynamic confidence thresholds."""
+    with _breadth_lock:
+        state = dict(_breadth_state)
+    age = int(time.time()) - state["updated_at"]
+    return jsonify({
+        "score":        state["score"],
+        "regime":       state["regime"],
+        "spy_chg":      state["spy_chg"],
+        "qqq_chg":      state["qqq_chg"],
+        "bear_ratio":   state["bear_ratio"],
+        "bull_conf":    state["bull_conf"],
+        "bear_conf":    state["bear_conf"],
+        "updated_secs_ago": age,
+        "ts":           state["updated_at"],
+    })
 
 
 @app.route("/api/alpaca/test")
