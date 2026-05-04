@@ -5243,6 +5243,12 @@ function renderPredictions() {
       const entryFmt  = entryPx.toFixed(2);
       const rr        = (tgtPct / stopPct).toFixed(1);
       const tgtLabel  = isStrong ? '+2%' : '+1%';
+      const isEliteOrPrime = tier === 'ELITE' || tier === 'PRIME';
+      const forceBtn = isEliteOrPrime
+        ? `<button onclick="event.stopPropagation();forceAlpacaTrade('${r.sym}',this)"
+            style="padding:3px 10px;font-size:9px;font-weight:700;border-radius:4px;border:1px solid rgba(255,215,0,0.5);background:rgba(255,215,0,0.12);color:#ffd700;cursor:pointer;transition:all 0.15s;letter-spacing:0.3px;white-space:nowrap"
+            title="Force-fire this signal to Alpaca now — bypasses dedup, all other gates still apply">⚡ Trade Now</button>`
+        : '';
       tradeBox = `
         <div style="margin-top:6px;padding:5px 8px;background:rgba(255,255,255,0.04);border-radius:5px;border:1px solid rgba(255,255,255,0.07);font-family:'JetBrains Mono',monospace;font-size:10px">
           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -5250,6 +5256,7 @@ function renderPredictions() {
             <span style="color:#ff4455">Stop</span><span style="color:#ff4455;font-weight:700">$${stopFmt}</span><span style="color:var(--muted);font-size:9px">-0.5%</span>
             <span style="color:#00e676">Target</span><span style="color:#00e676;font-weight:700">$${tgtFmt}</span><span style="color:var(--muted);font-size:9px">${tgtLabel}</span>
             <span style="color:#ffd740;font-size:9px;font-weight:700">R:R ${rr}x</span>
+            ${forceBtn}
           </div>
         </div>`;
     }
@@ -5653,6 +5660,38 @@ async function loadBreadthRegime() {
     badge.textContent = `${icon} ${d.regime} ${d.score}`;
     badge.title = `SPY ${d.spy_chg > 0 ? '+' : ''}${d.spy_chg}%  QQQ ${d.qqq_chg > 0 ? '+' : ''}${d.qqq_chg}%  Bear signals: ${Math.round(d.bear_ratio*100)}%\nBull conf≥${d.bull_conf}  Bear conf≥${d.bear_conf}  (updates every 15 min)`;
   } catch(e) { /* silent */ }
+}
+
+async function forceAlpacaTrade(sym, btn) {
+  if (!SERVER_MODE) return;
+  const orig = btn.textContent;
+  btn.textContent = '…';
+  btn.disabled = true;
+  btn.style.opacity = '0.5';
+  try {
+    const r = await fetch(`/api/alpaca/force/${sym}`, { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      btn.textContent = '✅ Sent!';
+      btn.style.color = '#00e676';
+      btn.style.borderColor = 'rgba(0,230,118,0.5)';
+      btn.style.background = 'rgba(0,230,118,0.12)';
+      setTimeout(() => { btn.textContent = orig; btn.style.color=''; btn.style.borderColor=''; btn.style.background=''; btn.style.opacity='1'; btn.disabled=false; }, 4000);
+    } else {
+      const reason = d.reason || d.status || 'blocked';
+      btn.textContent = `⛔ ${reason.length > 22 ? reason.slice(0,22)+'…' : reason}`;
+      btn.style.color = '#ff4455';
+      btn.style.borderColor = 'rgba(255,68,85,0.5)';
+      btn.style.background = 'rgba(255,68,85,0.1)';
+      btn.title = reason;
+      setTimeout(() => { btn.textContent = orig; btn.style.color=''; btn.style.borderColor=''; btn.style.background=''; btn.style.opacity='1'; btn.disabled=false; }, 5000);
+    }
+  } catch(e) {
+    btn.textContent = '⛔ Error';
+    btn.style.opacity = '1';
+    btn.disabled = false;
+    setTimeout(() => { btn.textContent = orig; btn.style.color=''; }, 4000);
+  }
 }
 
 async function loadAlpaca() {

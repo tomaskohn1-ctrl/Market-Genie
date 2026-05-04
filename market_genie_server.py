@@ -6110,6 +6110,59 @@ def api_breadth():
     })
 
 
+@app.route("/api/alpaca/force/<sym>", methods=["POST"])
+def api_alpaca_force(sym):
+    """
+    Manually fire a bracket order for any live Alpha Engine signal, bypassing the
+    30-minute dedup. All other gates still apply (market hours, position cap,
+    confidence threshold, both_agree). Returns a JSON status dict.
+
+    Use from the dashboard 'Trade Now' button on ELITE signal rows.
+    """
+    sym = sym.upper().strip()
+    if not sym:
+        return jsonify({"ok": False, "reason": "missing symbol"}), 400
+
+    # Must have a current result in _predict_results
+    with _predict_lock:
+        res = dict(_predict_results.get(sym, {}))
+
+    if not res:
+        return jsonify({"ok": False, "reason": f"{sym} not in live scanner results — wait for next bucket"}), 404
+
+    # Clear BOTH dedup layers so the force bypasses the 30-min cooldown
+    with _wr_lock:
+        _wr_last_logged.pop(sym, None)
+    with _alp_lock:
+        _alp_last_traded.pop(sym, None)
+
+    # Inject force flag so we can see it in logs
+    res["_forced"] = True
+
+    fired = {"status": None}
+
+    def _do_fire():
+        try:
+            _wr_log_signal(res)
+            fired["status"] = "fired"
+        except Exception as e:
+            fired["status"] = f"error: {e}"
+
+    _do_fire()
+
+    direction = (res.get("consensus_dir") or res.get("direction") or "").upper()
+    conf      = res.get("confidence", 0)
+    tier      = res.get("alpha_tier") or "—"
+    return jsonify({
+        "ok":        fired["status"] == "fired",
+        "sym":       sym,
+        "direction": direction,
+        "conf":      conf,
+        "tier":      tier,
+        "status":    fired["status"],
+    })
+
+
 @app.route("/api/alpaca/test")
 def api_alpaca_test():
     """Diagnostic endpoint — shows raw Alpaca API response to debug auth issues."""
@@ -6196,6 +6249,11 @@ print("[EOD] Flattener thread started — all positions will close at 15:55 ET d
 _time_exit_thread = threading.Thread(target=_alp_time_exit_loop, daemon=True, name="TimeExit")
 _time_exit_thread.start()
 print(f"[TimeExit] Loop started — positions close after {_ALP_MAX_HOLD_MINS} min if bracket not hit")
+
+# Auto-start the prediction bg loop on import so signals flow to Alpaca immediately
+# after every Railway deploy — no need to open the Alpha Engine tab first.
+_start_predict_bg()
+print("[Predict] Background scanner auto-started on import — signals will flow to Alpaca immediately")
 
 
 @app.route("/api/debug/signals")
