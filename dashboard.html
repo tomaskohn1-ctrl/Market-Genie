@@ -2513,6 +2513,20 @@
     </div>
   </div>
 
+  <!-- ══ ANALYTICS ENGINE ══ -->
+  <div class="card" data-tab="signal" id="analyticsCard" style="border-color:rgba(100,180,255,0.3);box-shadow:0 0 18px rgba(100,180,255,0.06)">
+    <div class="card-header" style="background:linear-gradient(135deg,rgba(80,140,255,0.10),rgba(80,200,255,0.06))">
+      <div class="card-title"><span class="card-icon">📊</span> Analytics Engine <span style="font-size:10px;font-weight:400;color:var(--muted)">signal intelligence · updated every 5 min</span></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="analyticsBadge" class="card-tag" style="background:rgba(100,180,255,0.12);color:#64b4ff;border:1px solid rgba(100,180,255,0.25)">Loading…</span>
+        <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="loadAnalytics()">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="card-body" style="padding:14px;display:flex;flex-direction:column;gap:16px">
+      <div id="analyticsBody"><div style="text-align:center;padding:20px;color:var(--muted);font-size:11px">Loading analytics…</div></div>
+    </div>
+  </div>
+
   <!-- ══ LIVE SURGES ══ -->
   <div class="card" data-tab="signal" id="surgeCard" style="border-color:rgba(255,200,0,0.35);box-shadow:0 0 18px rgba(255,200,0,0.08)">
     <div class="card-header" style="background:linear-gradient(135deg,rgba(255,180,0,0.10),rgba(255,80,0,0.07))">
@@ -5793,6 +5807,169 @@ async function toggleAlpaca() {
 
 loadAlpaca();
 setInterval(loadAlpaca, 30000);  // refresh every 30s during market hours
+
+// ── ANALYTICS ENGINE ──────────────────────────────────────────────────────────
+function _wr(v) { return v == null ? '—' : v.toFixed(1) + '%'; }
+function _wrColor(v) {
+  if (v == null) return 'var(--muted)';
+  if (v >= 80) return '#4ade80';
+  if (v >= 65) return '#fbbf24';
+  return '#f87171';
+}
+function _evColor(v) { return v >= 0 ? '#4ade80' : '#f87171'; }
+function _cell(label, value, color) {
+  return `<div style="text-align:center">
+    <div style="font-size:9px;color:var(--muted);margin-bottom:2px">${label}</div>
+    <div style="font-size:13px;font-weight:600;color:${color}">${value}</div>
+  </div>`;
+}
+
+async function loadAnalytics() {
+  if (!SERVER_MODE) return;
+  try {
+    const r = await fetch('/api/winrate/analytics');
+    const d = await r.json();
+    if (d.error) { document.getElementById('analyticsBody').innerHTML = `<div style="color:#f87171;font-size:11px">Error: ${d.error}</div>`; return; }
+
+    const badge = document.getElementById('analyticsBadge');
+    badge.textContent = `${d.total_resolved} resolved · ${d.total_pending} pending`;
+
+    // ── Agreement tier scorecard ──────────────────────────────────────────
+    const tiers = d.agreement_tiers || {};
+    const tierHtml = `
+      <div>
+        <div style="font-size:10px;font-weight:600;color:var(--muted);letter-spacing:.06em;margin-bottom:8px">SIGNAL TIER PERFORMANCE</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+          ${[
+            ['ELITE ≥80%', tiers.ba1_elite],
+            ['PRIME 70–80%', tiers.ba1_prime],
+            ['SOLID <70%', tiers.ba1_solid],
+            ['ba=0 (noise)', tiers.ba0],
+          ].map(([lbl, t]) => t ? `
+            <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px;text-align:center">
+              <div style="font-size:9px;color:var(--muted);margin-bottom:4px">${lbl}</div>
+              <div style="font-size:17px;font-weight:700;color:${_wrColor(t.win_rate)}">${_wr(t.win_rate)}</div>
+              <div style="font-size:9px;color:var(--muted)">${t.decided} signals</div>
+              <div style="font-size:10px;color:${_evColor(t.ev)};margin-top:2px">EV $${t.ev}/trade</div>
+            </div>` : '').join('')}
+        </div>
+      </div>`;
+
+    // ── Time-of-day heatmap ───────────────────────────────────────────────
+    const tod = (d.time_of_day || []).filter(h => h.decided > 0);
+    const todHtml = tod.length ? `
+      <div>
+        <div style="font-size:10px;font-weight:600;color:var(--muted);letter-spacing:.06em;margin-bottom:8px">WIN RATE BY HOUR (ET)</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${tod.map(h => {
+            const wr = h.win_rate;
+            const bg = wr == null ? 'rgba(255,255,255,0.04)'
+                     : wr >= 80  ? 'rgba(74,222,128,0.18)'
+                     : wr >= 65  ? 'rgba(251,191,36,0.18)'
+                     : 'rgba(248,113,113,0.18)';
+            return `<div style="background:${bg};border-radius:7px;padding:8px 10px;text-align:center;min-width:52px">
+              <div style="font-size:9px;color:var(--muted)">${h.label}</div>
+              <div style="font-size:14px;font-weight:700;color:${_wrColor(wr)}">${_wr(wr)}</div>
+              <div style="font-size:9px;color:var(--muted)">${h.wins}W/${h.losses}L</div>
+              <div style="font-size:9px;color:${_evColor(h.ev)}">$${h.ev}</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>` : '';
+
+    // ── Confidence calibration bars ───────────────────────────────────────
+    const conf = (d.conf_calibration || []).filter(c => c.decided > 0);
+    const confMax = Math.max(...conf.map(c => c.win_rate || 0), 1);
+    const confHtml = conf.length ? `
+      <div>
+        <div style="font-size:10px;font-weight:600;color:var(--muted);letter-spacing:.06em;margin-bottom:8px">CONFIDENCE CALIBRATION — does higher conf = more wins?</div>
+        <div style="display:flex;flex-direction:column;gap:5px">
+          ${conf.map(c => `
+            <div style="display:flex;align-items:center;gap:8px">
+              <div style="font-size:9px;color:var(--muted);width:52px;text-align:right">${c.band}</div>
+              <div style="flex:1;background:rgba(255,255,255,0.06);border-radius:4px;height:18px;overflow:hidden;position:relative">
+                <div style="height:100%;width:${Math.round((c.win_rate||0)/confMax*100)}%;background:${_wrColor(c.win_rate)};opacity:0.7;border-radius:4px;transition:width .4s"></div>
+                <div style="position:absolute;inset:0;display:flex;align-items:center;padding-left:8px;font-size:9px;font-weight:600;color:#fff">
+                  ${_wr(c.win_rate)} &nbsp;<span style="font-weight:400;color:rgba(255,255,255,0.5)">${c.decided} signals</span>
+                </div>
+              </div>
+              <div style="font-size:9px;color:${_evColor(c.ev)};width:40px">$${c.ev}</div>
+            </div>`).join('')}
+        </div>
+      </div>` : '';
+
+    // ── Daily trend ───────────────────────────────────────────────────────
+    const days = d.daily_trend || [];
+    const dayMax = Math.max(...days.map(d => d.total), 1);
+    const dayHtml = days.length ? `
+      <div>
+        <div style="font-size:10px;font-weight:600;color:var(--muted);letter-spacing:.06em;margin-bottom:8px">DAILY TREND (last ${days.length} trading days)</div>
+        <div style="display:flex;gap:6px;align-items:flex-end;height:70px">
+          ${days.map(day => {
+            const ht = Math.max(12, Math.round(day.total / dayMax * 60));
+            const dt = day.date.slice(5); // MM-DD
+            return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;justify-content:flex-end">
+              <div style="font-size:8px;color:${_wrColor(day.win_rate)};font-weight:600">${_wr(day.win_rate)}</div>
+              <div style="width:100%;height:${ht}px;background:${_wrColor(day.win_rate)};opacity:0.5;border-radius:3px 3px 0 0"></div>
+              <div style="font-size:8px;color:var(--muted)">${dt}</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>` : '';
+
+    // ── Top & bottom tickers ──────────────────────────────────────────────
+    const top = d.top_tickers || [];
+    const bot = d.bottom_tickers || [];
+    const tickerHtml = (top.length || bot.length) ? `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <div style="font-size:10px;font-weight:600;color:#4ade80;letter-spacing:.06em;margin-bottom:6px">🏆 TOP TICKERS</div>
+          ${top.slice(0,8).map(t => `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.04)">
+              <span style="font-size:11px;font-weight:600;font-family:'JetBrains Mono',monospace">${t.sym}</span>
+              <span style="font-size:10px;color:${_wrColor(t.win_rate)};font-weight:600">${_wr(t.win_rate)}</span>
+              <span style="font-size:9px;color:var(--muted)">${t.decided}sig</span>
+            </div>`).join('')}
+        </div>
+        <div>
+          <div style="font-size:10px;font-weight:600;color:#f87171;letter-spacing:.06em;margin-bottom:6px">⚠️ WATCH LIST</div>
+          ${bot.slice(0,8).map(t => `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.04)">
+              <span style="font-size:11px;font-weight:600;font-family:'JetBrains Mono',monospace">${t.sym}</span>
+              <span style="font-size:10px;color:${_wrColor(t.win_rate)};font-weight:600">${_wr(t.win_rate)}</span>
+              <span style="font-size:9px;color:var(--muted)">${t.decided}sig</span>
+            </div>`).join('')}
+        </div>
+      </div>` : '';
+
+    // ── Streak analysis ───────────────────────────────────────────────────
+    const streaks = (d.streak_analysis || []).filter(s => s.decided > 0);
+    const streakHtml = streaks.length ? `
+      <div>
+        <div style="font-size:10px;font-weight:600;color:var(--muted);letter-spacing:.06em;margin-bottom:8px">STREAK DEPTH — does waiting for streak=3+ improve accuracy?</div>
+        <div style="display:flex;gap:8px">
+          ${streaks.map(s => `
+            <div style="flex:1;background:rgba(255,255,255,0.04);border-radius:7px;padding:8px;text-align:center">
+              <div style="font-size:9px;color:var(--muted)">streak=${s.streak}</div>
+              <div style="font-size:16px;font-weight:700;color:${_wrColor(s.win_rate)}">${_wr(s.win_rate)}</div>
+              <div style="font-size:9px;color:var(--muted)">${s.decided} decided</div>
+              <div style="font-size:9px;color:${_evColor(s.ev)}">EV $${s.ev}</div>
+            </div>`).join('')}
+        </div>
+      </div>` : '';
+
+    document.getElementById('analyticsBody').innerHTML =
+      [tierHtml, todHtml, confHtml, streakHtml, dayHtml, tickerHtml]
+        .filter(Boolean).join('') ||
+      '<div style="text-align:center;color:var(--muted);font-size:11px;padding:20px">Not enough resolved signals yet — check back after a few trading days.</div>';
+
+  } catch(e) {
+    document.getElementById('analyticsBody').innerHTML = `<div style="color:#f87171;font-size:11px">Failed to load analytics: ${e.message}</div>`;
+  }
+}
+
+loadAnalytics();
+setInterval(loadAnalytics, 300000); // refresh every 5 minutes
 
 // ── LIVE SURGES — second-bar mid-bar volume spike feed ────────────────────────
 // Polls /api/live/surges every 3s and renders a mini alert card.

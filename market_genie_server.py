@@ -6452,6 +6452,178 @@ def api_winrate_export():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/winrate/analytics")
+def api_winrate_analytics():
+    """
+    Deep analytics on win-rate signals: time-of-day WR, per-ticker history,
+    confidence calibration, streak depth, direction bias, and daily trend.
+    Powers the Analytics dashboard panel — refreshed every 5 minutes.
+    """
+    try:
+        _wr_init_db()
+        with sqlite3.connect(_WR_DB_PATH) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute("""
+                SELECT * FROM signals
+                WHERE outcome IN ('WIN','LOSS','NEUTRAL')
+                AND ts_entry IS NOT NULL
+                ORDER BY ts_entry DESC
+            """).fetchall()
+            total_pending = con.execute(
+                "SELECT COUNT(*) FROM signals WHERE outcome='PENDING'"
+            ).fetchone()[0]
+
+        data = [dict(r) for r in rows]
+
+        def _stats(subset):
+            if not subset:
+                return {"wins": 0, "losses": 0, "neutral": 0,
+                        "total": 0, "win_rate": None, "avg_move": 0, "ev": 0}
+            wins    = sum(1 for r in subset if r["outcome"] == "WIN")
+            losses  = sum(1 for r in subset if r["outcome"] == "LOSS")
+            neutral = sum(1 for r in subset if r["outcome"] == "NEUTRAL")
+            decided = wins + losses
+            wr = round(wins / decided * 100, 1) if decided > 0 else None
+            moves = [abs(r["pct_move"] or 0) for r in subset if r.get("pct_move") is not None]
+            avg_move = round(sum(moves) / len(moves), 3) if moves else 0
+            # EV per $10K position at 1% target / 0.5% stop
+            ev = round((wins * 100 - losses * 50) / max(1, decided), 2) if decided > 0 else 0
+            return {"wins": wins, "losses": losses, "neutral": neutral,
+                    "total": wins + losses + neutral, "decided": decided,
+                    "win_rate": wr, "avg_move": avg_move, "ev": ev}
+
+        def _ts_to_et_hour(ts):
+            """Convert Unix timestamp to US Eastern hour (DST-aware, stdlib only)."""
+            import math as _m
+            utc = datetime.utcfromtimestamp(ts)
+            year = utc.year
+            mar1     = datetime(year, 3, 1)
+            dst_st   = mar1 + timedelta(days=(6 - mar1.weekday()) % 7 + 7)
+            nov1     = datetime(year, 11, 1)
+            dst_end  = nov1 + timedelta(days=(6 - nov1.weekday()) % 7)
+            in_dst   = dst_st <= utc < dst_end
+            et = utc - timedelta(hours=4 if in_dst else 5)
+            return et.hour, et
+
+        # ── 1. Time-of-day WR (by market hour 9–15) ─────────────────────────
+        by_hour = {}
+        for r in data:
+            h, _ = _ts_to_et_hour(r["ts_entry"])
+            by_hour.setdefault(h, []).append(r)
+
+        time_of_day = []
+        for h in range(9, 16):
+            s = _stats(by_hour.get(h, []))
+            s["hour"] = h
+            s["label"] = f"{h}:00"
+            time_of_day.append(s)
+
+        # ── 2. Per-ticker WR (min 3 decided signals for statistical relevance) ─
+        by_ticker = {}
+        for r in data:
+            by_ticker.setdefault(r["sym"], []).append(r)
+
+        ticker_stats = []
+        for sym, subset in by_ticker.items():
+            s = _stats(subset)
+            if s["decided"] < 3:
+                continue
+            s["sym"] = sym
+            ticker_stats.append(s)
+
+        ticker_stats.sort(key=lambda x: (x["win_rate"] or 0), reverse=True)
+        top_tickers    = ticker_stats[:12]
+        bottom_tickers = list(reversed(ticker_stats))[:12]
+        bottom_tickers = [t for t in bottom_tickers if (t["win_rate"] or 100) < 70]
+
+        # ── 3. Confidence calibration (WR by 5% confidence band) ────────────
+        conf_bands = [
+            ("55–60", 55, 60), ("60–65", 60, 65), ("65–70", 65, 70),
+            ("70–75", 70, 75), ("75–80", 75, 80), ("80–85", 80, 85),
+            ("85–90", 85, 90), ("90+",   90, 101),
+        ]
+        conf_calibration = []
+        for label, lo, hi in conf_bands:
+            subset = [r for r in data
+                      if r.get("confidence") is not None and lo <= r["confidence"] < hi]
+            s = _stats(subset)
+            s["band"] = label
+            conf_calibration.append(s)
+
+        # ── 4. Streak depth analysis ─────────────────────────────────────────
+        streak_analysis = []
+        for label, lo, hi in [("2", 2, 3), ("3", 3, 4), ("4", 4, 5), ("5+", 5, 999)]:
+            subset = [r for r in data if lo <= (r.get("streak") or 0) < hi]
+            s = _stats(subset)
+            s["streak"] = label
+            streak_analysis.append(s)
+
+        # ── 5. Direction bias (bull vs bear overall and by hour) ─────────────
+        direction_stats = {
+            "bull": _stats([r for r in data if r["direction"] == "bull"]),
+            "bear": _stats([r for r in data if r["direction"] == "bear"]),
+        }
+
+        dir_by_hour = []
+        for h in range(9, 16):
+            hour_rows = by_hour.get(h, [])
+            bulls = _stats([r for r in hour_rows if r["direction"] == "bull"])
+            bears = _stats([r for r in hour_rows if r["direction"] == "bear"])
+            bulls["hour"] = bears["hour"] = h
+            dir_by_hour.append({"hour": h, "bull": bulls, "bear": bears})
+
+        # ── 6. Daily performance trend (last 14 trading days) ───────────────
+        daily = {}
+        for r in data:
+            _, et = _ts_to_et_hour(r["ts_entry"])
+            day = et.strftime("%Y-%m-%d")
+            daily.setdefault(day, []).append(r)
+
+        daily_trend = []
+        for day in sorted(daily.keys(), reverse=True)[:14]:
+            s = _stats(daily[day])
+            s["date"] = day
+            daily_trend.append(s)
+        daily_trend.reverse()
+
+        # ── 7. both_agree tier comparison ───────────────────────────────────
+        agreement_tiers = {
+            "ba1_elite":  _stats([r for r in data
+                                   if r["both_agree"] == 1 and (r.get("confidence") or 0) >= 80]),
+            "ba1_prime":  _stats([r for r in data
+                                   if r["both_agree"] == 1
+                                   and 70 <= (r.get("confidence") or 0) < 80]),
+            "ba1_solid":  _stats([r for r in data
+                                   if r["both_agree"] == 1 and (r.get("confidence") or 0) < 70]),
+            "ba0":        _stats([r for r in data if r["both_agree"] == 0]),
+        }
+
+        # ── 8. Recent momentum (last 20 ba=1 signals vs historical ba=1) ────
+        ba1_all    = [r for r in data if r["both_agree"] == 1]
+        ba1_recent = _stats(ba1_all[:20])
+        ba1_older  = _stats(ba1_all[20:])
+
+        return jsonify({
+            "total_resolved":  len(data),
+            "total_pending":   total_pending,
+            "time_of_day":     time_of_day,
+            "top_tickers":     top_tickers,
+            "bottom_tickers":  bottom_tickers,
+            "conf_calibration": conf_calibration,
+            "streak_analysis": streak_analysis,
+            "direction_stats": direction_stats,
+            "dir_by_hour":     dir_by_hour,
+            "daily_trend":     daily_trend,
+            "agreement_tiers": agreement_tiers,
+            "ba1_recent_20":   ba1_recent,
+            "ba1_older":       ba1_older,
+            "ts": int(time.time()),
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
 # ── TimesFM — lazy-loaded Google foundation model for 5-bar price forecast ─────
 # Uses timesfm 1.x PyPI API (TimesFmHparams / TimesFmCheckpoint / .forecast())
 # Model: google/timesfm-1.0-200m-pytorch (~800MB, downloaded once to HF cache)
