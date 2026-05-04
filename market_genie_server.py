@@ -5717,6 +5717,16 @@ _alp_last_traded  = {}   # { sym: {"dir": str, "ts": float} }
 _alp_lock         = threading.Lock()
 _alp_order_lock   = threading.Lock()   # serializes position-check → place to prevent over-filling
 
+# Local pending set: tracks symbols where we just fired an order but Alpaca
+# API hasn't confirmed the position yet (typically 2-5s lag). Without this,
+# a second signal arriving in that window sees N-1 positions and fires again,
+# creating N+1 open positions. Entries expire after 60s regardless.
+_alp_pending      = {}    # { sym: ts_placed }  — cleared after 60s or on confirm
+_alp_pending_lock = threading.Lock()
+
+# Time-based exit: max minutes a position can sit without hitting stop/target
+_ALP_MAX_HOLD_MINS = int(os.getenv("ALPACA_MAX_HOLD_MINS", "45"))
+
 
 def _alp_headers():
     return {
@@ -5727,15 +5737,35 @@ def _alp_headers():
 
 
 def _alp_get_open_positions():
-    """Return set of currently open position symbols from Alpaca."""
+    """
+    Return set of currently open position symbols from Alpaca,
+    PLUS any symbols we just placed orders for (pending confirmation).
+    The pending set prevents a second signal from firing in the 2-5s
+    window before Alpaca API reflects the new position.
+    """
+    confirmed = set()
     try:
         r = requests.get(f"{_ALPACA_BASE_URL}/v2/positions",
                          headers=_alp_headers(), timeout=8)
         if r.status_code == 200:
-            return {p["symbol"] for p in r.json()}
+            confirmed = {p["symbol"] for p in r.json()}
     except Exception as e:
         print(f"[Alpaca] positions fetch error: {e}")
-    return set()
+
+    # Merge confirmed positions with locally-tracked pending orders,
+    # expiring any pending entries older than 60 seconds.
+    now = time.time()
+    with _alp_pending_lock:
+        expired = [s for s, ts in _alp_pending.items() if now - ts > 60]
+        for s in expired:
+            _alp_pending.pop(s, None)
+        # Remove pending entries that Alpaca has confirmed
+        for s in list(_alp_pending.keys()):
+            if s in confirmed:
+                _alp_pending.pop(s, None)
+        pending_syms = set(_alp_pending.keys())
+
+    return confirmed | pending_syms
 
 
 def _alp_count_open_orders():
@@ -5816,6 +5846,10 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
                           json=order, timeout=10)
         if r.status_code in (200, 201):
             resp = r.json()
+            # Register in pending set immediately so next position check
+            # counts this slot before Alpaca API confirms it (2-5s lag).
+            with _alp_pending_lock:
+                _alp_pending[sym] = time.time()
             print(f"[Alpaca] ✅ ORDER PLACED — {side.upper()} {qty}x {sym} @ ~${price:.2f} "
                   f"| stop ${stop_px} | target ${target_px} | id={resp.get('id','?')[:8]}")
             return True
@@ -5878,6 +5912,88 @@ def _alp_eod_loop():
         except Exception as e:
             print(f"[EOD] Loop error: {e}")
         time.sleep(60)
+
+
+def _alp_close_position(sym: str, side: str):
+    """
+    Close a single open position at market.
+    side: 'long' → sell, 'short' → buy_to_cover
+    Cancels any open bracket legs first to avoid orphaned orders.
+    """
+    if not _ALPACA_KEY or not _ALPACA_SECRET:
+        return
+    try:
+        # Cancel open orders for this symbol (stop + target legs)
+        r = requests.get(f"{_ALPACA_BASE_URL}/v2/orders?status=open",
+                         headers=_alp_headers(), timeout=8)
+        if r.status_code == 200:
+            for o in r.json():
+                if o.get("symbol") == sym:
+                    requests.delete(f"{_ALPACA_BASE_URL}/v2/orders/{o['id']}",
+                                    headers=_alp_headers(), timeout=5)
+    except Exception as e:
+        print(f"[TimeExit] {sym} cancel orders error: {e}")
+
+    try:
+        # Close the position via DELETE /v2/positions/{sym}
+        r = requests.delete(f"{_ALPACA_BASE_URL}/v2/positions/{sym}",
+                            headers=_alp_headers(), timeout=10)
+        if r.status_code in (200, 201, 204):
+            print(f"[TimeExit] ✅ {sym} closed at market (time-based exit)")
+        else:
+            print(f"[TimeExit] ❌ {sym} close failed HTTP {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        print(f"[TimeExit] {sym} close exception: {e}")
+
+
+def _alp_time_exit_loop():
+    """
+    Time-based position exit: runs every 2 minutes.
+    Any position open longer than _ALP_MAX_HOLD_MINS without hitting its
+    bracket target or stop gets closed at market to free the slot.
+
+    Why: ranging stocks pin capital in a 0.5%/1% corridor indefinitely,
+    blocking better signals from entering. Closing after 45 min forces
+    turnover and keeps the portfolio in fresh, high-conviction setups.
+    """
+    while True:
+        time.sleep(120)   # check every 2 minutes
+        if not _ALP_ENABLED or not _us_market_open():
+            continue
+        # Don't time-exit within 10 min of EOD flatten (15:55) to avoid double-close
+        et_now = _get_et_now()
+        if et_now.weekday() > 4 or et_now.time() >= dtime(15, 45):
+            continue
+        try:
+            r = requests.get(f"{_ALPACA_BASE_URL}/v2/positions",
+                             headers=_alp_headers(), timeout=8)
+            if r.status_code != 200:
+                continue
+            positions = r.json()
+            now_ts = time.time()
+            for pos in positions:
+                sym        = pos["symbol"]
+                side       = pos.get("side", "long")
+                # Alpaca gives asset_marginable, qty, etc. but NOT entry time.
+                # We track entry time via _alp_last_traded which is set when
+                # the order fires. If missing (e.g. pre-existing position from
+                # before this deploy), skip gracefully.
+                with _alp_lock:
+                    entry_info = _alp_last_traded.get(sym, {})
+                entry_ts = entry_info.get("ts", 0)
+                if not entry_ts:
+                    continue   # no entry record — don't close unknown positions
+                age_mins = (now_ts - entry_ts) / 60
+                if age_mins >= _ALP_MAX_HOLD_MINS:
+                    unrealized_pct = float(pos.get("unrealized_plpc", 0)) * 100
+                    print(f"[TimeExit] {sym} open {age_mins:.0f}m "
+                          f"({unrealized_pct:+.2f}% unrealized) — closing at market")
+                    _alp_close_position(sym, side)
+                    # Clear dedup so system can re-enter on a fresh signal
+                    with _alp_lock:
+                        _alp_last_traded.pop(sym, None)
+        except Exception as e:
+            print(f"[TimeExit] Loop error: {e}")
 
 
 def _alp_execute_signal(res: dict):
@@ -6075,6 +6191,11 @@ print(f"[Alpaca] Executor loaded — enabled={_ALP_ENABLED}, "
 _eod_thread = threading.Thread(target=_alp_eod_loop, daemon=True)
 _eod_thread.start()
 print("[EOD] Flattener thread started — all positions will close at 15:55 ET daily")
+
+# Start time-based exit loop — closes ranging positions after _ALP_MAX_HOLD_MINS
+_time_exit_thread = threading.Thread(target=_alp_time_exit_loop, daemon=True, name="TimeExit")
+_time_exit_thread.start()
+print(f"[TimeExit] Loop started — positions close after {_ALP_MAX_HOLD_MINS} min if bracket not hit")
 
 
 @app.route("/api/debug/signals")
