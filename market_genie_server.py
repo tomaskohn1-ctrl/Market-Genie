@@ -4738,7 +4738,11 @@ def _predict_one(sym):
                 if kronos_prob in (0.0, 100.0):
                     kronos_prob = 80.0 if kronos_dir == "bull" else 20.0
     except Exception as e:
-        print(f"[Predict] Kronos {sym}: {e}")
+        err_str = str(e)
+        # Tensor size mismatch = ticker has fewer bars than model expects — TFM covers it.
+        # Don't log every occurrence (dozens per bucket); only log unexpected errors.
+        if "size of tensor" not in err_str:
+            print(f"[Predict] Kronos {sym}: {err_str}")
 
     # ── TimesFM (1-min closes, 5-bar ahead) or linear fallback ──────────────
     try:
@@ -4887,8 +4891,14 @@ def _predict_apply_streak(sym, res):
 
         # Hot-lane promotion: streak=1 → add to fast-rescan list so the NEXT
         # confirmation (streak=2) fires within 15s instead of up to 7 minutes.
-        # streak≥2 means already confirmed — remove from hot list (order fired).
-        if st["count"] == 1 and not res["flipping"] and _us_market_open():
+        # Quality filter: only track tickers worth rescanning — both models must
+        # agree (both_agree=1) OR confidence must be near the 65% gate (≥55%).
+        # This cuts ~70% of hot-lane noise from low-conf, both_agree=0 tickers
+        # that will never pass _alp_execute_signal regardless of streak.
+        _both_agree_now = res.get("both_agree", 0)
+        _conf_now       = res.get("confidence", 0)
+        _hot_worthy     = _both_agree_now == 1 or _conf_now >= 55
+        if st["count"] == 1 and not res["flipping"] and _us_market_open() and _hot_worthy:
             with _hot_lock:
                 _HOT_TICKERS[sym] = time.time()
         elif st["count"] >= 2:
@@ -5175,9 +5185,6 @@ def _wr_check_spread(sym: str, avg_vol: float = 0) -> bool:
     now = time.time()
     cached = _wr_spread_cache.get(sym)
     if cached and (now - cached["ts"]) < _WR_SPREAD_TTL:
-        # Sanity check: cached spread > 5% on non-micro-cap = bad data, allow it
-        if cached["spread_pct"] > 5.0:
-            return True
         ok = cached["spread_pct"] <= _WR_MAX_SPREAD_PCT
         if not ok:
             print(f"[Spread] {sym} cached spread {cached['spread_pct']:.3f}% > {_WR_MAX_SPREAD_PCT}% — skipped")
@@ -5187,12 +5194,17 @@ def _wr_check_spread(sym: str, avg_vol: float = 0) -> bool:
         info = yf.Ticker(sym).info
         bid  = float(info.get("bid") or 0)
         ask  = float(info.get("ask") or 0)
+        # If bid or ask is missing/zero, yfinance returned stale/bad data — fail open
+        # so we don't block on API gaps, but log it.
+        if bid <= 0 or ask <= 0:
+            print(f"[Spread] {sym} bid/ask unavailable (bid={bid} ask={ask}) — allowing signal")
+            return True
         mid  = (bid + ask) / 2
         spread_pct = round((ask - bid) / mid * 100, 4) if mid > 0 else 0.0
-        # Don't cache clearly bad data (spread > 5% = stale quote, single order)
-        if spread_pct <= 5.0:
-            _wr_spread_cache[sym] = {"spread_pct": spread_pct, "ts": now}
-        ok = spread_pct <= _WR_MAX_SPREAD_PCT or spread_pct > 5.0
+        # Spreads >5% are either genuinely illiquid (skip) or have bad quote data.
+        # Either way the stock is untradeable at our bracket sizing — reject.
+        _wr_spread_cache[sym] = {"spread_pct": spread_pct, "ts": now}
+        ok = spread_pct <= _WR_MAX_SPREAD_PCT
         print(f"[Spread] {sym} bid={bid} ask={ask} spread={spread_pct:.3f}% — {'OK' if ok else 'WIDE, skipped'}")
         return ok
     except Exception as e:
