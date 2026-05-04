@@ -5512,8 +5512,9 @@ _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "65"))             # mi
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak count
 _ALP_DEDUP_SECS       = 1800   # don't re-enter same ticker+direction within 30 min
 
-_alp_last_traded = {}   # { sym: {"dir": str, "ts": float} }
-_alp_lock        = threading.Lock()
+_alp_last_traded  = {}   # { sym: {"dir": str, "ts": float} }
+_alp_lock         = threading.Lock()
+_alp_order_lock   = threading.Lock()   # serializes position-check → place to prevent over-filling
 
 
 def _alp_headers():
@@ -5700,29 +5701,34 @@ def _alp_execute_signal(res: dict):
         # Storing tentative here to prevent race, will clear on failure
         _alp_last_traded[sym] = {"dir": direction, "ts": now}
 
-    # Check concurrent position limit
-    open_positions = _alp_get_open_positions()
-    if sym in open_positions:
-        print(f"[Alpaca] {sym} — SKIPPED: already in open positions")
-        with _alp_lock:
-            _alp_last_traded.pop(sym, None)  # clear dedup so retry works
-        return
-    # Use position count only — bracket orders create 2 open child orders (stop+target)
-    # per position, so counting open orders inflates exposure 3x and blocks new entries.
-    total_exposure = len(open_positions)
-    if total_exposure >= _ALP_MAX_POSITIONS:
-        print(f"[Alpaca] {sym} — SKIPPED: max positions reached ({total_exposure}/{_ALP_MAX_POSITIONS})")
-        with _alp_lock:
-            _alp_last_traded.pop(sym, None)  # clear dedup so retry works
-        return
+    # ── Serialized position-check + order placement ───────────────────────────
+    # _alp_order_lock ensures only one thread at a time runs the check→place
+    # sequence, preventing two threads from both seeing "4 positions" and both
+    # firing, which would result in 6 open positions instead of the 5-slot max.
+    with _alp_order_lock:
+        open_positions = _alp_get_open_positions()
+        if sym in open_positions:
+            print(f"[Alpaca] {sym} — SKIPPED: already in open positions")
+            with _alp_lock:
+                _alp_last_traded.pop(sym, None)  # clear dedup so retry works
+            return
+        # Use position count only — bracket orders create 2 open child orders
+        # (stop + target) per position, so counting open orders inflates exposure
+        # 3x and blocks new entries.
+        total_exposure = len(open_positions)
+        if total_exposure >= _ALP_MAX_POSITIONS:
+            print(f"[Alpaca] {sym} — SKIPPED: max positions reached ({total_exposure}/{_ALP_MAX_POSITIONS})")
+            with _alp_lock:
+                _alp_last_traded.pop(sym, None)  # clear dedup so retry works
+            return
 
-    print(f"[Alpaca] {sym} — FIRING bracket: {direction.upper()} conf={conf:.1f} streak={streak} price=${price:.2f} strong={is_strong}")
-    ok = _alp_place_bracket(sym, direction, price, is_strong)
-    if not ok:
-        # Order failed — remove dedup so the next signal attempt can retry
-        with _alp_lock:
-            _alp_last_traded.pop(sym, None)
-        print(f"[Alpaca] {sym} — order failed, dedup cleared for retry")
+        print(f"[Alpaca] {sym} — FIRING bracket: {direction.upper()} conf={conf:.1f} streak={streak} price=${price:.2f} strong={is_strong}")
+        ok = _alp_place_bracket(sym, direction, price, is_strong)
+        if not ok:
+            # Order failed — remove dedup so the next signal attempt can retry
+            with _alp_lock:
+                _alp_last_traded.pop(sym, None)
+            print(f"[Alpaca] {sym} — order failed, dedup cleared for retry")
 
 
 @app.route("/api/alpaca/test")
