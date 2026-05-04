@@ -5237,15 +5237,15 @@ def _us_market_open() -> bool:
 
 def _safe_to_enter() -> bool:
     """Return True only during the core tradeable window (Mon-Fri 10:00-15:30 ET).
-    - First 30 min (9:30-10:00) excluded: opening volatility flush, wide spreads,
-      and erratic price action cause rapid stop-outs (confirmed May 4: 5 consecutive
-      bear stops in the opening 46 min, -$154 total).
+    - First 15 min (9:30-9:45) excluded: opening volatility, wide spreads, and
+      erratic order flow before the market stabilizes. Revisit after more data —
+      today's (May 4) early losses were all post-10:00 so 9:45 vs 10:00 is TBD.
     - Last 30 min (15:30-16:00) excluded: not enough time to reach target before
       EOD flattener at 15:55."""
     et_now = _get_et_now()
     if et_now.weekday() > 4:
         return False
-    return dtime(10, 0) <= et_now.time() < dtime(15, 30)
+    return dtime(9, 45) <= et_now.time() < dtime(15, 30)
 
 
 def _wr_edge_score(res):
