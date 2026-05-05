@@ -5294,7 +5294,7 @@ _BREADTH_BULL_CONF_BEARISH  = int(os.getenv("BREADTH_BULL_CONF_BEARISH",  "85"))
 _BREADTH_BEAR_CONF_NEUTRAL  = int(os.getenv("BREADTH_BEAR_CONF_NEUTRAL",  "75"))  # was 70
 _BREADTH_BULL_CONF_NEUTRAL  = int(os.getenv("BREADTH_BULL_CONF_NEUTRAL",  "75"))  # was 70
 _BREADTH_BEAR_CONF_BULLISH  = int(os.getenv("BREADTH_BEAR_CONF_BULLISH",  "85"))  # unchanged
-_BREADTH_BULL_CONF_BULLISH  = int(os.getenv("BREADTH_BULL_CONF_BULLISH",  "75"))  # was 65
+_BREADTH_BULL_CONF_BULLISH  = int(os.getenv("BREADTH_BULL_CONF_BULLISH",  "70"))  # was 65→75, dialed back: bull signals on bullish days need less confirmation
 
 # ── Tape Alignment Filter ──────────────────────────────────────────────────────
 # When the tape is running strongly in one direction (e.g. 72%+ BEAR signals),
@@ -5315,7 +5315,7 @@ _ELITE_PREEMPT_CONF = int(os.getenv("ELITE_PREEMPT_CONF", "85"))
 # Require |kronos_pct| >= threshold before executing.
 # Data: weak Kronos (<0.5%) = 50% WR (coin flip). Strong Kronos (≥0.5%) = 67% WR.
 # Set ALP_MIN_KRONOS_PCT=0 in Railway Variables to disable.
-_ALP_MIN_KRONOS_PCT = float(os.getenv("ALP_MIN_KRONOS_PCT", "0.5"))
+_ALP_MIN_KRONOS_PCT = float(os.getenv("ALP_MIN_KRONOS_PCT", "0.3"))
 
 
 # ── Social Sentiment Confidence Boost ─────────────────────────────────────────
