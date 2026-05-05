@@ -5725,6 +5725,101 @@ def _alp_headers():
     }
 
 
+# ── Technical Indicator Snapshot ──────────────────────────────────────────────
+# Fetches last 20 five-minute bars from Alpaca Data API and computes:
+#   RSI(14), EMA(5/13/34/50), volume ratio (current / avg of prior bars)
+# Called once per execute_signal — ~200ms, result cached 5 min.
+_tech_snap_cache  = {}   # { sym: (result_dict, expiry_ts) }
+_tech_snap_lock   = threading.Lock()
+
+# Gates — set to 0 in Railway Variables to disable
+_RSI_OVERBOUGHT   = int(os.getenv("TECH_RSI_OVERBOUGHT",  "78"))   # block BULL if RSI ≥ this
+_RSI_OVERSOLD     = int(os.getenv("TECH_RSI_OVERSOLD",    "22"))   # block BEAR if RSI ≤ this
+_VOL_SURGE_MIN    = float(os.getenv("TECH_VOL_SURGE_MIN",  "2.0")) # hard gate: need 2× avg volume
+_VWAP_BOOST       = int(os.getenv("TECH_VWAP_BOOST",       "5"))   # conf pts when price on right side of VWAP
+_EMA_BOOST        = int(os.getenv("TECH_EMA_BOOST",         "5"))   # conf pts when 5/13/34 stack aligned
+
+
+def _calc_rsi(closes: list, period: int = 14) -> float:
+    if len(closes) < period + 1:
+        return 50.0
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        gains.append(max(d, 0))
+        losses.append(max(-d, 0))
+    ag = sum(gains[-period:]) / period
+    al = sum(losses[-period:]) / period
+    if al == 0:
+        return 100.0
+    return round(100 - 100 / (1 + ag / al), 2)
+
+
+def _calc_ema(closes: list, period: int) -> float:
+    if not closes:
+        return 0.0
+    if len(closes) < period:
+        return closes[-1]
+    k   = 2 / (period + 1)
+    ema = sum(closes[:period]) / period
+    for p in closes[period:]:
+        ema = p * k + ema * (1 - k)
+    return round(ema, 4)
+
+
+def _get_tech_snapshot(sym: str) -> dict:
+    """
+    Returns dict with RSI, EMAs, vol_ratio, vwap for sym.
+    Cached 5 min. Returns {} on any error (fail open — don't block trading).
+    """
+    with _tech_snap_lock:
+        entry = _tech_snap_cache.get(sym)
+        if entry and time.time() < entry[1]:
+            return entry[0]
+
+    try:
+        # Pull last 20 five-minute bars from Alpaca Data API
+        data_url = "https://data.alpaca.markets"
+        url = f"{data_url}/v2/stocks/{sym}/bars?timeframe=5Min&limit=20&feed=iex"
+        r = requests.get(url, headers=_alp_headers(), timeout=6)
+        if r.status_code != 200:
+            return {}
+        bars = r.json().get("bars", [])
+        if len(bars) < 5:
+            return {}
+
+        closes = [b["c"] for b in bars]
+        vols   = [b["v"] for b in bars]
+        vwap_b = bars[-1].get("vw")   # Alpaca bar includes VWAP per bar
+
+        # RSI from last 15 closes (need 14+1 minimum)
+        rsi     = _calc_rsi(closes[-15:]) if len(closes) >= 15 else 50.0
+        ema5    = _calc_ema(closes, 5)
+        ema13   = _calc_ema(closes, 13)
+        ema34   = _calc_ema(closes, min(34, len(closes)))
+        ema50   = _calc_ema(closes, min(50, len(closes)))
+
+        # Volume ratio: current bar vs avg of prior bars
+        avg_vol  = sum(vols[:-1]) / max(len(vols) - 1, 1)
+        vol_ratio = round(vols[-1] / avg_vol, 2) if avg_vol > 0 else 1.0
+
+        result = {
+            "rsi":       rsi,
+            "ema5":      ema5,
+            "ema13":     ema13,
+            "ema34":     ema34,
+            "ema50":     ema50,
+            "vol_ratio": vol_ratio,
+            "vwap":      vwap_b,
+        }
+        with _tech_snap_lock:
+            _tech_snap_cache[sym] = (result, time.time() + 300)  # 5 min cache
+        return result
+    except Exception as e:
+        print(f"[TechSnap] {sym} error: {e}")
+        return {}
+
+
 def _alp_get_open_positions():
     """
     Return set of currently open position symbols from Alpaca,
@@ -6170,6 +6265,48 @@ def _alp_execute_signal(res: dict):
     if _ALP_MIN_PRICE > 0 and price < _ALP_MIN_PRICE:
         print(f"[Alpaca] {sym} — SKIPPED: price ${price:.2f} below min ${_ALP_MIN_PRICE:.2f}")
         return
+
+    # ── Technical Indicator Gates + Boosts ────────────────────────────────────
+    # Fetches last 20 five-min bars → RSI, EMA stack, volume ratio, VWAP.
+    # Hard blocks: RSI overbought/oversold, volume below 2× avg.
+    # Soft boosts: VWAP alignment +5, EMA stack aligned +5.
+    tech = _get_tech_snapshot(sym)
+    if tech:
+        rsi       = tech.get("rsi", 50.0)
+        vol_ratio = tech.get("vol_ratio", 1.0)
+        vwap      = tech.get("vwap")
+        ema5      = tech.get("ema5", 0)
+        ema13     = tech.get("ema13", 0)
+        ema34     = tech.get("ema34", 0)
+
+        # RSI overbought/oversold hard block
+        if _RSI_OVERBOUGHT > 0 and direction == "bull" and rsi >= _RSI_OVERBOUGHT:
+            print(f"[TechGate] {sym} — SKIPPED: RSI {rsi:.1f} ≥ {_RSI_OVERBOUGHT} (overbought, no BULL entry)")
+            return
+        if _RSI_OVERSOLD > 0 and direction == "bear" and rsi <= _RSI_OVERSOLD:
+            print(f"[TechGate] {sym} — SKIPPED: RSI {rsi:.1f} ≤ {_RSI_OVERSOLD} (oversold, no BEAR entry)")
+            return
+
+        # Volume surge hard gate — no conviction without volume
+        if _VOL_SURGE_MIN > 0 and vol_ratio < _VOL_SURGE_MIN:
+            print(f"[TechGate] {sym} — SKIPPED: vol_ratio {vol_ratio:.2f}× < {_VOL_SURGE_MIN}× required")
+            return
+
+        # VWAP soft boost — price on right side of VWAP
+        if vwap and _VWAP_BOOST > 0:
+            if (direction == "bull" and price > vwap) or (direction == "bear" and price < vwap):
+                eff_conf += _VWAP_BOOST
+                print(f"[TechBoost] {sym} VWAP aligned (price={price:.2f} vwap={vwap:.2f}) +{_VWAP_BOOST} conf → {eff_conf:.1f}")
+
+        # EMA stack soft boost — 5 > 13 > 34 for bull, 5 < 13 < 34 for bear
+        if ema5 and ema13 and ema34 and _EMA_BOOST > 0:
+            ema_bull = ema5 > ema13 > ema34
+            ema_bear = ema5 < ema13 < ema34
+            if (direction == "bull" and ema_bull) or (direction == "bear" and ema_bear):
+                eff_conf += _EMA_BOOST
+                print(f"[TechBoost] {sym} EMA stack aligned (5={ema5:.2f}/13={ema13:.2f}/34={ema34:.2f}) +{_EMA_BOOST} conf → {eff_conf:.1f}")
+    else:
+        print(f"[TechSnap] {sym} — no tech data, proceeding without technical filters")
 
     # ── Tape Alignment Filter ──────────────────────────────────────────────────
     # If 72%+ of signals this hour are running in one direction, don't fight the tape.
