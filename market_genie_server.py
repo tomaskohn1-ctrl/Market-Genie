@@ -5735,7 +5735,7 @@ _tech_snap_lock   = threading.Lock()
 # Gates — set to 0 in Railway Variables to disable
 _RSI_OVERBOUGHT   = int(os.getenv("TECH_RSI_OVERBOUGHT",  "82"))   # block BULL if RSI ≥ this (82 = Reddit rec; 78 was too tight, blocks breakouts)
 _RSI_OVERSOLD     = int(os.getenv("TECH_RSI_OVERSOLD",    "18"))   # block BEAR if RSI ≤ this (18 = matching loosening)
-_VOL_SURGE_MIN    = float(os.getenv("TECH_VOL_SURGE_MIN",  "1.5")) # hard gate: 1.5× avg (2.0 blocked ~50% of valid setups with no live data support)
+_VOL_SURGE_MIN    = float(os.getenv("TECH_VOL_SURGE_MIN",  "1.0")) # soft floor: 1.0× avg — afternoon volume naturally drops below 1.5×; no data supported higher threshold
 _VWAP_BOOST       = int(os.getenv("TECH_VWAP_BOOST",       "5"))   # conf pts when price on right side of VWAP
 _EMA_BOOST        = int(os.getenv("TECH_EMA_BOOST",         "5"))   # conf pts when 5/13/34 stack aligned
 
