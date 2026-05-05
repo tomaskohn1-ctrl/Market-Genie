@@ -6379,14 +6379,13 @@ def _alp_execute_signal(res: dict):
     ba = res.get("both_agree", 0)
     print(f"[Alpaca] {sym} — both_agree={ba} (informational only, not gating)")
 
-    # ── Kronos Strength Gate ──────────────────────────────────────────────────
-    # Require |kronos_pct| >= threshold. Weak Kronos (<0.5%) = 50% WR coin flip.
-    # Strong Kronos (≥0.5%) = 67% WR. Configurable via ALP_MIN_KRONOS_PCT.
-    if _ALP_MIN_KRONOS_PCT > 0 and kpct_raw is not None:
-        if abs(kpct_raw) < _ALP_MIN_KRONOS_PCT:
-            print(f"[Alpaca] {sym} — SKIPPED: |kronos_pct| {abs(kpct_raw):.3f} "
-                  f"< {_ALP_MIN_KRONOS_PCT} (weak Kronos forecast)")
-            return
+    # ── Kronos Strength Gate — DISABLED ──────────────────────────────────────
+    # Originally required |kronos_pct| >= 0.3%. Removed: no live data showed
+    # this threshold improved WR, and it blocked signals with no measurable benefit.
+    # Kronos direction still influences both_agree (informational) and is_strong
+    # (determines whether to use 1.5% or 3.0% target).
+    kpct_abs = abs(kpct_raw) if kpct_raw is not None else 0
+    print(f"[Alpaca] {sym} — kronos_pct={kpct_raw} (informational, not gating)")
 
     if not price:
         print(f"[Alpaca] {sym} — SKIPPED: no price available")
