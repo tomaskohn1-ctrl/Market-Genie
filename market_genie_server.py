@@ -5670,6 +5670,36 @@ def _alp_get_open_positions():
     return confirmed | pending_syms
 
 
+def _alp_recover_positions():
+    """
+    On startup: seed _alp_last_traded for any open Alpaca positions
+    not already tracked. Prevents positions that survived a redeploy
+    from being ignored by the time-exit loop forever.
+    """
+    if not _ALPACA_KEY or not _ALPACA_SECRET:
+        return
+    try:
+        r = requests.get(f"{_ALPACA_BASE_URL}/v2/positions",
+                         headers=_alp_headers(), timeout=8)
+        if r.status_code == 200:
+            now = time.time()
+            recovered = 0
+            with _alp_lock:
+                for pos in r.json():
+                    sym = pos["symbol"]
+                    if sym not in _alp_last_traded:
+                        direction = "bull" if pos.get("side", "long") == "long" else "bear"
+                        _alp_last_traded[sym] = {"dir": direction, "ts": now}
+                        recovered += 1
+            if recovered:
+                print(f"[Alpaca] ♻️  Recovered {recovered} pre-existing position(s) into "
+                      f"time-exit tracker — timer starts from now")
+    except Exception as e:
+        print(f"[Alpaca] Position recovery error: {e}")
+
+_alp_recover_positions()  # Seed any positions that survived a redeploy
+
+
 def _alp_count_open_orders():
     """Count pending bracket orders (not yet filled)."""
     try:
@@ -5950,7 +5980,13 @@ def _alp_time_exit_loop():
                     entry_info = _alp_last_traded.get(sym, {})
                 entry_ts = entry_info.get("ts", 0)
                 if not entry_ts:
-                    continue   # no entry record — don't close unknown positions
+                    # Position exists in Alpaca but not in our tracker (survived a redeploy).
+                    # Seed it now so the timer starts from this check cycle.
+                    direction = "bull" if side == "long" else "bear"
+                    with _alp_lock:
+                        _alp_last_traded[sym] = {"dir": direction, "ts": now_ts}
+                    print(f"[TimeExit] {sym} — seeded into tracker (pre-deploy position, timer starts now)")
+                    continue   # will be evaluated on the next cycle
                 age_mins = (now_ts - entry_ts) / 60
                 if age_mins >= _ALP_MAX_HOLD_MINS:
                     unrealized_pct = float(pos.get("unrealized_plpc", 0)) * 100
