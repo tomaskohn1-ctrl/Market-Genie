@@ -5909,6 +5909,11 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
       Two-phase guarantees stop/target are always exactly 0.5% / 1% from
       the ACTUAL fill price regardless of slippage.
 
+    Improvements over naive bracket:
+      - Uses Alpaca live bid/ask instead of Finnhub last-trade for pricing
+      - Stop leg is stop-limit (not stop-market) to avoid gap-fill disasters
+      - Phase 2 polls at 0.2s then 0.3s first to catch ~200ms fills faster
+
     direction: 'bull' → buy, 'bear' → sell short
     is_strong: True if |Kronos| ≥ 1% → use 2% target instead of 1%
     """
@@ -5916,22 +5921,51 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
         print("[Alpaca] Keys not configured — skipping order")
         return False
 
-    # ── Fetch fresh real-time price from Finnhub (used for qty + stale guard) ──
+    # ── Fix 1: Use Alpaca live bid/ask instead of Finnhub last-trade ──────────
+    # Finnhub returns 'c' (last trade) which can be stale by 1-5s and never
+    # reflects the current ask. For buys we fill at ask; for shorts at bid.
+    # Using the wrong reference price corrupts the stale-price guard and qty
+    # calc — both think price is lower than our actual fill will be.
     signal_price = price
-    if FINNHUB_KEY:
-        try:
-            fh_q = requests.get("https://finnhub.io/api/v1/quote",
-                                params={"symbol": sym, "token": FINNHUB_KEY},
-                                timeout=3)
-            if fh_q.status_code == 200:
-                fh_data = fh_q.json()
-                fresh = float(fh_data.get("c") or fh_data.get("l") or 0)
-                if fresh > 0:
-                    price = fresh
-                    print(f"[Alpaca] {sym} fresh quote ${fresh:.2f} "
-                          f"(signal was ${signal_price:.2f}, Δ={((fresh-signal_price)/signal_price*100):+.2f}%)")
-        except Exception as _fq_err:
-            print(f"[Alpaca] {sym} fresh quote failed ({_fq_err}), using signal price")
+    try:
+        q_resp = requests.get(
+            f"{_ALP_DATA_URL}/v2/stocks/{sym}/quotes/latest",
+            headers=_alp_headers(), timeout=3
+        )
+        if q_resp.status_code == 200:
+            qdata   = q_resp.json().get("quote", {})
+            ask_px  = float(qdata.get("ap") or 0)
+            bid_px  = float(qdata.get("bp") or 0)
+            # Use ask for longs (we pay ask), bid for shorts (we sell at bid)
+            ref_px  = ask_px if direction == "bull" else bid_px
+            if ref_px > 0:
+                price = ref_px
+                spread_pct = (ask_px - bid_px) / ask_px * 100 if ask_px > 0 else 0
+                print(f"[Alpaca] {sym} live quote bid=${bid_px:.2f} ask=${ask_px:.2f} "
+                      f"spread={spread_pct:.3f}% → using {'ask' if direction=='bull' else 'bid'} "
+                      f"${price:.2f} (signal was ${signal_price:.2f}, "
+                      f"Δ={((price-signal_price)/signal_price*100):+.2f}%)")
+            else:
+                # Fallback to Finnhub if Alpaca quote is empty
+                raise ValueError("empty ask/bid from Alpaca")
+        else:
+            raise ValueError(f"Alpaca quote HTTP {q_resp.status_code}")
+    except Exception as _aq_err:
+        # Fallback: try Finnhub last-trade
+        print(f"[Alpaca] {sym} Alpaca quote failed ({_aq_err}), falling back to Finnhub")
+        if FINNHUB_KEY:
+            try:
+                fh_q = requests.get("https://finnhub.io/api/v1/quote",
+                                    params={"symbol": sym, "token": FINNHUB_KEY},
+                                    timeout=3)
+                if fh_q.status_code == 200:
+                    fh_data = fh_q.json()
+                    fresh = float(fh_data.get("c") or fh_data.get("l") or 0)
+                    if fresh > 0:
+                        price = fresh
+                        print(f"[Alpaca] {sym} Finnhub fallback ${fresh:.2f}")
+            except Exception as _fq_err:
+                print(f"[Alpaca] {sym} Finnhub fallback also failed ({_fq_err}), using signal price")
 
     # Stale-price guard: skip if price moved >1% since signal
     if signal_price > 0 and abs(price - signal_price) / signal_price > 0.01:
@@ -5970,12 +6004,15 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
         print(f"[Alpaca] ❌ Entry order exception: {e}")
         return False
 
-    # ── Phase 2: Poll for fill → get actual fill price ─────────────────────────
-    # Market orders fill within ~1s during regular hours; 10s timeout is generous.
+    # ── Fix 3: Faster initial poll intervals to catch ~200ms RTH fills ────────
+    # Market orders fill in 100-300ms during RTH. Starting at 0.5s meant the
+    # OCO wasn't attached until ~0.5s after fill at best. Now we check at
+    # 0.2s, 0.3s, then 0.5s for all remaining attempts — same 10s total budget.
     fill_price = None
     fill_qty   = None
-    for _attempt in range(20):   # 20 × 0.5s = 10s max
-        time.sleep(0.5)
+    poll_delays = [0.2, 0.3] + [0.5] * 19   # 21 attempts, ~10.5s max
+    for _attempt, _delay in enumerate(poll_delays):
+        time.sleep(_delay)
         try:
             r_poll = requests.get(f"{_ALPACA_BASE_URL}/v2/orders/{order_id}",
                                   headers=_alp_headers(), timeout=5)
@@ -5986,7 +6023,8 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
                     fill_price = float(od.get("filled_avg_price") or 0)
                     fill_qty   = int(float(od.get("filled_qty") or qty))
                     print(f"[Alpaca] Phase2 ✅ filled {fill_qty}x {sym} @ ${fill_price:.4f} "
-                          f"(quoted ${price:.2f}, slippage={((fill_price-price)/price*100):+.3f}%)")
+                          f"(ref ${price:.2f}, slippage={((fill_price-price)/price*100):+.3f}%, "
+                          f"attempt={_attempt+1})")
                     break
                 elif status in ("cancelled", "rejected", "expired"):
                     print(f"[Alpaca] Phase2 ❌ entry {status} — aborting bracket")
@@ -5994,19 +6032,23 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
         except Exception as _pe:
             print(f"[Alpaca] Phase2 poll error: {_pe}")
 
-    # Fallback: if poll timed out use Finnhub fresh quote (still better than signal price)
+    # Fallback: if poll timed out use the ask/bid reference price
     if not fill_price or fill_price <= 0:
         fill_price = price
         fill_qty   = qty
-        print(f"[Alpaca] Phase2 ⚠️  poll timed out — using Finnhub quote ${price:.2f} for bracket")
+        print(f"[Alpaca] Phase2 ⚠️  poll timed out — using reference ${price:.2f} for bracket")
 
     # ── Phase 3: Attach OCO stop/target anchored to ACTUAL fill price ──────────
     if direction == "bull":
-        stop_px   = round(fill_price * (1 - _ALP_STOP_PCT),    2)
-        target_px = round(fill_price * (1 + target_pct),        2)
+        stop_px        = round(fill_price * (1 - _ALP_STOP_PCT), 2)
+        # Fix 2: stop-limit not stop-market — 0.2% below trigger avoids gap fills
+        stop_limit_px  = round(stop_px * 0.998, 2)
+        target_px      = round(fill_price * (1 + target_pct), 2)
     else:
-        stop_px   = round(fill_price * (1 + _ALP_STOP_PCT),    2)
-        target_px = round(fill_price * (1 - target_pct),        2)
+        stop_px        = round(fill_price * (1 + _ALP_STOP_PCT), 2)
+        # Fix 2: stop-limit for shorts — 0.2% above trigger
+        stop_limit_px  = round(stop_px * 1.002, 2)
+        target_px      = round(fill_price * (1 - target_pct), 2)
 
     oco_order = {
         "symbol":        sym,
@@ -6016,9 +6058,13 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
         "time_in_force": "day",
         "order_class":   "oco",
         "take_profit":   {"limit_price": str(target_px)},
-        "stop_loss":     {"stop_price":  str(stop_px)},
+        "stop_loss":     {
+            "stop_price":  str(stop_px),
+            "limit_price": str(stop_limit_px),   # stop-limit: won't gap-fill past limit
+        },
     }
-    print(f"[Alpaca] Phase3 POST OCO → {sym} stop=${stop_px} target=${target_px} "
+    print(f"[Alpaca] Phase3 POST OCO → {sym} stop=${stop_px}/lim=${stop_limit_px} "
+          f"target=${target_px} "
           f"(fill=${fill_price:.2f}, stop_dist={abs(fill_price-stop_px)/fill_price*100:.3f}%, "
           f"target_dist={abs(target_px-fill_price)/fill_price*100:.3f}%)")
     try:
