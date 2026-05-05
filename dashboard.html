@@ -5392,8 +5392,10 @@ async function loadBreadthRegime() {
     badge.style.color = c.color;
     badge.style.border = `1px solid ${c.border}`;
     const icon = d.regime === 'BEARISH' ? '🐻' : d.regime === 'BULLISH' ? '🐂' : '⚖️';
+    const adPct  = Math.round((d.ad_ratio  ?? 0.5) * 100);
+    const advPct = 100 - adPct;
     badge.textContent = `${icon} ${d.regime} ${d.score}`;
-    badge.title = `SPY ${d.spy_chg > 0 ? '+' : ''}${d.spy_chg}%  QQQ ${d.qqq_chg > 0 ? '+' : ''}${d.qqq_chg}%  Bear signals: ${Math.round(d.bear_ratio*100)}%\nBull conf≥${d.bull_conf}  Bear conf≥${d.bear_conf}  (updates every 15 min)`;
+    badge.title = `SPY ${d.spy_chg > 0 ? '+' : ''}${d.spy_chg}%  QQQ ${d.qqq_chg > 0 ? '+' : ''}${d.qqq_chg}%\nBear signals: ${Math.round(d.bear_ratio*100)}%  A/D: ${advPct}%↑ / ${adPct}%↓\nBull conf≥${d.bull_conf}  Bear conf≥${d.bear_conf}  (updates every 5 min)`;
   } catch(e) { /* silent */ }
 }
 

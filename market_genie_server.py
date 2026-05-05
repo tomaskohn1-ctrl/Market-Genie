@@ -4309,8 +4309,8 @@ _predict_bg_on    = False
 _predict_bg_lock  = threading.Lock()
 _predict_stats    = {"ts": 0, "model": "loading", "bucket": 0, "bucket_total": 0}
 _PREDICT_RESULT_TTL    = 900   # 15 min — covers 2+ full rotations; stale results auto-expire
-_PREDICT_BUCKET_SECS   = 30    # one bucket every 30s
-_PREDICT_NUM_BUCKETS   = 14    # 350 tickers ÷ 14 = 25/bucket → full rotation ~7 min, ~10s per bucket with 6 workers
+_PREDICT_BUCKET_SECS   = 15    # one bucket every 15s → full rotation ~3.5 min (was 30s / 7 min)
+_PREDICT_NUM_BUCKETS   = 14    # 350 tickers ÷ 14 = 25/bucket → full rotation ~3.5 min, ~10s per bucket with 6 workers
 
 # ── Hot-ticker fast lane ──────────────────────────────────────────────────────
 # When a ticker reaches streak_count=1 (first confirmation) it is promoted to
@@ -5394,14 +5394,47 @@ def _breadth_scanner_ratio() -> float:
     return 0.5  # not enough data → neutral
 
 
+def _breadth_advance_decline() -> float:
+    """
+    Real-time advance/decline ratio from Alpaca snapshot cache.
+    Counts how many of our watchlist stocks are up vs down on the day.
+    Returns fraction 0.0–1.0 where 1.0 = all declining (bearish), 0.0 = all advancing.
+    Returns 0.5 (neutral) if fewer than 20 symbols cached.
+
+    This is a stronger market internals signal than SPY/QQQ alone — the
+    index can be flat while 80% of stocks are declining (top-heavy tape).
+    """
+    try:
+        with _alp_snap_lock:
+            snaps = dict(_alp_snap_cache)
+        advances = sum(1 for d in snaps.values() if (d.get("d") or 0) > 0)
+        declines  = sum(1 for d in snaps.values() if (d.get("d") or 0) < 0)
+        total = advances + declines
+        if total >= 20:
+            return round(declines / total, 3)
+    except Exception as e:
+        print(f"[Breadth] A/D ratio error: {e}")
+    return 0.5  # not enough data → neutral
+
+
 def _compute_breadth_score() -> None:
     """
     Recalculate breadth score and update _breadth_state.
-    Called every 15 minutes by _breadth_loop().
+    Called every 5 minutes by _breadth_loop().
+
+    4 components:
+      1. SPY intraday % change (-25 to +25)
+      2. QQQ intraday % change (-15 to +15)
+      3. Scanner signal bear ratio from last 60 min of signals (-10 to +10)
+      4. Real-time Advance/Decline ratio from Alpaca snap cache (-10 to +10)
+
+    Max range: 0–100 (baseline 50). Score <35 = BEARISH, >65 = BULLISH.
+    This 4-component model catches divergences like "SPY up but 80% of stocks declining."
     """
-    spy_chg = _breadth_fetch_intraday_chg("SPY")
-    qqq_chg = _breadth_fetch_intraday_chg("QQQ")
+    spy_chg    = _breadth_fetch_intraday_chg("SPY")
+    qqq_chg    = _breadth_fetch_intraday_chg("QQQ")
     bear_ratio = _breadth_scanner_ratio()
+    ad_ratio   = _breadth_advance_decline()   # fraction of watchlist declining today
 
     # ── Component 1: SPY contribution (-25 to +25) ───────────────────────────
     if   spy_chg <= -1.5: spy_pts = -25
@@ -5429,7 +5462,17 @@ def _compute_breadth_score() -> None:
     elif bear_ratio >= 0.35: sig_pts = 5
     else:                    sig_pts = 10
 
-    score = max(0.0, min(100.0, 50.0 + spy_pts + qqq_pts + sig_pts))
+    # ── Component 4: Real-time A/D ratio (-10 to +10) ────────────────────────
+    # ad_ratio: fraction of watchlist stocks declining on the day.
+    # Catches divergences: index up but breadth deteriorating underneath.
+    if   ad_ratio >= 0.80: ad_pts = -10
+    elif ad_ratio >= 0.65: ad_pts = -5
+    elif ad_ratio >= 0.55: ad_pts = -2
+    elif ad_ratio >= 0.45: ad_pts = 2
+    elif ad_ratio >= 0.35: ad_pts = 5
+    else:                  ad_pts = 10
+
+    score = max(0.0, min(100.0, 50.0 + spy_pts + qqq_pts + sig_pts + ad_pts))
 
     # Determine regime + thresholds
     if score < 35:
@@ -5452,6 +5495,7 @@ def _compute_breadth_score() -> None:
             "spy_chg":    spy_chg,
             "qqq_chg":    qqq_chg,
             "bear_ratio": bear_ratio,
+            "ad_ratio":   ad_ratio,
             "bull_conf":  bull_conf,
             "bear_conf":  bear_conf,
             "updated_at": int(time.time()),
@@ -5459,19 +5503,19 @@ def _compute_breadth_score() -> None:
 
     print(f"[Breadth] Score={score:.1f} Regime={regime} "
           f"SPY={spy_chg:+.2f}% QQQ={qqq_chg:+.2f}% "
-          f"BearRatio={bear_ratio:.0%} → "
+          f"BearSignals={bear_ratio:.0%} A/D={ad_ratio:.0%} → "
           f"bull_conf≥{bull_conf} bear_conf≥{bear_conf}")
 
 
 def _breadth_loop():
-    """Background thread: recompute breadth every 15 minutes."""
+    """Background thread: recompute breadth every 5 minutes."""
     # Initial compute on startup so thresholds are set before first signal
     try:
         _compute_breadth_score()
     except Exception as e:
         print(f"[Breadth] Startup compute error: {e}")
     while True:
-        time.sleep(900)   # 15 minutes
+        time.sleep(300)   # 5 minutes (was 15 min)
         try:
             _compute_breadth_score()
         except Exception as e:
@@ -6127,6 +6171,7 @@ def api_breadth():
         "spy_chg":      state["spy_chg"],
         "qqq_chg":      state["qqq_chg"],
         "bear_ratio":   state["bear_ratio"],
+        "ad_ratio":     state.get("ad_ratio", 0.5),   # advance/decline (4th component)
         "bull_conf":    state["bull_conf"],
         "bear_conf":    state["bear_conf"],
         "updated_secs_ago": age,
