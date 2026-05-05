@@ -5594,12 +5594,12 @@ _ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.market
 _ALP_ENABLED          = os.getenv("ALPACA_EXEC_ENABLED", "true").lower() == "true"
 _ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "10000"))  # $10K per trade → 5 positions = $50K deployed
 _ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "5"))         # max open at once
-_ALP_STOP_PCT         = float(os.getenv("ALPACA_STOP_PCT", "0.005"))        # 0.5% stop loss
-_ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.010"))      # 1.0% target
-_ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.020"))# 2.0% for STRONG
+_ALP_STOP_PCT         = float(os.getenv("ALPACA_STOP_PCT", "0.0075"))       # 0.75% stop loss — wider room for intraday noise (was 0.5%, too tight for $50-150 stocks)
+_ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.015"))      # 1.5% target — maintains 2:1 R:R with wider stop
+_ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.030"))# 3.0% for STRONG (was 2.0%)
 _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "65"))             # min confidence
-_ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "3"))            # min streak count — data shows streak=3 is 50% WR vs streak=2 at 40%
-_ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "15.0"))        # min stock price — low-priced stocks have wide spread-to-move ratio, stop out immediately
+_ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
+_ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "8.0"))         # min stock price — below $8 spread-to-move ratio gets too wide for 0.5% stops
 _ALP_DEDUP_SECS       = 1800   # don't re-enter same ticker+direction within 30 min
 
 _alp_last_traded  = {}   # { sym: {"dir": str, "ts": float} }
