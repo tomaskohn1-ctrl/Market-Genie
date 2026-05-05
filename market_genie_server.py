@@ -795,6 +795,147 @@ def _ws_runner():
 threading.Thread(target=_ws_runner, daemon=True).start()
 
 
+# ── Alpaca Data WebSocket — real-time trade stream ────────────────────────────
+# Connects to wss://stream.data.alpaca.markets/v2/iex (free with any Alpaca
+# account).  Subscribes to trade ticks for all scanner tickers.  Every trade
+# pushes a fresh last-price into _alp_snap_cache so get_quote() is sub-second
+# accurate — no polling, no REST calls, zero extra cost.
+#
+# Auth flow:  connect → server sends {"T":"success","msg":"connected"}
+#             → send auth → server sends {"T":"success","msg":"authenticated"}
+#             → send subscribe → trade messages start streaming
+#
+# Message format: {"T":"t","S":"AAPL","p":175.50,"s":100,"t":"...","x":"D"}
+# Bar  format:    {"T":"b","S":"AAPL","o":...,"h":...,"l":...,"c":...,"v":...}
+
+_ALP_WS_URL    = "wss://stream.data.alpaca.markets/v2/iex"
+_alp_ws_status = {"connected": False, "authenticated": False,
+                  "subscribed": 0, "ts": 0, "ticks": 0}
+
+
+def _alp_ws_on_message(ws, raw):
+    """Handle incoming Alpaca Data WebSocket messages."""
+    global _alp_ws_status
+    try:
+        msgs = json.loads(raw)
+        if not isinstance(msgs, list):
+            msgs = [msgs]
+        for msg in msgs:
+            t = msg.get("T", "")
+            # ── Auth / subscription confirmations ─────────────────────────────
+            if t == "success":
+                info = msg.get("msg", "")
+                if info == "connected":
+                    _alp_ws_status["connected"] = True
+                    print("[AlpacaWS] Connected — sending auth")
+                    ws.send(json.dumps({
+                        "action": "auth",
+                        "key":    _ALPACA_KEY,
+                        "secret": _ALPACA_SECRET,
+                    }))
+                elif info == "authenticated":
+                    _alp_ws_status["authenticated"] = True
+                    print("[AlpacaWS] Authenticated — subscribing to trades + bars")
+                    tickers = list(_PREDICT_WATCHLIST)
+                    # Subscribe to trades (real-time last price) + bars (OHLCV)
+                    ws.send(json.dumps({
+                        "action": "subscribe",
+                        "trades": tickers,
+                        "bars":   tickers,
+                    }))
+            elif t == "subscription":
+                n = len(msg.get("trades", []))
+                _alp_ws_status["subscribed"] = n
+                print(f"[AlpacaWS] ✅ Subscribed to {n} trade streams (real-time prices active)")
+            # ── Trade tick — most current price ───────────────────────────────
+            elif t == "t":
+                sym   = msg.get("S", "")
+                price = float(msg.get("p") or 0)
+                if sym and price > 0:
+                    now = time.time()
+                    with _alp_snap_lock:
+                        existing = _alp_snap_cache.get(sym, {})
+                        prev_c   = existing.get("pc") or existing.get("c") or price
+                        chg      = round(price - prev_c, 4)
+                        chg_pct  = round(chg / prev_c * 100, 4) if prev_c else 0
+                        _alp_snap_cache[sym] = {
+                            **existing,          # keep o/h/l/v/avg_v from last bar
+                            "c":       round(price, 4),
+                            "d":       chg,
+                            "dp":      chg_pct,
+                            "h":       max(round(price, 4), existing.get("h", price)),
+                            "l":       min(round(price, 4), existing.get("l", price)),
+                            "_source": "alpaca_ws_trade",
+                            "_ts":     now,
+                        }
+                    _alp_ws_status["ticks"] += 1
+            # ── Minute bar — OHLCV update ──────────────────────────────────────
+            elif t == "b":
+                sym = msg.get("S", "")
+                if sym:
+                    now = time.time()
+                    with _alp_snap_lock:
+                        existing = _alp_snap_cache.get(sym, {})
+                        prev_c   = existing.get("pc") or float(msg.get("o") or 0)
+                        close    = float(msg.get("c") or 0)
+                        chg      = round(close - prev_c, 4) if prev_c else 0
+                        chg_pct  = round(chg / prev_c * 100, 4) if prev_c else 0
+                        _alp_snap_cache[sym] = {
+                            **existing,
+                            "c":       round(close, 4),
+                            "d":       chg,
+                            "dp":      chg_pct,
+                            "o":       round(float(msg.get("o") or close), 4),
+                            "h":       round(float(msg.get("h") or close), 4),
+                            "l":       round(float(msg.get("l") or close), 4),
+                            "v":       int(msg.get("v") or existing.get("v", 0)),
+                            "_source": "alpaca_ws_bar",
+                            "_ts":     now,
+                        }
+            # ── Error ─────────────────────────────────────────────────────────
+            elif t == "error":
+                print(f"[AlpacaWS] Error: {msg.get('msg')} (code {msg.get('code')})")
+    except Exception as e:
+        print(f"[AlpacaWS] message parse error: {e}")
+
+
+def _alp_ws_on_error(ws, err):
+    print(f"[AlpacaWS] Error: {err}")
+    _alp_ws_status["connected"]     = False
+    _alp_ws_status["authenticated"] = False
+
+
+def _alp_ws_on_close(ws, code, msg):
+    print(f"[AlpacaWS] Closed (code={code}) — reconnecting in 10s")
+    _alp_ws_status["connected"]     = False
+    _alp_ws_status["authenticated"] = False
+
+
+def _alp_ws_runner():
+    """Auto-reconnecting Alpaca Data WebSocket runner."""
+    if not _ALPACA_KEY or not _ALPACA_SECRET:
+        print("[AlpacaWS] No Alpaca keys — stream disabled")
+        return
+    import websocket as _wslib
+    while True:
+        try:
+            ws = _wslib.WebSocketApp(
+                _ALP_WS_URL,
+                on_open=lambda ws: None,     # auth sent in on_message on "connected"
+                on_message=_alp_ws_on_message,
+                on_error=_alp_ws_on_error,
+                on_close=_alp_ws_on_close,
+            )
+            ws.run_forever(ping_interval=20, ping_timeout=8)
+        except Exception as e:
+            print(f"[AlpacaWS] runner error: {e}")
+        time.sleep(10)   # brief pause before reconnect
+
+
+threading.Thread(target=_alp_ws_runner, daemon=True, name="alpaca-ws").start()
+print("[AlpacaWS] Real-time trade stream thread started")
+
+
 @app.route("/api/live/prices")
 def api_live_prices():
     """Return latest WebSocket bar data for all subscribed tickers."""
