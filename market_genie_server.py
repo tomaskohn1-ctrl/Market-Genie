@@ -5603,6 +5603,7 @@ _ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.030"))# 3
 _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "65"))             # min confidence
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
 _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "8.0"))         # min stock price — below $8 spread-to-move ratio gets too wide for 0.5% stops
+_ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.15"))   # max bid-ask spread % — FSLR had 0.16% (blocked); 0.15% passes large/mid caps, blocks thin stocks
 _ALP_DEDUP_SECS       = 1800   # don't re-enter same ticker+direction within 30 min
 
 _alp_last_traded  = {}   # { sym: {"dir": str, "ts": float} }
@@ -5985,6 +5986,14 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
                       f"spread={spread_pct:.3f}% → using {'ask' if direction=='bull' else 'bid'} "
                       f"${price:.2f} (signal was ${signal_price:.2f}, "
                       f"Δ={((price-signal_price)/signal_price*100):+.2f}%)")
+                # ── Spread gate — skip if spread eats too much of the stop ──────
+                # On FSLR: ask=$219.56, bid=$219.20, spread=0.16%. With a 0.75%
+                # stop that's 22% of stop buffer gone instantly on entry. Cap at
+                # 0.10% — beyond that the spread-to-stop ratio destroys R:R.
+                if ask_px > 0 and bid_px > 0 and spread_pct > _ALP_MAX_SPREAD_PCT:
+                    print(f"[Alpaca] {sym} — SKIPPED: spread {spread_pct:.3f}% "
+                          f"> {_ALP_MAX_SPREAD_PCT}% max (${ask_px-bid_px:.3f} wide)")
+                    return False
             else:
                 # Fallback to Finnhub if Alpaca quote is empty
                 raise ValueError("empty ask/bid from Alpaca")
