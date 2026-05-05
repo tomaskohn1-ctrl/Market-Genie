@@ -5286,12 +5286,13 @@ _breadth_state = {
 _breadth_lock = threading.Lock()
 
 # Overrideable via Railway Variables
-_BREADTH_BEAR_CONF_BEARISH  = int(os.getenv("BREADTH_BEAR_CONF_BEARISH",  "60"))
-_BREADTH_BULL_CONF_BEARISH  = int(os.getenv("BREADTH_BULL_CONF_BEARISH",  "80"))
-_BREADTH_BEAR_CONF_NEUTRAL  = int(os.getenv("BREADTH_BEAR_CONF_NEUTRAL",  "65"))
-_BREADTH_BULL_CONF_NEUTRAL  = int(os.getenv("BREADTH_BULL_CONF_NEUTRAL",  "65"))
-_BREADTH_BEAR_CONF_BULLISH  = int(os.getenv("BREADTH_BEAR_CONF_BULLISH",  "80"))
-_BREADTH_BULL_CONF_BULLISH  = int(os.getenv("BREADTH_BULL_CONF_BULLISH",  "60"))
+# Raised floors by 5 pts each — data shows conf <70% is 56% WR (near coin flip)
+_BREADTH_BEAR_CONF_BEARISH  = int(os.getenv("BREADTH_BEAR_CONF_BEARISH",  "65"))
+_BREADTH_BULL_CONF_BEARISH  = int(os.getenv("BREADTH_BULL_CONF_BEARISH",  "85"))
+_BREADTH_BEAR_CONF_NEUTRAL  = int(os.getenv("BREADTH_BEAR_CONF_NEUTRAL",  "70"))
+_BREADTH_BULL_CONF_NEUTRAL  = int(os.getenv("BREADTH_BULL_CONF_NEUTRAL",  "70"))
+_BREADTH_BEAR_CONF_BULLISH  = int(os.getenv("BREADTH_BEAR_CONF_BULLISH",  "85"))
+_BREADTH_BULL_CONF_BULLISH  = int(os.getenv("BREADTH_BULL_CONF_BULLISH",  "65"))
 
 # ── Tape Alignment Filter ──────────────────────────────────────────────────────
 # When the tape is running strongly in one direction (e.g. 72%+ BEAR signals),
@@ -5307,6 +5308,18 @@ _TAPE_FILTER_THRESHOLD = float(os.getenv("TAPE_FILTER_THRESHOLD", "0.72"))
 # This ensures the highest-conviction signals always get a slot.
 # Set ELITE_PREEMPT_CONF=0 in Railway Variables to disable.
 _ELITE_PREEMPT_CONF = int(os.getenv("ELITE_PREEMPT_CONF", "85"))
+
+# ── Minimum Kronos Strength Gate ──────────────────────────────────────────────
+# Require |kronos_pct| >= threshold before executing.
+# Data: weak Kronos (<0.5%) = 50% WR (coin flip). Strong Kronos (≥0.5%) = 67% WR.
+# Set ALP_MIN_KRONOS_PCT=0 in Railway Variables to disable.
+_ALP_MIN_KRONOS_PCT = float(os.getenv("ALP_MIN_KRONOS_PCT", "0.5"))
+
+# ── Daily Drawdown Circuit Breaker ────────────────────────────────────────────
+# If today's P&L drops below ALP_MAX_DAILY_LOSS_PCT % of equity, stop all new
+# entries for the rest of the day. Prevents compounding losses on bad days.
+# Set ALP_MAX_DAILY_LOSS_PCT=0 in Railway Variables to disable.
+_ALP_MAX_DAILY_LOSS_PCT = float(os.getenv("ALP_MAX_DAILY_LOSS_PCT", "1.5"))
 
 # ── Social Sentiment Confidence Boost ─────────────────────────────────────────
 # Background-refreshed dict of tickers currently trending on Reddit/ApeWisdom.
@@ -5729,6 +5742,33 @@ def _alp_get_open_positions():
     return confirmed | pending_syms
 
 
+def _alp_daily_loss_exceeded() -> bool:
+    """
+    Returns True if today's P&L loss has exceeded _ALP_MAX_DAILY_LOSS_PCT of equity.
+    Uses Alpaca account endpoint: equity vs last_equity (previous close).
+    Returns False on any error (fail open — don't block trading on API issues).
+    """
+    if _ALP_MAX_DAILY_LOSS_PCT <= 0:
+        return False
+    try:
+        r = requests.get(f"{_ALPACA_BASE_URL}/v2/account",
+                         headers=_alp_headers(), timeout=5)
+        if r.status_code == 200:
+            acct       = r.json()
+            equity      = float(acct.get("equity", 0))
+            last_equity = float(acct.get("last_equity", equity))
+            if last_equity <= 0:
+                return False
+            daily_pl_pct = (equity - last_equity) / last_equity * 100
+            if daily_pl_pct <= -_ALP_MAX_DAILY_LOSS_PCT:
+                print(f"[CircuitBreaker] Daily loss {daily_pl_pct:.2f}% exceeds "
+                      f"-{_ALP_MAX_DAILY_LOSS_PCT}% limit — no new entries today")
+                return True
+    except Exception as e:
+        print(f"[CircuitBreaker] Account check error: {e}")
+    return False
+
+
 def _alp_recover_positions():
     """
     On startup: seed _alp_last_traded for any open Alpaca positions
@@ -6076,6 +6116,9 @@ def _alp_execute_signal(res: dict):
     if not _safe_to_enter():
         print(f"[Alpaca] {sym} — SKIPPED: past 15:30 ET entry cutoff")
         return
+    # Daily drawdown circuit breaker — stop digging on bad days
+    if _alp_daily_loss_exceeded():
+        return
 
     direction = (res.get("consensus_dir") or res.get("direction") or "").lower()
     conf      = res.get("confidence") or res.get("conf") or 0
@@ -6120,6 +6163,16 @@ def _alp_execute_signal(res: dict):
     if not res.get("both_agree"):
         print(f"[Alpaca] {sym} — SKIPPED: both_agree=0 (models disagree on direction)")
         return
+
+    # ── Kronos Strength Gate ──────────────────────────────────────────────────
+    # Require |kronos_pct| >= threshold. Weak Kronos (<0.5%) = 50% WR coin flip.
+    # Strong Kronos (≥0.5%) = 67% WR. Configurable via ALP_MIN_KRONOS_PCT.
+    if _ALP_MIN_KRONOS_PCT > 0 and kpct_raw is not None:
+        if abs(kpct_raw) < _ALP_MIN_KRONOS_PCT:
+            print(f"[Alpaca] {sym} — SKIPPED: |kronos_pct| {abs(kpct_raw):.3f} "
+                  f"< {_ALP_MIN_KRONOS_PCT} (weak Kronos forecast)")
+            return
+
     if not price:
         print(f"[Alpaca] {sym} — SKIPPED: no price available")
         return
