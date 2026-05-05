@@ -5286,13 +5286,15 @@ _breadth_state = {
 _breadth_lock = threading.Lock()
 
 # Overrideable via Railway Variables
-# Raised floors by 5 pts each — data shows conf <70% is 56% WR (near coin flip)
-_BREADTH_BEAR_CONF_BEARISH  = int(os.getenv("BREADTH_BEAR_CONF_BEARISH",  "65"))
-_BREADTH_BULL_CONF_BEARISH  = int(os.getenv("BREADTH_BULL_CONF_BEARISH",  "85"))
-_BREADTH_BEAR_CONF_NEUTRAL  = int(os.getenv("BREADTH_BEAR_CONF_NEUTRAL",  "70"))
-_BREADTH_BULL_CONF_NEUTRAL  = int(os.getenv("BREADTH_BULL_CONF_NEUTRAL",  "70"))
-_BREADTH_BEAR_CONF_BULLISH  = int(os.getenv("BREADTH_BEAR_CONF_BULLISH",  "85"))
-_BREADTH_BULL_CONF_BULLISH  = int(os.getenv("BREADTH_BULL_CONF_BULLISH",  "65"))
+# Raised easy-direction floors to 75 — EOD data 5/5/26 showed 70-79% tier at
+# only 18% WR (2/11 signals), while 80%+ tier held at 50-100%. The 65/70 floors
+# were admitting too many weak signals. Counter-regime floors stay at 85.
+_BREADTH_BEAR_CONF_BEARISH  = int(os.getenv("BREADTH_BEAR_CONF_BEARISH",  "75"))  # was 65
+_BREADTH_BULL_CONF_BEARISH  = int(os.getenv("BREADTH_BULL_CONF_BEARISH",  "85"))  # unchanged
+_BREADTH_BEAR_CONF_NEUTRAL  = int(os.getenv("BREADTH_BEAR_CONF_NEUTRAL",  "75"))  # was 70
+_BREADTH_BULL_CONF_NEUTRAL  = int(os.getenv("BREADTH_BULL_CONF_NEUTRAL",  "75"))  # was 70
+_BREADTH_BEAR_CONF_BULLISH  = int(os.getenv("BREADTH_BEAR_CONF_BULLISH",  "85"))  # unchanged
+_BREADTH_BULL_CONF_BULLISH  = int(os.getenv("BREADTH_BULL_CONF_BULLISH",  "75"))  # was 65
 
 # ── Tape Alignment Filter ──────────────────────────────────────────────────────
 # When the tape is running strongly in one direction (e.g. 72%+ BEAR signals),
@@ -5505,16 +5507,16 @@ def _compute_breadth_score() -> None:
     # Determine regime + thresholds
     if score < 35:
         regime    = "BEARISH"
-        bull_conf = _BREADTH_BULL_CONF_BEARISH   # 80 — harder to go long
-        bear_conf = _BREADTH_BEAR_CONF_BEARISH   # 60 — easier to go short
+        bull_conf = _BREADTH_BULL_CONF_BEARISH   # 85 — harder to go long
+        bear_conf = _BREADTH_BEAR_CONF_BEARISH   # 75 — easier to go short
     elif score > 65:
         regime    = "BULLISH"
-        bull_conf = _BREADTH_BULL_CONF_BULLISH   # 60 — easier to go long
-        bear_conf = _BREADTH_BEAR_CONF_BULLISH   # 80 — harder to go short
+        bull_conf = _BREADTH_BULL_CONF_BULLISH   # 75 — easier to go long
+        bear_conf = _BREADTH_BEAR_CONF_BULLISH   # 85 — harder to go short
     else:
         regime    = "NEUTRAL"
-        bull_conf = _BREADTH_BULL_CONF_NEUTRAL   # 65
-        bear_conf = _BREADTH_BEAR_CONF_NEUTRAL   # 65
+        bull_conf = _BREADTH_BULL_CONF_NEUTRAL   # 75
+        bear_conf = _BREADTH_BEAR_CONF_NEUTRAL   # 75
 
     with _breadth_lock:
         _breadth_state.update({
