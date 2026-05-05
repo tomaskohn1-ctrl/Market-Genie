@@ -914,7 +914,15 @@ def get_quote(ticker):
     key = f"quote:{ticker}"
     if (v := cached(key, ttl=15)): return v
 
-    # ── Layer 0a: WebSocket live cache — freshest possible (sub-second) ───────
+    # ── Layer 0: Alpaca Data snapshot — batch pre-fetched every 12s, free ─────
+    # This is the most accurate source: latestTrade.p is the actual last print,
+    # not a completed-bar close. Covers all ~350 scanner tickers simultaneously.
+    with _alp_snap_lock:
+        alp_snap = _alp_snap_cache.get(ticker)
+    if alp_snap and (time.time() - alp_snap.get("_ts", 0)) < _ALP_SNAP_TTL:
+        return set_cache(key, alp_snap)
+
+    # ── Layer 1: WebSocket live cache — sub-second Massive bar stream ──────────
     with _ws_lock:
         ws_bar = _ws_live.get(ticker)
     if ws_bar and (time.time() - ws_bar.get("ts", 0)) < 90:
@@ -5369,6 +5377,106 @@ _ALP_DEDUP_SECS       = 1800   # don't re-enter same ticker+direction within 30 
 _alp_last_traded  = {}   # { sym: {"dir": str, "ts": float} }
 _alp_lock         = threading.Lock()
 _alp_order_lock   = threading.Lock()   # serializes position-check → place to prevent over-filling
+
+# ── Alpaca Data API — real-time batch quote cache ─────────────────────────────
+# Uses the same API keys already in _ALPACA_KEY / _ALPACA_SECRET.
+# Background thread pre-fetches the entire scanner universe every 12 seconds
+# so get_quote() serves fresh Alpaca data instantly (in-memory lookup) instead
+# of falling back to yfinance one ticker at a time.
+# Alpaca Data API is FREE with any Alpaca account (IEX feed).
+_ALP_DATA_URL   = "https://data.alpaca.markets"
+_ALP_SNAP_TTL   = 25          # seconds before a cached snapshot is considered stale
+_alp_snap_cache = {}          # { sym: {c,d,dp,o,h,l,pc,v,avg_v,_source,_ts} }
+_alp_snap_lock  = threading.Lock()
+
+
+def _alp_data_headers() -> dict:
+    return {
+        "APCA-API-KEY-ID":     _ALPACA_KEY,
+        "APCA-API-SECRET-KEY": _ALPACA_SECRET,
+        "Accept":              "application/json",
+    }
+
+
+def _alp_batch_snapshot(symbols: list) -> dict:
+    """
+    Fetch real-time snapshots for up to 1 000 symbols in batches of 100.
+    Returns { sym: quote_dict } using Alpaca's latestTrade + dailyBar.
+    Cost: $0 — included in every Alpaca account (IEX feed).
+    """
+    if not _ALPACA_KEY or not _ALPACA_SECRET or not symbols:
+        return {}
+    results = {}
+    hdrs    = _alp_data_headers()
+    now     = time.time()
+    for i in range(0, len(symbols), 100):
+        batch = symbols[i : i + 100]
+        try:
+            r = requests.get(
+                f"{_ALP_DATA_URL}/v2/stocks/snapshots",
+                headers=hdrs,
+                params={"symbols": ",".join(batch), "feed": "iex"},
+                timeout=6,
+            )
+            if r.status_code != 200:
+                continue
+            for sym, snap in r.json().items():
+                daily = snap.get("dailyBar")     or {}
+                prev  = snap.get("prevDailyBar") or {}
+                trade = snap.get("latestTrade")  or {}
+                # latestTrade.p is the most current price (sub-second)
+                price  = float(trade.get("p") or daily.get("c") or 0)
+                prev_c = float(prev.get("c") or 0)
+                if price <= 0 or prev_c <= 0:
+                    continue
+                chg     = round(price - prev_c, 4)
+                chg_pct = round(chg / prev_c * 100, 4)
+                results[sym] = {
+                    "c":       round(price, 4),
+                    "d":       chg,
+                    "dp":      chg_pct,
+                    "o":       round(float(daily.get("o") or prev_c), 4),
+                    "h":       round(float(daily.get("h") or price),  4),
+                    "l":       round(float(daily.get("l") or price),  4),
+                    "pc":      round(prev_c, 4),
+                    "v":       int(daily.get("v") or 0),
+                    "avg_v":   int(prev.get("v")  or 0),
+                    "_source": "alpaca_snap",
+                    "_ts":     now,
+                }
+        except Exception as _bse:
+            print(f"[AlpacaData] batch error (chunk {i//100}): {_bse}")
+    return results
+
+
+def _alp_snap_refresh_loop():
+    """
+    Background thread: refreshes Alpaca snapshot cache every 12 seconds
+    for the entire scanner universe (_PREDICT_WATCHLIST).
+    Runs only during market hours to avoid wasting rate-limit quota.
+    """
+    import math as _m
+    while True:
+        try:
+            if _us_market_open():
+                universe = list(dict.fromkeys(list(_PREDICT_WATCHLIST)))
+                snaps    = _alp_batch_snapshot(universe)
+                if snaps:
+                    with _alp_snap_lock:
+                        _alp_snap_cache.update(snaps)
+                    n_batches = _m.ceil(len(universe) / 100)
+                    print(f"[AlpacaData] ✅ {len(snaps)}/{len(universe)} snapshots refreshed "
+                          f"({n_batches} batch{'es' if n_batches>1 else ''})")
+        except Exception as _rle:
+            print(f"[AlpacaData] refresh loop error: {_rle}")
+        time.sleep(12)
+
+
+# Start Alpaca Data snapshot refresh thread immediately
+threading.Thread(
+    target=_alp_snap_refresh_loop, daemon=True, name="alpaca-data-snap"
+).start()
+print("[AlpacaData] Snapshot refresh thread started — real-time batch quotes active")
 
 # Local pending set: tracks symbols where we just fired an order but Alpaca
 # API hasn't confirmed the position yet (typically 2-5s lag). Without this,
