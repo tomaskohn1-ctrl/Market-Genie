@@ -5293,6 +5293,13 @@ _BREADTH_BULL_CONF_NEUTRAL  = int(os.getenv("BREADTH_BULL_CONF_NEUTRAL",  "65"))
 _BREADTH_BEAR_CONF_BULLISH  = int(os.getenv("BREADTH_BEAR_CONF_BULLISH",  "80"))
 _BREADTH_BULL_CONF_BULLISH  = int(os.getenv("BREADTH_BULL_CONF_BULLISH",  "60"))
 
+# ── Tape Alignment Filter ──────────────────────────────────────────────────────
+# When the tape is running strongly in one direction (e.g. 72%+ BEAR signals),
+# block entries in the opposite direction entirely. Fighting the tape is the
+# #1 cause of losing BULL positions on bearish days.
+# Set TAPE_FILTER_THRESHOLD=0 in Railway Variables to disable.
+_TAPE_FILTER_THRESHOLD = float(os.getenv("TAPE_FILTER_THRESHOLD", "0.72"))
+
 # ── Social Sentiment Confidence Boost ─────────────────────────────────────────
 # Background-refreshed dict of tickers currently trending on Reddit/ApeWisdom.
 # Used by _alp_execute_signal to add +5 conf pts when a Kronos signal
@@ -6108,6 +6115,24 @@ def _alp_execute_signal(res: dict):
     if not price:
         print(f"[Alpaca] {sym} — SKIPPED: no price available")
         return
+
+    # ── Tape Alignment Filter ──────────────────────────────────────────────────
+    # If 72%+ of signals this hour are running in one direction, don't fight the tape.
+    # Today's data: 85% BEAR tape + BULL entries = the primary source of losses.
+    # Threshold configurable via TAPE_FILTER_THRESHOLD Railway variable (0 = disabled).
+    if _TAPE_FILTER_THRESHOLD > 0:
+        with _breadth_lock:
+            bear_ratio = _breadth_state.get("bear_ratio", 0.5)
+        if direction == "bull" and bear_ratio >= _TAPE_FILTER_THRESHOLD:
+            print(f"[Alpaca] {sym} — SKIPPED: tape {bear_ratio:.0%} BEAR (≥{_TAPE_FILTER_THRESHOLD:.0%} threshold) — no BULL entries")
+            with _alp_lock:
+                _alp_last_traded.pop(sym, None)
+            return
+        if direction == "bear" and bear_ratio <= (1.0 - _TAPE_FILTER_THRESHOLD):
+            print(f"[Alpaca] {sym} — SKIPPED: tape {1-bear_ratio:.0%} BULL (≥{_TAPE_FILTER_THRESHOLD:.0%} threshold) — no BEAR entries")
+            with _alp_lock:
+                _alp_last_traded.pop(sym, None)
+            return
 
     now = time.time()
     with _alp_lock:
