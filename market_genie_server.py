@@ -5286,8 +5286,24 @@ def _wr_edge_score(res):
     return round(score, 1)
 
 
+_WR_SEED_PATH = os.path.join(os.path.dirname(__file__), "winrate_seed.csv")
+
 def _wr_init_db():
-    """Create the signals table if it doesn't exist."""
+    """Create signals table and auto-restore from winrate_seed.csv if DB is empty.
+
+    WIN RATE PERSISTENCE ACROSS RAILWAY DEPLOYS
+    ─────────────────────────────────────────────
+    Railway's filesystem is ephemeral — winrate.db is wiped on every deploy.
+    To preserve history:
+      1. Click "⬇ Export CSV" on the dashboard before deploying
+      2. Save the file as  winrate_seed.csv  in the project root
+      3. Commit it alongside market_genie_server.py
+      4. Deploy — on startup this function auto-imports all historical rows
+
+    The seed file is only imported when the DB is empty (row count = 0),
+    so it never creates duplicates on restarts without a fresh deploy.
+    """
+    import csv as _csv
     with sqlite3.connect(_WR_DB_PATH) as con:
         con.execute("""
             CREATE TABLE IF NOT EXISTS signals (
@@ -5316,6 +5332,47 @@ def _wr_init_db():
         except Exception:
             pass
         con.commit()
+
+        # ── Auto-seed from CSV if DB is empty ────────────────────────────
+        row_count = con.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
+        if row_count == 0 and os.path.exists(_WR_SEED_PATH):
+            try:
+                imported = 0
+                with open(_WR_SEED_PATH, newline="") as f:
+                    reader = _csv.DictReader(f)
+                    for row in reader:
+                        def _f(k):  # safe float parse
+                            v = row.get(k, "")
+                            try: return float(v) if v not in ("", "None", "null") else None
+                            except: return None
+                        def _i(k):  # safe int parse
+                            v = row.get(k, "")
+                            try: return int(float(v)) if v not in ("", "None", "null") else None
+                            except: return None
+                        outcome = (row.get("outcome") or "PENDING").strip()
+                        # Skip PENDING rows from seed — they can't be resolved after deploy
+                        if outcome == "PENDING":
+                            continue
+                        con.execute("""
+                            INSERT INTO signals
+                              (sym, direction, confidence, conviction, streak, both_agree,
+                               kronos_pct, tfm_pct, price_entry, ts_entry,
+                               price_exit, ts_exit, outcome, pct_move)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """, (
+                            row.get("sym",""), row.get("direction",""),
+                            _f("confidence"), row.get("conviction",""),
+                            _i("streak"), _i("both_agree"),
+                            _f("kronos_pct"), _f("tfm_pct"),
+                            _f("price_entry"), _i("ts_entry"),
+                            _f("price_exit"), _i("ts_exit"),
+                            outcome, _f("pct_move"),
+                        ))
+                        imported += 1
+                con.commit()
+                print(f"[WR] Auto-seeded {imported} historical signals from winrate_seed.csv")
+            except Exception as e:
+                print(f"[WR] Seed import failed (non-fatal): {e}")
 
 
 _wr_gate_stats = {"flipping": 0, "mkt_closed": 0, "spread": 0, "no_agree": 0, "dedup": 0, "logged": 0}
