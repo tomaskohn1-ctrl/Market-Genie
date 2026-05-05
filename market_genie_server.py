@@ -3457,152 +3457,7 @@ def api_premarket():
     return jsonify(set_cache(key, payload))
 
 
-# ── Serve the HTML dashboard ───────────────────────────────────────────────────
-# ── Hot Stocks endpoint ────────────────────────────────────────────────────────
-@app.route("/api/hot-stocks")
-def api_hot_stocks():
-    """
-    Top 10 Hottest Stocks — ranked by a composite Heat Score.
-
-    Heat Score (0-100):
-      • Social  (0-40 pts): Reddit/ApeWisdom mention rank + velocity
-      • Momentum(0-30 pts): absolute % price change today
-      • Volume  (0-30 pts): today's volume vs 3-month average volume
-
-    Data sources: ApeWisdom (mentions), StockTwits (watchlist), yfinance (price/vol)
-    Cache: 60 s
-    """
-    key = "hot_stocks"
-    if (v := cached(key, ttl=60)): return jsonify(v)
-
-    print("[HotStocks] Building heat rankings…")
-
-    # ── 1. Social signals ─────────────────────────────────────────────────────
-    ape      = get_apewisdom_trending()          # list of dicts: ticker, mentions, velocity, rank
-    st_trend = get_stocktwits_trending()         # list of dicts: ticker, watchlist_count
-
-    st_map = {s["ticker"]: s.get("watchlist_count", 0) for s in st_trend}
-
-    # Build candidate pool: ApeWisdom top 20 + any StockTwits tickers not already in pool
-    seen = set()
-    candidates = []
-    for t in ape[:20]:
-        sym = t["ticker"]
-        if sym not in seen:
-            seen.add(sym)
-            candidates.append({"sym": sym, "mentions": t.get("mentions", 0),
-                                "velocity": t.get("velocity", 0),
-                                "ape_rank": t.get("rank", 99),
-                                "st_watch": st_map.get(sym, 0)})
-
-    for s in st_trend[:15]:
-        sym = s["ticker"]
-        if sym not in seen:
-            seen.add(sym)
-            candidates.append({"sym": sym, "mentions": 0,
-                                "velocity": 0, "ape_rank": 99,
-                                "st_watch": s.get("watchlist_count", 0)})
-
-    # ── 2. Price + volume via yfinance ────────────────────────────────────────
-    # Use history(period="5d") — reliable even on holidays/weekends/pre-market
-    results = []
-    for c in candidates:
-        sym = c["sym"]
-        try:
-            t    = yf.Ticker(sym)
-            hist = t.history(period="5d", interval="1d")
-            hist = hist[hist["Volume"] > 0]   # drop zero-volume rows (holiday rows)
-            if len(hist) < 2:
-                continue
-            price     = float(hist["Close"].iloc[-1])
-            prev      = float(hist["Close"].iloc[-2])
-            today_vol = float(hist["Volume"].iloc[-1])
-            avg_vol   = float(hist["Volume"].mean()) or 1
-
-            if not price or not prev:
-                continue
-
-            chg_pct   = ((price - prev) / prev) * 100
-            vol_ratio = round(today_vol / avg_vol, 2) if avg_vol else 0
-
-            # ── Score computation ──────────────────────────────────────────────
-            # Social: rank-based (rank 1→40 pts, rank 20→2 pts) + velocity bonus
-            ape_rank = c["ape_rank"]
-            social_base = max(0, 40 - ((ape_rank - 1) * 2))          # 40 → 2 pts
-            vel = c["velocity"]
-            vel_bonus = min(10, max(0, vel / 10)) if vel > 0 else 0   # up to +10
-            social_score = min(40, social_base + vel_bonus)
-
-            # Momentum: 0-30 pts — 1% move = 10 pts, capped at 3%
-            momentum_score = min(30, abs(chg_pct) * 10)
-
-            # Volume: 0-30 pts — 2× avg = 20 pts, 3× avg = 30 pts
-            vol_score = min(30, vol_ratio * 10) if vol_ratio else 0
-
-            heat = round(social_score + momentum_score + vol_score, 1)
-
-            # Signal label
-            if heat >= 70:    signal = "🔥 ON FIRE"
-            elif heat >= 50:  signal = "⚡ HOT"
-            elif heat >= 35:  signal = "📈 Trending"
-            elif heat >= 20:  signal = "👀 Watch"
-            else:             signal = "💬 Active"
-
-            results.append({
-                "sym":       sym,
-                "price":     f"{price:.2f}",
-                "chgPct":    f"{chg_pct:+.2f}",
-                "dir":       "up" if chg_pct >= 0 else "down",
-                "volRatio":  f"{vol_ratio:.1f}",
-                "mentions":  c["mentions"],
-                "velocity":  c["velocity"],
-                "heatScore": heat,
-                "signal":    signal,
-                "socialScore":   round(social_score, 1),
-                "momentumScore": round(momentum_score, 1),
-                "volScore":      round(vol_score, 1),
-            })
-        except Exception as e:
-            print(f"[HotStocks] {sym} error: {e}")
-            continue
-
-    results.sort(key=lambda x: x["heatScore"], reverse=True)
-    top10 = results[:10]
-    print(f"[HotStocks] Done — top ticker: {top10[0]['sym'] if top10 else '—'} "
-          f"heat={top10[0]['heatScore'] if top10 else 0}")
-
-    payload = {
-        "stocks":    top10,
-        "timestamp": datetime.utcnow().strftime("%H:%M UTC"),
-        "count":     len(top10),
-    }
-    return jsonify(set_cache(key, payload))
-
-
-# ── Intelligence & Volume Spike constants ─────────────────────────────────────
-# Broader ticker list — fast_info is lightweight enough to handle 40+ per scan.
-# Covers large-caps, high-beta names, meme stocks, sector ETFs for breadth signal.
-VOLUME_SCAN_TICKERS = [
-    # Mega-caps / indices
-    'SPY','QQQ','IWM','DIA',
-    # Mag 7
-    'AAPL','MSFT','NVDA','TSLA','META','AMZN','GOOGL',
-    # High-beta tech
-    'AMD','PLTR','ARM','SMCI','MSTR','COIN','HOOD',
-    # Meme / retail favorites
-    'GME','AMC','SOFI','RIVN','LCID','WULF',
-    # Biotech & energy
-    'MRNA','BNTX','ENPH','FSLR',
-    # Financials & macro
-    'GS','JPM','BAC','XLF',
-    # Semiconductors
-    'MU','INTC','TSM','QCOM',
-    # Speculative / trending
-    'IONQ','RGTI','QUBT','BBAI','ACHR','JOBY',
-]
-
-
-# ── RSS parser helper ──────────────────────────────────────────────────────────
+# ── RSS parser helper ─────────────────────────────────────────────────────────
 def parse_rss(url, timeout=6):
     """Fetch and parse an RSS/Atom feed. Returns list of {title, link, time, ts_epoch}."""
     import time as _time
@@ -3614,7 +3469,6 @@ def parse_rss(url, timeout=6):
         r = requests.get(url, headers=headers, timeout=timeout)
         if r.status_code != 200:
             return []
-        # Strip XML declaration issues and parse
         content = r.content
         root = ET.fromstring(content)
         channel = root.find('channel') or root
@@ -3623,7 +3477,6 @@ def parse_rss(url, timeout=6):
         now_epoch = _time.time()
         for item in items_found[:20]:
             title = (item.findtext('title') or '').strip()
-            # RSS link can be element text or attribute
             link_el = item.find('link')
             link = ''
             if link_el is not None:
@@ -3631,23 +3484,18 @@ def parse_rss(url, timeout=6):
             if not link:
                 link = (item.findtext('guid') or '').strip()
             pub = (item.findtext('pubDate') or item.findtext('published') or '').strip()
-            ts_epoch = now_epoch  # default: treat as now if unparseable
+            ts_epoch = now_epoch
             try:
                 dt = parsedate_to_datetime(pub)
                 ts_epoch = dt.timestamp()
-                # Human-readable: "2h ago", "Apr 10 22:15", etc.
                 age_s = now_epoch - ts_epoch
-                if age_s < 3600:
-                    pub_str = f"{int(age_s // 60)}m ago"
-                elif age_s < 86400:
-                    pub_str = f"{int(age_s // 3600)}h ago"
-                else:
-                    pub_str = dt.strftime('%b %d %H:%M')
+                if age_s < 3600:    pub_str = f"{int(age_s // 60)}m ago"
+                elif age_s < 86400: pub_str = f"{int(age_s // 3600)}h ago"
+                else:               pub_str = dt.strftime('%b %d %H:%M')
             except Exception:
                 pub_str = pub[:16] if pub else ''
             if title:
                 result.append({'title': title[:160], 'link': link, 'time': pub_str, 'ts_epoch': ts_epoch})
-        # Sort newest first
         result.sort(key=lambda x: x['ts_epoch'], reverse=True)
         return result
     except ET.ParseError as e:
@@ -3658,44 +3506,7 @@ def parse_rss(url, timeout=6):
         return []
 
 
-# ── Fear & Greed ───────────────────────────────────────────────────────────────
-def get_fear_greed():
-    """CNN Fear & Greed index — public unofficial JSON endpoint."""
-    key = 'fear_greed'
-    if (v := cached(key, ttl=300)): return v
-    try:
-        url = 'https://production.dataviz.cnn.io/index/fearandgreed/graphdata'
-        r = requests.get(url, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'application/json, text/plain, */*',
-            'Referer': 'https://www.cnn.com/markets/fear-and-greed',
-            'Origin': 'https://www.cnn.com',
-        }, timeout=8)
-        if r.status_code != 200:
-            return set_cache(key, None)
-        data = r.json()
-        fg = data.get('fear_and_greed', {})
-        score       = round(float(fg.get('score', 50)))
-        rating      = fg.get('rating', 'neutral').replace('_', ' ').title()
-        prev_close  = round(float(fg.get('previous_close',  score)))
-        prev_week   = round(float(fg.get('previous_1_week', score)))
-        prev_month  = round(float(fg.get('previous_1_month',score)))
-        # Color zone
-        if score <= 25:   zone, color = 'Extreme Fear', '#ff3d57'
-        elif score <= 45: zone, color = 'Fear',         '#ffb300'
-        elif score <= 55: zone, color = 'Neutral',      '#718096'
-        elif score <= 75: zone, color = 'Greed',        '#00e676'
-        else:             zone, color = 'Extreme Greed','#00ff88'
-        result = {'score': score, 'rating': rating, 'zone': zone, 'color': color,
-                  'prevClose': prev_close, 'prevWeek': prev_week, 'prevMonth': prev_month}
-        print(f'[F&G] score={score} — {zone}')
-        return set_cache(key, result)
-    except Exception as e:
-        print(f'[F&G] Error: {e}')
-        return set_cache(key, None)
-
-
-# ── Intelligence news aggregator ───────────────────────────────────────────────
+# ── Intelligence news aggregator ──────────────────────────────────────────────
 def get_intelligence_news():
     """
     Aggregate breaking news, political/macro, and financial podcast RSS into
@@ -3707,11 +3518,11 @@ def get_intelligence_news():
     if (v := cached(key, ttl=120)): return v
 
     now_epoch = _time.time()
-    MAX_AGE_BREAKING = 48 * 3600   # drop articles older than 48 h
-    MAX_AGE_POLITICAL = 72 * 3600  # political/macro can be 3 days
-    MAX_AGE_PODCAST   = 14 * 86400 # podcasts up to 2 weeks
+    MAX_AGE_BREAKING  = 48 * 3600
+    MAX_AGE_POLITICAL = 72 * 3600
+    MAX_AGE_PODCAST   = 14 * 86400
 
-    # ── Breaking market news — past 24 h filter via tbs=qdr:d ────────────────
+    # Breaking market news
     rss_market   = 'https://news.google.com/rss/search?q=stock+market+today&hl=en-US&gl=US&ceid=US:en&tbs=qdr:d'
     rss_earnings = 'https://news.google.com/rss/search?q=earnings+stocks&hl=en-US&gl=US&ceid=US:en&tbs=qdr:d'
     rss_breaking = 'https://news.google.com/rss/search?q=stock+market+breaking+news&hl=en-US&gl=US&ceid=US:en&tbs=qdr:d'
@@ -3719,24 +3530,21 @@ def get_intelligence_news():
     breaking = []
     for item in parse_rss(rss_market) + parse_rss(rss_earnings) + parse_rss(rss_breaking):
         age = now_epoch - item.get('ts_epoch', now_epoch)
-        if age > MAX_AGE_BREAKING:
-            continue
+        if age > MAX_AGE_BREAKING: continue
         k = item['title'].lower()
         if k in seen: continue
         seen.add(k)
-        tl = k
-        if any(w in tl for w in ['beat','surge','rally','jump','soar','record','upgrade','buy','gain','rise']):
+        if any(w in k for w in ['beat','surge','rally','jump','soar','record','upgrade','buy','gain','rise']):
             item['tag'] = 'bullish'
-        elif any(w in tl for w in ['miss','drop','fall','crash','downgrade','sell','cut','slump','loss','decline']):
+        elif any(w in k for w in ['miss','drop','fall','crash','downgrade','sell','cut','slump','loss','decline']):
             item['tag'] = 'bearish'
         else:
             item['tag'] = 'neutral'
         breaking.append(item)
-    # Sort newest first, cap at 12
     breaking.sort(key=lambda x: x.get('ts_epoch', 0), reverse=True)
     breaking = breaking[:12]
 
-    # ── Political / Macro (Trump + Fed) — past 3 days ────────────────────────
+    # Political / Macro
     rss_trump = 'https://news.google.com/rss/search?q=Trump+tariffs+economy+trade&hl=en-US&gl=US&ceid=US:en&tbs=qdr:w'
     rss_fed   = 'https://news.google.com/rss/search?q=Federal+Reserve+inflation+rates&hl=en-US&gl=US&ceid=US:en&tbs=qdr:w'
     rss_macro = 'https://news.google.com/rss/search?q=macro+economy+GDP+CPI+jobs&hl=en-US&gl=US&ceid=US:en&tbs=qdr:w'
@@ -3763,7 +3571,7 @@ def get_intelligence_news():
     political.sort(key=lambda x: x.get('ts_epoch', 0), reverse=True)
     political = political[:12]
 
-    # ── Podcasts / Financial Media ────────────────────────────────────────────
+    # Podcasts
     podcast_feeds = [
         ('Planet Money',          'https://feeds.npr.org/510289/podcast.xml'),
         ('Bloomberg Odd Lots',    'https://feeds.megaphone.fm/LKN4671286868'),
@@ -3792,65 +3600,6 @@ def get_intelligence_news():
     return set_cache(key, result)
 
 
-# ── Volume Spike Scanner ───────────────────────────────────────────────────────
-def get_volume_spikes():
-    """
-    Scan VOLUME_SCAN_TICKERS for unusual volume vs 3-month average.
-    Returns list sorted by ratio descending (highest spike first).
-    """
-    key = 'volume_spikes'
-    if (v := cached(key, ttl=120)): return v
-
-    def fmt_v(v):
-        if v >= 1_000_000: return f'{v/1_000_000:.1f}M'
-        if v >= 1_000:     return f'{v/1_000:.0f}K'
-        return str(int(v))
-
-    spikes = []
-    for ticker in VOLUME_SCAN_TICKERS:
-        try:
-            time.sleep(0.15)   # small pause — avoids rate-limit bursts on yfinance
-            fi = yf.Ticker(ticker).fast_info
-            # yfinance: three_month_average_volume is the avg baseline; last_volume is today
-            avg_vol  = getattr(fi, 'three_month_average_volume', None)
-            today_vol = getattr(fi, 'last_volume', None) or getattr(fi, 'regular_market_volume', None)
-            price    = getattr(fi, 'last_price', 0) or 0
-            chg_pct  = 0
-            try:
-                prev = getattr(fi, 'previous_close', None) or getattr(fi, 'regular_market_previous_close', None)
-                if price and prev and prev > 0:
-                    chg_pct = round((price - prev) / prev * 100, 2)
-            except Exception:
-                pass
-            if not today_vol or not avg_vol or avg_vol == 0:
-                continue
-            ratio = round(today_vol / avg_vol, 2)
-            if ratio < 1.5:
-                continue  # not noteworthy
-            if ratio >= 5.0:   level, color = 'EXTREME', '#ff3d57'
-            elif ratio >= 3.0: level, color = 'HIGH',    '#ffb300'
-            else:              level, color = 'ELEVATED','#40a9ff'
-            spikes.append({
-                'ticker':   ticker,
-                'price':    f'${price:.2f}' if price else '—',
-                'chgPct':   f'{chg_pct:+.1f}%',
-                'dir':      'up' if chg_pct >= 0 else 'down',
-                'vol':      fmt_v(today_vol),
-                'avgVol':   fmt_v(avg_vol),
-                'ratio':    ratio,
-                'ratioStr': f'{ratio:.1f}x',
-                'level':    level,
-                'color':    color,
-            })
-        except Exception as e:
-            print(f'[VolSpike] {ticker}: {e}')
-    spikes.sort(key=lambda x: x['ratio'], reverse=True)
-    result = spikes[:12]
-    print(f'[VolSpike] {len(result)} spikes found')
-    return set_cache(key, result)
-
-
-# ── Intelligence routes ────────────────────────────────────────────────────────
 @app.route('/api/intelligence')
 def api_intelligence():
     """Breaking news + Trump/macro + financial podcasts — all from free RSS."""
@@ -3864,14 +3613,6 @@ def api_fear_greed():
     if data is None:
         return jsonify({'error': 'Could not fetch data'})
     return jsonify(data)
-
-
-@app.route('/api/volume-spikes')
-def api_volume_spikes():
-    """Volume spike scanner — popular tickers vs 3-month average."""
-    return jsonify(get_volume_spikes())
-
-
 @app.route("/api/search")
 def api_search():
     """
@@ -3945,242 +3686,6 @@ def api_ping():
 
 # ── Presidential Watch ────────────────────────────────────────────────────────
 # Keywords that typically move markets when mentioned by the president
-_MARKET_MOVING_KEYWORDS = {
-    # Bearish signals
-    "tariff":        ("bearish", "🔴"),
-    "tariffs":       ("bearish", "🔴"),
-    "sanction":      ("bearish", "🔴"),
-    "sanctions":     ("bearish", "🔴"),
-    "ban":           ("bearish", "🔴"),
-    "tax":           ("bearish", "🔴"),
-    "investigate":   ("bearish", "🔴"),
-    "investigation": ("bearish", "🔴"),
-    "fine":          ("bearish", "🔴"),
-    "penalty":       ("bearish", "🔴"),
-    "trade war":     ("bearish", "🔴"),
-    "restrict":      ("bearish", "🔴"),
-    "inflation":     ("bearish", "🔴"),
-    "deficit":       ("bearish", "🔴"),
-    "shutdown":      ("bearish", "🔴"),
-    "emergency":     ("bearish", "🔴"),
-    "executive order": ("bearish", "🔴"),
-    # Bullish signals
-    "deal":          ("bullish", "🟢"),
-    "agreement":     ("bullish", "🟢"),
-    "trade deal":    ("bullish", "🟢"),
-    "cut":           ("bullish", "🟢"),
-    "deregulat":     ("bullish", "🟢"),
-    "approved":      ("bullish", "🟢"),
-    "approve":       ("bullish", "🟢"),
-    "reduce":        ("bullish", "🟢"),
-    "lower":         ("bullish", "🟢"),
-    "stimulus":      ("bullish", "🟢"),
-    "investment":    ("bullish", "🟢"),
-    "jobs":          ("bullish", "🟢"),
-    "growth":        ("bullish", "🟢"),
-    # Neutral/watch
-    "announce":      ("watch", "🟡"),
-    "meeting":       ("watch", "🟡"),
-    "press conference": ("watch", "🟡"),
-    "statement":     ("watch", "🟡"),
-    "market":        ("watch", "🟡"),
-    "economy":       ("watch", "🟡"),
-    "federal reserve": ("watch", "🟡"),
-    "interest rate": ("watch", "🟡"),
-}
-
-def _score_text(text):
-    """Return (sentiment, emoji, matched_keywords) for a piece of text."""
-    text_lower = text.lower()
-    bearish_hits, bullish_hits, watch_hits = [], [], []
-    for kw, (sent, emoji) in _MARKET_MOVING_KEYWORDS.items():
-        if kw in text_lower:
-            if sent == "bearish": bearish_hits.append(kw)
-            elif sent == "bullish": bullish_hits.append(kw)
-            else: watch_hits.append(kw)
-    if bearish_hits:   return "bearish", "🔴", bearish_hits
-    if bullish_hits:   return "bullish", "🟢", bullish_hits
-    if watch_hits:     return "watch",   "🟡", watch_hits
-    return None, None, []
-
-def _fetch_google_news_rss(query, max_items=8, max_age_hours=48):
-    """Pull Google News RSS for a search query. Returns list of {title, link, ts, ts_epoch, source}.
-    Uses &tbs=qdr:w (past week) to get recent results, then filters to max_age_hours."""
-    import time as _time
-    try:
-        url = (f"https://news.google.com/rss/search"
-               f"?q={requests.utils.quote(query)}&hl=en-US&gl=US&ceid=US:en&tbs=qdr:d")
-        r = requests.get(url, timeout=8,
-                         headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code != 200:
-            return []
-        root = ET.fromstring(r.content)
-        now   = _time.time()
-        cutoff = now - (max_age_hours * 3600)
-        items = []
-        for item in root.findall(".//item"):
-            if len(items) >= max_items:
-                break
-            title   = (item.findtext("title")   or "").strip()
-            link    = (item.findtext("link")    or "").strip()
-            pub     = (item.findtext("pubDate") or "").strip()
-            source  = (item.findtext("source")  or "Google News").strip()
-            # Parse pubDate to epoch for age filtering
-            ts_epoch = 0
-            ts = pub[:16] if pub else "—"
-            try:
-                dt       = parsedate_to_datetime(pub)
-                ts_epoch = dt.timestamp()
-                # Relative time label
-                age_h = (now - ts_epoch) / 3600
-                if age_h < 1:
-                    ts = f"{int(age_h * 60)}m ago"
-                elif age_h < 24:
-                    ts = f"{int(age_h)}h ago"
-                else:
-                    ts = dt.strftime("%b %d %H:%M")
-            except Exception:
-                pass
-            # Skip articles older than cutoff
-            if ts_epoch and ts_epoch < cutoff:
-                continue
-            items.append({"title": title, "link": link, "ts": ts,
-                          "ts_epoch": ts_epoch, "source": source})
-        return items
-    except Exception as e:
-        print(f"[PresWatch] Google RSS error: {e}")
-        return []
-
-def _fetch_truth_social_rss(max_items=5):
-    """Try to pull Trump's Truth Social posts via RSS."""
-    urls = [
-        "https://truthsocial.com/@realDonaldTrump.rss",
-        "https://rss.truthsocial.com/@realDonaldTrump",
-    ]
-    for url in urls:
-        try:
-            r = requests.get(url, timeout=6,
-                             headers={"User-Agent": "Mozilla/5.0"})
-            if r.status_code != 200:
-                continue
-            root = ET.fromstring(r.content)
-            items = []
-            for item in root.findall(".//item")[:max_items]:
-                title  = (item.findtext("title")   or "").strip()
-                link   = (item.findtext("link")    or "").strip()
-                pub    = (item.findtext("pubDate") or "").strip()
-                desc   = (item.findtext("description") or "").strip()
-                # Strip HTML tags from description
-                import re as _re
-                desc = _re.sub(r"<[^>]+>", "", desc)[:280]
-                import time as _time
-                ts_epoch = 0
-                ts = pub[:16] if pub else "—"
-                try:
-                    dt = parsedate_to_datetime(pub)
-                    ts_epoch = dt.timestamp()
-                    age_h = (_time.time() - ts_epoch) / 3600
-                    if age_h < 1:    ts = f"{int(age_h*60)}m ago"
-                    elif age_h < 24: ts = f"{int(age_h)}h ago"
-                    else:            ts = dt.strftime("%b %d %H:%M")
-                except Exception:
-                    pass
-                items.append({
-                    "title": desc or title,
-                    "link": link, "ts": ts, "ts_epoch": ts_epoch, "source": "Truth Social"
-                })
-            if items:
-                print(f"[PresWatch] Truth Social RSS OK — {len(items)} posts")
-                return items
-        except Exception as e:
-            print(f"[PresWatch] Truth Social RSS {url} error: {e}")
-    return []
-
-@app.route("/api/presidential_watch")
-def presidential_watch():
-    """Fetch and score Trump/presidential posts that could move markets."""
-    key = "presidential_watch"
-    if (cached_val := cached(key, ttl=180)):
-        return jsonify(cached_val)
-
-    alerts = []
-
-    # 1. Truth Social posts (direct from source)
-    ts_posts = _fetch_truth_social_rss()
-    for post in ts_posts:
-        text = post["title"]
-        sentiment, emoji, keywords = _score_text(text)
-        alerts.append({
-            "text":      text[:200],
-            "source":    "🇺🇸 Truth Social",
-            "ts":        post["ts"],
-            "ts_epoch":  post.get("ts_epoch", 0),
-            "link":      post["link"],
-            "sentiment": sentiment or "neutral",
-            "emoji":     emoji or "⚪",
-            "keywords":  keywords[:4],
-            "impact":    "HIGH" if sentiment in ("bearish","bullish") else "WATCH",
-        })
-
-    # 2. Google News — Trump + market/economy/tariff
-    for query in ["Trump tariff economy", "Trump executive order market", "Trump trade"]:
-        for item in _fetch_google_news_rss(query, max_items=5, max_age_hours=24):
-            text = item["title"]
-            sentiment, emoji, keywords = _score_text(text)
-            if not keywords:
-                continue   # skip irrelevant news
-            # Deduplicate by title similarity
-            existing_titles = [a["text"][:60].lower() for a in alerts]
-            if text[:60].lower() in existing_titles:
-                continue
-            alerts.append({
-                "text":      text[:200],
-                "source":    f"📰 {item['source']}",
-                "ts":        item["ts"],
-                "ts_epoch":  item.get("ts_epoch", 0),
-                "link":      item["link"],
-                "sentiment": sentiment or "neutral",
-                "emoji":     emoji or "⚪",
-                "keywords":  keywords[:4],
-                "impact":    "HIGH" if sentiment in ("bearish","bullish") else "WATCH",
-            })
-
-    # Sort: HIGH impact first, then by recency within each group
-    alerts.sort(key=lambda x: (0 if x["impact"] == "HIGH" else 1,
-                                -x.get("ts_epoch", 0)))
-    alerts = alerts[:10]   # cap at 10
-
-    # Overall signal: most severe sentiment wins
-    sentiments = [a["sentiment"] for a in alerts]
-    if "bearish" in sentiments:   overall = ("bearish", "🔴", "MARKET RISK — Bearish Signal")
-    elif "bullish" in sentiments: overall = ("bullish", "🟢", "POSITIVE — Bullish Signal")
-    elif alerts:                  overall = ("watch",   "🟡", "MONITOR — Posts Detected")
-    else:                         overall = ("neutral", "⚪", "No alerts found")
-
-    result = {
-        "overall_sentiment": overall[0],
-        "overall_emoji":     overall[1],
-        "overall_label":     overall[2],
-        "alert_count":       len(alerts),
-        "alerts":            alerts,
-        "as_of":             datetime.now().strftime("%H:%M:%S"),
-    }
-    set_cache(key, result)
-    return jsonify(result)
-
-
-# ── Macro Pulse ───────────────────────────────────────────────────────────────
-_MACRO_SYMBOLS = {
-    "SPY":    {"label": "S&P 500",   "icon": "📈"},
-    "QQQ":    {"label": "NASDAQ",    "icon": "💻"},
-    "^VIX":   {"label": "VIX",       "icon": "🌡️"},
-    "^TNX":   {"label": "10Y Yield", "icon": "📊"},
-    "DX-Y.NYB": {"label": "DXY",     "icon": "💵"},
-    "GC=F":   {"label": "Gold",      "icon": "🥇"},
-    "CL=F":   {"label": "Oil",       "icon": "🛢️"},
-    "BTC-USD": {"label": "BTC",      "icon": "₿"},
-}
-
 @app.route("/api/macro_pulse")
 def macro_pulse():
     key = "macro_pulse"
@@ -5625,6 +5130,64 @@ _BREADTH_BULL_CONF_NEUTRAL  = int(os.getenv("BREADTH_BULL_CONF_NEUTRAL",  "65"))
 _BREADTH_BEAR_CONF_BULLISH  = int(os.getenv("BREADTH_BEAR_CONF_BULLISH",  "80"))
 _BREADTH_BULL_CONF_BULLISH  = int(os.getenv("BREADTH_BULL_CONF_BULLISH",  "60"))
 
+# ── Social Sentiment Confidence Boost ─────────────────────────────────────────
+# Background-refreshed dict of tickers currently trending on Reddit/ApeWisdom.
+# Used by _alp_execute_signal to add +5 conf pts when a Kronos signal
+# coincides with real social momentum (crowd + algorithm agree).
+# Format: { "TICKER": {"velocity": float, "mentions": int, "rank": int, "ts": float} }
+_social_hot_cache   = {}
+_social_hot_lock    = threading.Lock()
+_SOCIAL_HOT_REFRESH = 300   # rebuild cache every 5 min
+_SOCIAL_BOOST_HOT   = 5     # +5 pts when velocity > 20 (🔥 HOT or ⚡ SPIKE)
+_SOCIAL_BOOST_SPIKE = 8     # +8 pts when velocity > 100 (⚡ SPIKE — crowd piling in)
+
+
+def _social_cache_loop():
+    """Background thread: keeps _social_hot_cache fresh from ApeWisdom every 5 min."""
+    while True:
+        try:
+            tickers = get_apewisdom_trending()
+            new_cache = {}
+            for t in tickers:
+                sym = t.get("ticker", "").upper()
+                vel = t.get("velocity", 0)
+                if sym and vel > 20:   # only HOT / SPIKE qualify
+                    new_cache[sym] = {
+                        "velocity": vel,
+                        "mentions": t.get("mentions", 0),
+                        "rank":     t.get("rank", 99),
+                        "ts":       time.time(),
+                    }
+            with _social_hot_lock:
+                _social_hot_cache.clear()
+                _social_hot_cache.update(new_cache)
+            if new_cache:
+                hot_list = ", ".join(
+                    f"{s}(v={d['velocity']:+.0f})" for s, d in
+                    sorted(new_cache.items(), key=lambda x: -x[1]["velocity"])[:8]
+                )
+                print(f"[SocialBoost] {len(new_cache)} hot tickers: {hot_list}")
+            else:
+                print("[SocialBoost] No trending tickers above velocity threshold")
+        except Exception as e:
+            print(f"[SocialBoost] Cache refresh error: {e}")
+        time.sleep(_SOCIAL_HOT_REFRESH)
+
+
+def _get_social_conf_boost(sym: str) -> int:
+    """Return confidence boost points for sym based on current social heat.
+    Returns 0 if ticker is not trending. Called inside _alp_execute_signal."""
+    with _social_hot_lock:
+        data = _social_hot_cache.get(sym.upper())
+    if not data:
+        return 0
+    vel = data.get("velocity", 0)
+    if vel > 100:
+        return _SOCIAL_BOOST_SPIKE    # ⚡ SPIKE
+    if vel > 20:
+        return _SOCIAL_BOOST_HOT      # 🔥 HOT / Rising
+    return 0
+
 
 def _breadth_fetch_intraday_chg(sym: str) -> float:
     """Return intraday % change for sym using Finnhub quote. Returns 0.0 on failure."""
@@ -5763,6 +5326,10 @@ def _get_dynamic_thresholds(direction: str) -> int:
 # Start breadth engine on import
 threading.Thread(target=_breadth_loop, daemon=True, name="breadth-engine").start()
 print("[Breadth] Regime engine started")
+
+# Start social sentiment cache refresher on import
+threading.Thread(target=_social_cache_loop, daemon=True, name="social-boost").start()
+print("[SocialBoost] Social sentiment boost cache started")
 
 
 # ── Alpaca Paper Trading Executor ─────────────────────────────────────────────
@@ -6100,6 +5667,18 @@ def _alp_execute_signal(res: dict):
         print(f"[Alpaca] {sym} — SKIPPED: bad sym or direction='{direction}'")
         return
 
+    # ── Social Sentiment Boost ────────────────────────────────────────────────
+    # If this ticker is currently trending on Reddit (ApeWisdom velocity > 20),
+    # add up to +8 conf pts as a crowd-confirmation bonus.
+    # This only helps marginal signals cross the threshold — it can never override
+    # a low-conviction ba=0 signal because both_agree is still required below.
+    social_boost = _get_social_conf_boost(sym)
+    eff_conf = conf + social_boost   # effective confidence after social bump
+    if social_boost > 0:
+        boost_tag = "⚡SPIKE" if social_boost >= _SOCIAL_BOOST_SPIKE else "🔥HOT"
+        print(f"[SocialBoost] {sym} trending ({boost_tag}) — conf {conf:.1f} → {eff_conf:.1f} "
+              f"(+{social_boost} pts)")
+
     # ── Dynamic breadth-adjusted confidence gate ──────────────────────────────
     # Threshold shifts based on market regime so the system naturally favors
     # the tape direction without manual overrides. e.g. bearish day → bulls
@@ -6107,9 +5686,10 @@ def _alp_execute_signal(res: dict):
     min_conf = _get_dynamic_thresholds(direction)
     with _breadth_lock:
         regime = _breadth_state["regime"]
-    if conf < min_conf:
-        print(f"[Alpaca] {sym} — SKIPPED: conf {conf:.1f} < {min_conf} "
-              f"({direction.upper()} threshold in {regime} regime)")
+    if eff_conf < min_conf:
+        print(f"[Alpaca] {sym} — SKIPPED: eff_conf {eff_conf:.1f} < {min_conf} "
+              f"({direction.upper()} threshold in {regime} regime"
+              f"{f', social+{social_boost}' if social_boost else ''})")
         return
 
     if streak < _ALP_MIN_STREAK:
@@ -6160,7 +5740,9 @@ def _alp_execute_signal(res: dict):
                 _alp_last_traded.pop(sym, None)  # clear dedup so retry works
             return
 
-        print(f"[Alpaca] {sym} — FIRING bracket: {direction.upper()} conf={conf:.1f} "
+        social_tag = f" social+{social_boost}" if social_boost > 0 else ""
+        print(f"[Alpaca] {sym} — FIRING bracket: {direction.upper()} "
+              f"conf={conf:.1f}→{eff_conf:.1f}{social_tag} "
               f"streak={streak} price=${price:.2f} strong={is_strong} "
               f"regime={regime} min_conf={min_conf}")
         ok = _alp_place_bracket(sym, direction, price, is_strong)
@@ -7561,112 +7143,6 @@ def _match_contractor_ticker(recipient_name: str) -> str | None:
 
     _name_ticker_cache[recipient_name] = None  # cache miss to avoid re-querying
     return None
-
-@app.route("/api/contracts/scanner")
-def contracts_scanner():
-    try:
-        return _contracts_scanner_inner()
-    except Exception as e:
-        print(f"[Contracts] Fatal: {e}")
-        return jsonify({"alerts": [], "total": 0, "ts": int(time.time()), "error": str(e)}), 200
-
-def _contracts_scanner_inner():
-    now = time.time()
-    if _contract_cache["data"] and now - _contract_cache["ts"] < _CONTRACT_TTL:
-        return jsonify(_contract_cache["data"])
-
-    end_dt   = datetime.utcnow()
-    start_dt = end_dt - timedelta(days=2)   # 48-hr window covers weekends
-
-    body = {
-        "filters": {
-            "award_type_codes": ["A", "B", "C", "D"],
-            "time_period": [{
-                "start_date": start_dt.strftime("%Y-%m-%d"),
-                "end_date":   end_dt.strftime("%Y-%m-%d"),
-                "date_type":  "action_date",
-            }],
-            "award_amounts": [{"lower_bound": 1_000_000}],
-        },
-        "fields": [
-            "Award ID", "Recipient Name", "Award Amount",
-            "Awarding Agency", "Description", "Action Date",
-        ],
-        "page":  1,
-        "limit": 200,
-        "sort":  "Award Amount",
-        "order": "desc",
-    }
-
-    try:
-        resp = requests.post(
-            "https://api.usaspending.gov/api/v2/search/spending_by_award/",
-            json=body,
-            timeout=20,
-            headers={"Content-Type": "application/json"},
-        )
-        resp.raise_for_status()
-        raw = resp.json()
-    except Exception as e:
-        print(f"[Contracts] API error: {e}")
-        return jsonify({"alerts": [], "total": 0, "ts": int(now), "error": str(e)}), 200
-
-    results   = raw.get("results", [])
-    alerts    = []
-    seen_tix  = set()
-
-    for award in results:
-        recipient = award.get("Recipient Name") or ""
-        ticker    = _match_contractor_ticker(recipient)
-        if not ticker or ticker in seen_tix:
-            continue
-        seen_tix.add(ticker)
-
-        try:
-            tk      = yf.Ticker(ticker)
-            fi      = tk.fast_info
-            price   = float(fi.last_price   or 0)
-            prev    = float(fi.previous_close or 0)
-            chg_pct = float((price - prev) / prev * 100) if prev > 0 else 0.0
-            mkt_cap = float(fi.market_cap   or 0)
-        except Exception:
-            price = chg_pct = mkt_cap = 0.0
-
-        if price <= 0:
-            continue
-
-        amount = float(award.get("Award Amount") or 0)
-        if mkt_cap <= 0:          cap_label = "Unknown"
-        elif mkt_cap < 2e9:       cap_label = "Small Cap"
-        elif mkt_cap < 10e9:      cap_label = "Mid Cap"
-        else:                     cap_label = "Large Cap"
-
-        amount_fmt = (f"${amount/1e9:.2f}B" if amount >= 1e9
-                      else f"${amount/1e6:.1f}M")
-
-        alerts.append({
-            "ticker":      ticker,
-            "recipient":   recipient[:55],
-            "amount":      int(amount),
-            "amount_fmt":  amount_fmt,
-            "agency":      (award.get("Awarding Agency") or "")[:50],
-            "description": (award.get("Description")     or "")[:80],
-            "date":        (award.get("Action Date")      or ""),
-            "price":       round(float(price),   2),
-            "chg_pct":     round(float(chg_pct), 2),
-            "mkt_cap":     int(mkt_cap),
-            "cap_label":   cap_label,
-        })
-
-    alerts.sort(key=lambda x: x["amount"], reverse=True)
-
-    out = {"alerts": alerts[:20], "total": len(alerts), "ts": int(now)}
-    _contract_cache["ts"]   = now
-    _contract_cache["data"] = out
-    return jsonify(out)
-
-
-# ── WebSocket token (client uses this to connect directly to Finnhub WS) ──────
 @app.route("/api/ws_token")
 def ws_token():
     """Returns the Finnhub API key so the browser can open a WebSocket directly."""
@@ -8773,100 +8249,6 @@ print("[CacheJanitor] Started — evicting stale cache entries every 10 min")
 _alert_thread = threading.Thread(target=_alert_scheduler_loop, daemon=True, name="AlertScheduler")
 _alert_thread.start()
 print("[AlertScheduler] Started — checking every 5 min during market hours")
-
-
-# ── Quick price check endpoint ─────────────────────────────────────────────────
-@app.route("/api/heatmap")
-def api_heatmap():
-    """
-    S&P 500 heat map — ~70 large-cap stocks grouped by sector with % change.
-    Uses yf.download() batch fetch for speed. Cache: 60s.
-    """
-    key = "heatmap"
-    if (v := cached(key, ttl=60)): return jsonify(v)
-
-    HEATMAP_SECTORS = {
-        "Technology":    [("AAPL","Apple"),("MSFT","Microsoft"),("NVDA","Nvidia"),
-                          ("META","Meta"),("AVGO","Broadcom"),("ORCL","Oracle"),
-                          ("CRM","Salesforce"),("AMD","AMD"),("ADBE","Adobe"),
-                          ("CSCO","Cisco"),("INTC","Intel"),("QCOM","Qualcomm")],
-        "Financials":    [("JPM","JPMorgan"),("V","Visa"),("MA","Mastercard"),
-                          ("BAC","BofA"),("GS","Goldman"),("MS","Morgan Stanley"),
-                          ("WFC","Wells Fargo"),("BLK","BlackRock"),("SCHW","Schwab")],
-        "Healthcare":    [("UNH","UnitedHealth"),("LLY","Eli Lilly"),("JNJ","J&J"),
-                          ("ABBV","AbbVie"),("MRK","Merck"),("TMO","Thermo Fisher"),
-                          ("ABT","Abbott"),("PFE","Pfizer"),("AMGN","Amgen")],
-        "Cons. Discr.":  [("AMZN","Amazon"),("TSLA","Tesla"),("HD","Home Depot"),
-                          ("MCD","McDonald's"),("NKE","Nike"),("SBUX","Starbucks"),
-                          ("BKNG","Booking"),("LOW","Lowe's")],
-        "Comm. Svcs.":   [("GOOGL","Alphabet"),("NFLX","Netflix"),("DIS","Disney"),
-                          ("CMCSA","Comcast"),("T","AT&T"),("VZ","Verizon")],
-        "Industrials":   [("GE","GE"),("CAT","Caterpillar"),("HON","Honeywell"),
-                          ("UPS","UPS"),("BA","Boeing"),("RTX","Raytheon"),
-                          ("DE","Deere"),("LMT","Lockheed")],
-        "Energy":        [("XOM","ExxonMobil"),("CVX","Chevron"),("COP","ConocoPhillips"),
-                          ("SLB","SLB"),("EOG","EOG"),("MPC","Marathon")],
-        "Cons. Staples": [("WMT","Walmart"),("PG","P&G"),("KO","Coca-Cola"),
-                          ("PEP","PepsiCo"),("COST","Costco"),("PM","Philip Morris")],
-        "Materials":     [("LIN","Linde"),("APD","Air Products"),("FCX","Freeport"),
-                          ("NEM","Newmont"),("NUE","Nucor")],
-    }
-
-    # Flatten
-    sym_to_info = {}
-    for sector, stocks in HEATMAP_SECTORS.items():
-        for sym, name in stocks:
-            sym_to_info[sym] = {"name": name, "sector": sector}
-
-    all_syms = list(sym_to_info.keys())
-
-    try:
-        # Batch download — single HTTP call instead of 70 individual ones
-        raw = yf.download(
-            all_syms, period="2d", interval="1d",
-            group_by="ticker", progress=False, threads=True,
-            auto_adjust=True, actions=False
-        )
-
-        def get_pct(sym):
-            try:
-                if len(all_syms) == 1:
-                    closes = raw["Close"].dropna()
-                else:
-                    closes = raw[sym]["Close"].dropna()
-                if len(closes) >= 2:
-                    return round(((float(closes.iloc[-1]) - float(closes.iloc[-2])) /
-                                   float(closes.iloc[-2])) * 100, 2)
-                return 0.0
-            except Exception:
-                return None
-
-        sectors_out = []
-        for sector_name, stocks in HEATMAP_SECTORS.items():
-            sector_stocks = []
-            for sym, name in stocks:
-                pct = get_pct(sym)
-                if pct is None:
-                    continue
-                sector_stocks.append({"sym": sym, "name": name, "pct": pct})
-            if sector_stocks:
-                # Sort by pct desc within sector
-                sector_stocks.sort(key=lambda x: x["pct"], reverse=True)
-                sectors_out.append({"name": sector_name, "stocks": sector_stocks})
-
-        # Free the large DataFrame immediately — it can be 50-100 MB in memory
-        del raw
-        gc.collect()
-
-        result = {"sectors": sectors_out, "as_of": datetime.now().strftime("%H:%M")}
-        return jsonify(set_cache(key, result))
-
-    except Exception as e:
-        print(f"[Heatmap] error: {e}")
-        import traceback; traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/chart/<ticker>/<tf>")
 def api_chart_tf(ticker, tf):
     """

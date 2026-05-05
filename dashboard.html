@@ -777,9 +777,6 @@
       .fg-row { flex-wrap: wrap; gap: 8px; }
       .fg-mini-stat { min-width: 60px; }
 
-      /* ─ Hot Stocks legend: hidden ─ */
-      #hotStocksCard .card-body > div:first-child { display: none !important; }
-
       /* ─ Signal rows ─ */
       .signal-desc { font-size: 11px; }
       .signal-val  { font-size: 12px; white-space: normal; max-width: 70px; }
@@ -881,12 +878,6 @@
       #wlScannerCard .card-body {
         -webkit-overflow-scrolling: touch;
       }
-
-      /* ─ Kronos Top Signals: slim down header on narrow screens ─ */
-      #kronosSigAsOf          { display: none !important; }
-      /* Hide rank number and expected-change column to fit 5 cols at 320px */
-      #kronosSigBody .ks-rank { display: none !important; }
-      #kronosSigBody .ks-exp  { display: none !important; }
 
       /* ─ Kronos forecast card: single-col stats on very narrow screens ─ */
       #kronosCard .kr-grid    { grid-template-columns: 1fr !important; }
@@ -990,27 +981,6 @@
       display: block;
     }
     .intel-news-item:hover { background: rgba(255,255,255,0.05); border-color: rgba(91,127,255,0.3); }
-
-    /* ── Volume Spike Radar ──────────────────────────── */
-    .spike-row {
-      display: grid;
-      grid-template-columns: 60px 1fr 55px 55px 50px 55px;
-      align-items: center;
-      padding: 6px 0;
-      border-bottom: 1px solid rgba(255,255,255,0.04);
-      cursor: pointer;
-      transition: background 0.1s;
-      border-radius: 4px;
-    }
-    .spike-row:hover { background: rgba(255,255,255,0.03); }
-    .spike-badge {
-      font-size: 9px;
-      font-weight: 800;
-      letter-spacing: 0.5px;
-      padding: 2px 6px;
-      border-radius: 4px;
-      text-align: center;
-    }
 
     /* ── Fear & Greed Gauge ──────────────────────────── */
     .fg-gauge-wrap {
@@ -1886,10 +1856,8 @@
 
   </div><!-- end Row 1 -->
 
-  <!-- ── Intelligence Hub + Volume Spike Radar ── -->
-  <div class="grid-2" data-tab="signal">
-
-    <!-- Intelligence Hub -->
+  <!-- ── Intelligence Hub ── -->
+  <div data-tab="signal">
     <div class="card">
       <div class="card-header">
         <div class="card-title"><span class="card-icon">🧠</span> Intelligence Hub</div>
@@ -1919,33 +1887,7 @@
         </div>
       </div>
     </div>
-
-    <!-- Volume Spike Radar -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-title"><span class="card-icon">📡</span> Volume Spike Radar</div>
-        <div style="display:flex;align-items:center;gap:8px">
-          <span class="card-tag tag-hot" id="spikeTag">Scanning…</span>
-          <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="refreshVolumeSpikes()">↻ Scan</button>
-        </div>
-      </div>
-      <div class="card-body" style="padding-top:4px">
-        <!-- Column headers -->
-        <div style="display:grid;grid-template-columns:60px 1fr 55px 55px 50px 55px;
-             gap:0;padding:4px 0 6px;border-bottom:1px solid var(--border);margin-bottom:4px">
-          <div style="font-size:9px;color:var(--muted);font-weight:700;letter-spacing:0.5px">TICKER</div>
-          <div style="font-size:9px;color:var(--muted);font-weight:700;letter-spacing:0.5px">LEVEL</div>
-          <div style="font-size:9px;color:var(--muted);font-weight:700;letter-spacing:0.5px;text-align:right">PRICE</div>
-          <div style="font-size:9px;color:var(--muted);font-weight:700;letter-spacing:0.5px;text-align:right">CHG</div>
-          <div style="font-size:9px;color:var(--muted);font-weight:700;letter-spacing:0.5px;text-align:right">VOL</div>
-          <div style="font-size:9px;color:var(--muted);font-weight:700;letter-spacing:0.5px;text-align:right">VS AVG</div>
-        </div>
-        <div id="volSpikeList" style="max-height:340px;overflow-y:auto">
-          <div style="color:var(--muted);font-size:11px;padding:16px 0;text-align:center">Waiting for scan…</div>
-        </div>
-      </div>
-    </div>
-  </div><!-- end Intelligence + Volume row -->
+  </div><!-- end Intelligence Hub -->
 
   <!-- Pre-Market / After-Hours Movers (full width, top of Market tab) -->
   <div class="card" data-tab="market" id="preMarketCard">
@@ -2203,57 +2145,6 @@
     </div>
   </div>
 
-  <!-- Row 3b: Top 10 Hottest Stocks (full width) -->
-  <div class="card" data-tab="market" id="hotStocksCard">
-    <div class="card-header">
-      <div class="card-title"><span class="card-icon">🔥</span> Top 10 Hottest Stocks</div>
-      <span style="font-size:10px;color:var(--muted)" id="hotStocksTime">—</span>
-      <span class="card-tag" id="hotStocksTag"
-            style="background:rgba(255,100,0,0.12);color:#ff7733;border:1px solid rgba(255,100,0,0.25);margin-left:6px">
-        Social + Momentum + Volume
-      </span>
-      <button onclick="refreshHotStocks()" style="margin-left:auto;background:rgba(255,255,255,0.06);
-        border:1px solid var(--border);color:var(--muted);font-size:10px;padding:3px 10px;
-        border-radius:4px;cursor:pointer">↻ Refresh</button>
-    </div>
-    <div class="card-body" style="padding:0">
-
-      <!-- Score legend strip -->
-      <div style="display:flex;gap:16px;padding:8px 16px;border-bottom:1px solid var(--border);
-                  background:rgba(0,0,0,0.15);flex-wrap:wrap">
-        <span style="font-size:10px;color:var(--muted)">Heat Score =</span>
-        <span style="font-size:10px;color:#5b7fff">🧠 Social (40pts)</span>
-        <span style="font-size:10px;color:var(--amber)">📈 Momentum (30pts)</span>
-        <span style="font-size:10px;color:var(--green)">📦 Volume (30pts)</span>
-      </div>
-
-      <!-- Table -->
-      <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;font-size:12px">
-          <thead>
-            <tr style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:0.4px">
-              <th style="text-align:left;padding:7px 14px;font-weight:500">#</th>
-              <th style="text-align:left;padding:7px 6px;font-weight:500">Ticker</th>
-              <th style="text-align:right;padding:7px 6px;font-weight:500">Price</th>
-              <th style="text-align:right;padding:7px 6px;font-weight:500">Chg%</th>
-              <th style="text-align:right;padding:7px 6px;font-weight:500">Vol×</th>
-              <th style="text-align:center;padding:7px 6px;font-weight:500">Mentions</th>
-              <th style="text-align:left;padding:7px 6px;font-weight:500">Signal</th>
-              <th style="text-align:left;padding:7px 14px;font-weight:500;min-width:180px">Heat Score</th>
-            </tr>
-          </thead>
-          <tbody id="hotStocksBody">
-            <tr>
-              <td colspan="8" style="text-align:center;color:var(--muted);padding:20px;font-size:12px">
-                Loading hottest stocks…
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
   <!-- ETF Flow Monitor (Market tab) -->
   <div class="card" data-tab="market" id="etfFlowCard">
     <div class="card-header">
@@ -2304,22 +2195,6 @@
         <span style="color:var(--accent);font-weight:700">💡 Rotation Signal:</span> <span id="etfRotationNote">Loading…</span>
       </div>
 
-    </div>
-  </div>
-
-  <!-- ══ S&P 500 Heat Map ══════════════════════════════════════════════════ -->
-  <div class="card" data-tab="market" id="heatmapCard">
-    <div class="card-header">
-      <div class="card-title"><span class="card-icon">🌐</span> S&P 500 Heat Map</div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <span id="heatmapTs" style="font-size:10px;color:var(--muted)">—</span>
-        <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="refreshHeatmap(true)">↻ Refresh</button>
-      </div>
-    </div>
-    <div class="card-body" style="padding:14px">
-      <div id="heatmapGrid" style="display:flex;flex-direction:column;gap:8px">
-        <div style="color:var(--muted);font-size:12px;padding:20px 0;text-align:center">Loading heat map…</div>
-      </div>
     </div>
   </div>
 
@@ -2409,51 +2284,6 @@
           <tr><td colspan="7" style="padding:24px;text-align:center;color:var(--muted);font-size:12px">Loading scanner…</td></tr>
         </tbody>
       </table>
-    </div>
-  </div>
-
-  <!-- ── Kronos Top Signals ──────────────────────────────────────── -->
-  <div class="card" data-tab="signal" id="kronosSignalsCard">
-    <div class="card-header">
-      <div class="card-title"><span class="card-icon">🔮</span> Kronos Top Signals</div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <span id="kronosSigBadge" class="card-tag tag-neutral">Ready</span>
-        <span style="font-size:10px;color:var(--muted)" id="kronosSigAsOf"></span>
-        <span id="kronosSigCountdown" style="font-size:10px;color:var(--accent);font-family:'JetBrains Mono',monospace;display:none"></span>
-        <button id="kronosNotifBtn" class="btn secondary" style="padding:4px 8px;font-size:11px;opacity:0.5" onclick="toggleKronosNotifs()" title="Enable A-grade alerts">🔔</button>
-        <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="loadKronosSignals(true)">▶ Scan</button>
-      </div>
-    </div>
-    <div class="card-body" style="padding:0">
-      <div style="padding:10px 14px 6px;font-size:10px;color:var(--muted)">
-        Stocks with <strong style="color:var(--text-hi)">≥80% probability</strong> of directional move · Kronos-mini Transformer · 40-stock elite universe · 20-bar horizon
-      </div>
-      <div id="kronosSigBody">
-        <div style="padding:20px 14px;text-align:center;color:var(--muted);font-size:12px">
-          Click <strong>▶ Scan</strong> to run the Kronos forecast across 200 stocks
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ── Contract Award Alerts — USASpending.gov ──────────────────── -->
-  <div class="card" data-tab="signal" id="contractAlertCard">
-    <div class="card-header">
-      <div class="card-title"><span class="card-icon">📜</span> Contract Awards <span style="font-size:10px;font-weight:400;color:var(--muted)">USASpending.gov</span></div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <span id="contractBadge" class="card-tag tag-neutral">Ready</span>
-        <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="loadContractAlerts(true)">▶ Scan</button>
-      </div>
-    </div>
-    <div class="card-body" style="padding:0">
-      <div style="padding:10px 14px 6px;font-size:10px;color:var(--muted)">
-        Federal contracts $1M+ awarded in last 48h matched to <strong style="color:var(--text-hi)">publicly traded companies</strong> · Small &amp; Mid cap focus · Auto-refreshes every 5 min
-      </div>
-      <div id="contractBody">
-        <div style="padding:20px 14px;text-align:center;color:var(--muted);font-size:12px">
-          Click <strong>▶ Scan</strong> to find public companies receiving new government contracts
-        </div>
-      </div>
     </div>
   </div>
 
@@ -2563,39 +2393,6 @@
           Click <strong>▶ Scan</strong> to find today's movers
         </div>
       </div>
-    </div>
-  </div>
-
-  <!-- Presidential Watch -->
-  <div class="card" data-tab="signal" id="presWatchCard">
-    <div class="card-header">
-      <div class="card-title"><span class="card-icon">🇺🇸</span> Presidential Watch</div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <span id="presOverallBadge" class="card-tag tag-neutral">Scanning…</span>
-        <span style="font-size:10px;color:var(--muted)" id="presAsOf">—</span>
-        <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="refreshPresWatch(true)">↻ Refresh</button>
-      </div>
-    </div>
-    <div class="card-body" style="padding:0">
-
-      <!-- Overall signal banner -->
-      <div id="presSignalBanner" style="display:flex;align-items:center;gap:14px;padding:12px 16px;border-bottom:1px solid var(--border);background:rgba(255,255,255,0.02)">
-        <div id="presSignalEmoji" style="font-size:32px;flex-shrink:0">⚪</div>
-        <div style="flex:1;min-width:0">
-          <div id="presSignalLabel" style="font-size:15px;font-weight:700;color:var(--text-hi)">No alerts</div>
-          <div style="font-size:11px;color:var(--subtext);margin-top:2px">Monitoring Truth Social · News · Executive Actions</div>
-        </div>
-        <div style="text-align:center;flex-shrink:0">
-          <div id="presAlertCount" style="font-size:24px;font-weight:900;color:var(--muted);font-family:'JetBrains Mono',monospace">0</div>
-          <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Alerts</div>
-        </div>
-      </div>
-
-      <!-- Alert feed -->
-      <div id="presAlertFeed" style="display:flex;flex-direction:column;max-height:320px;overflow-y:auto">
-        <div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">Loading presidential alerts…</div>
-      </div>
-
     </div>
   </div>
 
@@ -5024,82 +4821,6 @@ function wlSortBy(col) {
   renderWatchlistScanner();
 }
 
-// ── Contract Award Scanner ────────────────────────────────────────────────────
-let _contractData     = null;
-let _contractInterval = null;
-const CONTRACT_REFRESH_MS = 5 * 60 * 1000;  // 5-minute auto-refresh
-
-async function loadContractAlerts(force = false) {
-  if (!SERVER_MODE) return;
-  const badge = document.getElementById('contractBadge');
-  const body  = document.getElementById('contractBody');
-  if (badge) { badge.textContent = 'Scanning…'; badge.className = 'card-tag tag-neutral'; }
-  if (body)  { body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">📜 Fetching contract awards from USASpending.gov…</div>`; }
-  try {
-    const resp = await fetch('/api/contracts/scanner');
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    _contractData = await resp.json();
-    renderContractAlerts();
-    if (!_contractInterval) {
-      _contractInterval = setInterval(() => loadContractAlerts(true), CONTRACT_REFRESH_MS);
-    }
-  } catch(e) {
-    if (body) body.innerHTML = `<div style="padding:20px;text-align:center;color:#ff4455;font-size:12px">Error loading contracts: ${e.message}</div>`;
-    if (badge) { badge.textContent = 'Error'; badge.className = 'card-tag tag-bear'; }
-  }
-}
-
-function renderContractAlerts() {
-  const d     = _contractData;
-  const badge = document.getElementById('contractBadge');
-  const body  = document.getElementById('contractBody');
-  if (!d || !body) return;
-
-  const total = d.alerts ? d.alerts.length : 0;
-  if (badge) {
-    badge.textContent = total > 0 ? `${total} MATCHED` : 'No Matches';
-    badge.className   = total > 0 ? 'card-tag tag-bull' : 'card-tag tag-neutral';
-  }
-
-  if (!total) {
-    body.innerHTML = `<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">No public company contract matches in last 48h. Auto-retrying in 5 min.</div>`;
-    return;
-  }
-
-  const CAP_COLORS = { 'Small Cap': '#ff9900', 'Mid Cap': '#00aaff', 'Large Cap': '#718096', 'Unknown': '#718096' };
-
-  const rows = d.alerts.map(a => {
-    const capClr  = CAP_COLORS[a.cap_label] || '#718096';
-    const chgClr  = a.chg_pct >= 0 ? '#00e676' : '#ff4455';
-    const chgStr  = (a.chg_pct >= 0 ? '+' : '') + a.chg_pct + '%';
-    const agency  = a.agency.replace('Department of ', 'DoD ').replace('Department of Defense', 'DoD');
-    const desc    = a.description ? `<div style="font-size:9px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px">${a.description}</div>` : '';
-
-    return `<div style="display:grid;grid-template-columns:70px 1fr auto;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--border);cursor:pointer" onclick="loadTicker('${a.ticker}')">
-      <div>
-        <div style="font-size:14px;font-weight:700;color:var(--text-hi)">${a.ticker}</div>
-        <div style="font-size:9px;color:${capClr};font-weight:600">${a.cap_label}</div>
-      </div>
-      <div style="min-width:0">
-        <div style="font-size:11px;color:var(--text-hi);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${a.recipient}</div>
-        <div style="font-size:10px;color:var(--muted)">${agency}</div>
-        ${desc}
-      </div>
-      <div style="text-align:right;white-space:nowrap">
-        <div style="font-size:13px;font-weight:700;color:#ffcc00">${a.amount_fmt}</div>
-        <div style="font-size:11px;color:${chgClr}">${chgStr} · $${a.price}</div>
-        <div style="font-size:9px;color:var(--muted)">${a.date}</div>
-      </div>
-    </div>`;
-  }).join('');
-
-  const footer = `<div style="padding:6px 14px;font-size:10px;color:var(--muted);border-top:1px solid var(--border)">
-    ${total} public companies matched · ${new Date(d.ts * 1000).toLocaleTimeString()} · Source: USASpending.gov
-  </div>`;
-
-  body.innerHTML = rows + footer;
-}
-
 async function loadPredictions(force = false) {
   if (!SERVER_MODE) return;
   try {
@@ -6159,17 +5880,6 @@ setTimeout(pollLiveSurges, 3500);
 
 // ══════════════════════════════════════════════════════════════════════════════
 
-// ── Kronos Top Signals Scanner ────────────────────────────────────────────────
-let _kronosSigData     = null;
-let _kronosSigPrev     = null;    // previous scan's signals for trend diff
-let _kronosSigScanTime = null;    // epoch ms of last successful scan
-let _kronosSigInterval = null;    // auto-refresh setInterval handle
-let _kronosCountdownTick = null;  // countdown setInterval handle
-let _kronosNotifsOn    = false;   // desktop notifications enabled
-
-const KRONOS_REFRESH_MS   = 5 * 60 * 1000;  // 5-minute auto-refresh
-const KRONOS_A_THRESHOLD  = 90;             // prob_pct >= 90 → A-grade alert
-
 function _kronosGrade(prob) {
   if (prob >= 90) return { grade: 'A', clr: '#00e676',  bg: 'rgba(0,230,118,0.15)'  };
   if (prob >= 85) return { grade: 'B', clr: '#ffb300',  bg: 'rgba(255,179,0,0.12)'  };
@@ -7085,389 +6795,6 @@ function updateNewsTicker(intelData) {
   inner.style.animationDuration = speed + 's';
 }
 
-// ── Volume Spike Radar ────────────────────────────────────────────────────────
-function renderVolumeSpikes(spikes) {
-  const list = document.getElementById('volSpikeList');
-  const tag  = document.getElementById('spikeTag');
-  if (!list) return;
-
-  if (!spikes || !spikes.length) {
-    list.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:16px 0;text-align:center">No significant volume spikes detected</div>';
-    if (tag) { tag.textContent = 'None detected'; tag.style.color = 'var(--muted)'; }
-    return;
-  }
-
-  const extremeCount = spikes.filter(s => s.level === 'EXTREME').length;
-  const highCount    = spikes.filter(s => s.level === 'HIGH').length;
-  if (tag) {
-    if (extremeCount > 0) { tag.textContent = `${extremeCount} EXTREME spike${extremeCount > 1 ? 's' : ''}`; tag.style.color = '#ff3d57'; }
-    else if (highCount > 0) { tag.textContent = `${highCount} HIGH spike${highCount > 1 ? 's' : ''}`; tag.style.color = '#ffb300'; }
-    else { tag.textContent = `${spikes.length} elevated`; tag.style.color = '#40a9ff'; }
-  }
-
-  list.innerHTML = spikes.map(s => {
-    const chgColor  = s.dir === 'up' ? 'var(--green)' : 'var(--red)';
-    const badgeBg   = s.level === 'EXTREME' ? 'rgba(255,61,87,0.15)' :
-                      s.level === 'HIGH'    ? 'rgba(255,179,0,0.15)' : 'rgba(64,169,255,0.12)';
-    return `<div class="spike-row" onclick="loadTicker('${s.ticker}')">
-      <div style="font-weight:700;color:var(--accent);font-size:12px">${s.ticker}</div>
-      <div><span class="spike-badge" style="background:${badgeBg};color:${s.color}">${s.level}</span></div>
-      <div style="text-align:right;font-size:12px;color:var(--text)">${s.price}</div>
-      <div style="text-align:right;font-size:12px;color:${chgColor};font-weight:600">${s.chgPct}</div>
-      <div style="text-align:right;font-size:11px;color:var(--subtext)">${s.vol}</div>
-      <div style="text-align:right;font-size:12px;font-weight:700;color:${s.color}">${s.ratioStr}</div>
-    </div>`;
-  }).join('');
-}
-
-async function refreshVolumeSpikes() {
-  if (!SERVER_MODE) return;
-  const tag = document.getElementById('spikeTag');
-  if (tag) tag.textContent = 'Scanning…';
-  try {
-    const resp = await fetch('/api/volume-spikes');
-    if (!resp.ok) return;
-    const spikes = await resp.json();
-    renderVolumeSpikes(spikes);
-  } catch(e) {
-    console.warn('Volume spikes error:', e);
-  }
-}
-
-// ── Fear & Greed Gauge ────────────────────────────────────────────────────────
-function renderFearGreed(d) {
-  if (!d || d.error) return;
-  const score = d.score || 0;
-  const needle    = document.getElementById('fgNeedle');
-  const scoreText = document.getElementById('fgScoreText');
-  const ratingEl  = document.getElementById('fgRatingText');
-
-  // Map 0-100 → -90deg to +90deg (the arc goes from far left to far right)
-  const angle = (score / 100) * 180 - 90;
-  if (needle)    { needle.setAttribute('transform', `rotate(${angle}, 80, 80)`); }
-  if (scoreText) { scoreText.textContent = score; scoreText.setAttribute('fill', d.color || '#e2e8f0'); }
-  if (ratingEl)  { ratingEl.textContent = d.zone || d.rating || '—'; ratingEl.style.color = d.color || 'var(--muted)'; }
-
-  const setMini = (id, val) => {
-    const el = document.getElementById(id);
-    if (el) el.textContent = val !== undefined ? val : '—';
-  };
-  setMini('fgPrevClose', d.prevClose);
-  setMini('fgPrevWeek',  d.prevWeek);
-  setMini('fgPrevMonth', d.prevMonth);
-}
-
-async function refreshFearGreed() {
-  if (!SERVER_MODE) return;
-  try {
-    const resp = await fetch('/api/fear-greed');
-    if (!resp.ok) return;
-    const d = await resp.json();
-    renderFearGreed(d);
-  } catch(e) {
-    console.warn('Fear & Greed error:', e);
-  }
-}
-
-window.onload = () => {
-  // Init mobile tabs
-  initMobileTabs();
-  window.addEventListener('resize', () => initMobileTabs());
-
-  setBreadthChart([54, 57, 61, 63, 59, 62, 65, 68, 66, 68]);
-
-  if (SERVER_MODE) {
-    // Show server mode banner
-    const banner = document.createElement('div');
-    banner.style.cssText = 'background:rgba(0,255,136,0.08);border-bottom:1px solid rgba(0,255,136,0.2);padding:6px 24px;font-size:11px;color:#00ff88;text-align:center';
-    banner.textContent = '🔌 Live server connected — all data is real-time. Type any ticker and click Scan.';
-    document.body.insertBefore(banner, document.querySelector('header').nextSibling);
-    // Instant-priority: watchlist + social scan load right away
-    refreshWatchlist();
-    loadWatchlistScanner();   // scanner card — parallel with watchlist bar
-    refreshSocialScan();
-    refreshMovers();
-    refreshHotStocks();
-    refreshPresWatch();
-    refreshMacroPulse();   // macro strip — immediate
-    refreshVixDashboard(); // VIX card — immediate
-    refreshEconCalendar(); // econ calendar — immediate
-    refreshEtfFlows();     // ETF flows — immediate
-    refreshPreMarket();    // pre-market/after-hours movers — immediate
-
-    // Heavy background scans — delayed 8s so ticker scans work immediately on load
-    setTimeout(() => {
-      refreshIntelligence();
-      refreshVolumeSpikes();
-      refreshFearGreed();
-      refreshHeatmap();    // S&P 500 heat map — delayed (slow batch fetch)
-    }, 8000);
-
-    // Auto-refresh intervals
-    setInterval(refreshWatchlist,      30000);   // 30s
-    setInterval(loadWatchlistScanner,  60000);   // 60s
-    setInterval(refreshSocialScan,   90000);   // 90s
-    setInterval(refreshMovers,       60000);   // 60s
-    setInterval(refreshMarketNews,  300000);   // 5min
-    setInterval(refreshHotStocks,    60000);   // 60s
-    setInterval(refreshIntelligence,180000);   // 3min — Google News RSS
-    setInterval(refreshVolumeSpikes,120000);   // 2min — volume scan
-    setInterval(refreshFearGreed,   300000);   // 5min — F&G
-    setInterval(refreshMacroPulse,   30000);   // 30s — macro strip live
-    setInterval(refreshVixDashboard, 60000);   // 60s — VIX
-    setInterval(refreshEtfFlows,    120000);   // 2min — ETF flows
-    setInterval(refreshPreMarket,    60000);   // 60s — pre/after-hours movers
-    setInterval(refreshHeatmap,     120000);   // 2min — S&P 500 heat map
-    loadContractAlerts();                      // initial load on startup
-  } else {
-    const banner = document.createElement('div');
-    banner.style.cssText = 'background:rgba(255,170,0,0.08);border-bottom:1px solid rgba(255,170,0,0.2);padding:6px 24px;font-size:11px;color:#ffaa00;text-align:center';
-    banner.textContent = '⚙ Demo mode — open via python market_genie_server.py for live data.';
-    document.body.insertBefore(banner, document.querySelector('header').nextSibling);
-  }
-};
-
-// ── Server Connection Monitor ─────────────────────────────────────────────────
-let _serverOnline = false;
-
-function setServerStatus(online, label) {
-  try {
-    const badge = document.getElementById('serverBadge');
-    if (!badge) return;
-    _serverOnline = !!online;
-    const dot = document.getElementById('serverDot');
-    const lbl = document.getElementById('serverLabel');
-    if (online) {
-      badge.setAttribute('style',
-        'background:rgba(0,230,118,0.12);color:#00e676;border-color:rgba(0,230,118,0.25)');
-      if (dot) dot.setAttribute('style', 'width:6px;height:6px;border-radius:50%;background:#00e676;flex-shrink:0');
-      if (lbl) lbl.textContent = label || 'LIVE';
-    } else {
-      badge.setAttribute('style',
-        'background:rgba(255,61,87,0.12);color:#ff3d57;border-color:rgba(255,61,87,0.25)');
-      if (dot) dot.setAttribute('style', 'width:6px;height:6px;border-radius:50%;background:#ff3d57;flex-shrink:0;animation:none');
-      if (lbl) lbl.textContent = label || 'OFFLINE';
-    }
-  } catch(e) { console.warn('[Status]', e); }
-}
-
-async function checkServerConnection() {
-  try {
-    // Use Promise.race for timeout — works on all browsers without AbortSignal.timeout
-    const timeoutP = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000));
-    const fetchP   = fetch('/api/ping');
-    const r = await Promise.race([fetchP, timeoutP]);
-    if (r.ok) {
-      setServerStatus(true, 'LIVE');
-      hideServerError();
-      return true;
-    }
-  } catch(e) {
-    console.warn('[Ping] failed:', e.message || e);
-  }
-  try {
-    setServerStatus(false, 'OFFLINE');
-    showServerError('Cannot reach the Market Genie server. Wait 10 s and click Retry.');
-  } catch(e2) { console.warn('[Status offline]', e2); }
-  return false;
-}
-
-function showServerError(msg) {
-  let el = document.getElementById('serverErrorBanner');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'serverErrorBanner';
-    el.style.cssText = 'background:rgba(255,61,87,0.1);border-bottom:2px solid rgba(255,61,87,0.4);padding:10px 24px;font-size:12px;color:#ff6677;text-align:center;position:sticky;top:52px;z-index:99;display:flex;align-items:center;justify-content:center;gap:12px';
-    document.body.insertBefore(el, document.querySelector('main'));
-  }
-  el.innerHTML = `⚠️ &nbsp;${msg}&nbsp; <button onclick="checkServerConnection()" style="background:rgba(255,61,87,0.2);border:1px solid rgba(255,61,87,0.4);color:#ff6677;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px">Retry</button>`;
-  el.style.display = 'flex';
-}
-
-function hideServerError() {
-  const el = document.getElementById('serverErrorBanner');
-  if (el) el.style.display = 'none';
-}
-
-// If page loaded from a real server (not file://), show LIVE immediately.
-// Background ping still runs to detect server going down mid-session.
-if (SERVER_MODE) {
-  setServerStatus(true, 'LIVE');
-  hideServerError();
-}
-// Verify with a background ping, then poll every 30s
-setTimeout(checkServerConnection, 1500);
-setInterval(checkServerConnection, 30000);
-
-// ── Presidential Watch ─────────────────────────────────────────────────────────
-async function refreshPresWatch(force = false) {
-  if (!SERVER_MODE) return;
-  const feed    = document.getElementById('presAlertFeed');
-  const badge   = document.getElementById('presOverallBadge');
-  const emoji   = document.getElementById('presSignalEmoji');
-  const label   = document.getElementById('presSignalLabel');
-  const count   = document.getElementById('presAlertCount');
-  const asOf    = document.getElementById('presAsOf');
-  const banner  = document.getElementById('presSignalBanner');
-  if (!feed) return;
-
-  if (force) feed.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted);font-size:12px">Refreshing…</div>';
-
-  try {
-    const r = await fetch('/api/presidential_watch');
-    const d = await r.json();
-
-    // Overall banner
-    const sentColors = {
-      bearish: { bg: 'rgba(255,61,87,0.08)', border: 'rgba(255,61,87,0.25)', badgeClass: 'tag-bear', labelColor: 'var(--red)' },
-      bullish: { bg: 'rgba(0,230,118,0.08)', border: 'rgba(0,230,118,0.25)', badgeClass: 'tag-bull', labelColor: 'var(--green)' },
-      watch:   { bg: 'rgba(255,179,0,0.08)', border: 'rgba(255,179,0,0.25)', badgeClass: 'tag-neutral', labelColor: 'var(--amber)' },
-      neutral: { bg: 'rgba(255,255,255,0.02)', border: 'transparent', badgeClass: 'tag-neutral', labelColor: 'var(--muted)' },
-    };
-    const sc = sentColors[d.overall_sentiment] || sentColors.neutral;
-
-    banner.style.background  = sc.bg;
-    banner.style.borderBottom = `1px solid ${sc.border}`;
-    emoji.textContent          = d.overall_emoji;
-    label.textContent          = d.overall_label;
-    label.style.color          = sc.labelColor;
-    count.textContent          = d.alert_count;
-    count.style.color          = sc.labelColor;
-    asOf.textContent           = `Updated ${d.as_of}`;
-
-    badge.textContent  = d.overall_label;
-    badge.className    = `card-tag ${sc.badgeClass}`;
-
-    // Alert feed
-    if (!d.alerts || d.alerts.length === 0) {
-      feed.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">No market-moving posts detected right now.</div>';
-      return;
-    }
-
-    feed.innerHTML = d.alerts.map(a => {
-      const impactColor = a.impact === 'HIGH'
-        ? (a.sentiment === 'bearish' ? 'var(--red)' : 'var(--green)')
-        : 'var(--amber)';
-      const kwHtml = a.keywords.map(k =>
-        `<span style="background:rgba(255,255,255,0.06);border-radius:4px;padding:1px 6px;font-size:9px;color:var(--subtext)">${k}</span>`
-      ).join(' ');
-      return `
-        <div style="padding:10px 16px;border-bottom:1px solid var(--border);display:flex;gap:12px;align-items:flex-start;cursor:pointer"
-             onclick="window.open('${a.link}','_blank')">
-          <div style="font-size:20px;flex-shrink:0;margin-top:2px">${a.emoji}</div>
-          <div style="flex:1;min-width:0">
-            <div style="font-size:12px;color:var(--text);line-height:1.5;margin-bottom:4px">${a.text}</div>
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-              <span style="font-size:10px;color:var(--muted)">${a.source}</span>
-              <span style="font-size:10px;color:var(--muted)">${a.ts}</span>
-              ${kwHtml}
-            </div>
-          </div>
-          <div style="flex-shrink:0;font-size:9px;font-weight:800;letter-spacing:0.5px;padding:2px 7px;border-radius:4px;
-               background:rgba(255,255,255,0.06);color:${impactColor};border:1px solid ${impactColor};white-space:nowrap;margin-top:2px">
-            ${a.impact}
-          </div>
-        </div>`;
-    }).join('');
-
-  } catch(e) {
-    console.error('PresWatch error', e);
-    feed.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted);font-size:12px">⚠ Could not load presidential alerts.</div>';
-  }
-}
-
-// ── Top 10 Hottest Stocks ──────────────────────────────────────────────────────
-async function refreshHotStocks() {
-  if (!SERVER_MODE) return;
-  const body = document.getElementById('hotStocksBody');
-  const timeEl = document.getElementById('hotStocksTime');
-  const tagEl  = document.getElementById('hotStocksTag');
-  if (tagEl) tagEl.textContent = 'Scanning…';
-
-  try {
-    const res = await fetch('/api/hot-stocks');
-    const data = await res.json();
-    if (timeEl) timeEl.textContent = data.timestamp || '—';
-    if (tagEl)  tagEl.textContent  = 'Social + Momentum + Volume';
-
-    const stocks = data.stocks || [];
-    if (!stocks.length) {
-      body.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px">No data available</td></tr>';
-      return;
-    }
-
-    body.innerHTML = stocks.map((s, i) => {
-      const rank       = i + 1;
-      const isUp       = s.dir === 'up';
-      const chgColor   = isUp ? 'var(--green)' : 'var(--red)';
-      const chgArrow   = isUp ? '▲' : '▼';
-      const heat       = s.heatScore || 0;
-
-      // Heat bar — three stacked segments
-      const maxHeat = 100;
-      const socW  = Math.round((s.socialScore   / maxHeat) * 100);
-      const momW  = Math.round((s.momentumScore / maxHeat) * 100);
-      const volW  = Math.round((s.volScore      / maxHeat) * 100);
-
-      // Rank badge color
-      let rankBg = 'rgba(255,255,255,0.07)';
-      if (rank === 1) rankBg = 'rgba(255,180,0,0.25)';
-      else if (rank === 2) rankBg = 'rgba(200,200,200,0.18)';
-      else if (rank === 3) rankBg = 'rgba(180,120,60,0.22)';
-
-      // Mentions display
-      const mentions = s.mentions > 0
-        ? `${s.mentions}<span style="font-size:9px;color:var(--muted)"> ${s.velocity > 0 ? '+' + s.velocity + '%' : ''}</span>`
-        : '<span style="color:var(--muted)">—</span>';
-
-      return `
-        <tr style="border-bottom:1px solid var(--border);cursor:pointer;transition:background 0.15s"
-            onmouseover="this.style.background='rgba(255,255,255,0.03)'"
-            onmouseout="this.style.background=''"
-            onclick="document.getElementById('tickerInput').value='${s.sym}';runScan()">
-          <td style="padding:8px 14px">
-            <span style="display:inline-flex;align-items:center;justify-content:center;
-                         width:22px;height:22px;border-radius:50%;font-size:10px;font-weight:700;
-                         background:${rankBg};color:var(--text)">${rank}</span>
-          </td>
-          <td style="padding:8px 6px">
-            <span style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13px;
-                         color:var(--accent);letter-spacing:0.5px">${s.sym}</span>
-          </td>
-          <td style="text-align:right;padding:8px 6px;font-family:'JetBrains Mono',monospace;
-                     font-weight:600;color:var(--text-hi)">$${s.price}</td>
-          <td style="text-align:right;padding:8px 6px;font-weight:700;color:${chgColor}">
-            ${chgArrow} ${Math.abs(parseFloat(s.chgPct)).toFixed(2)}%
-          </td>
-          <td style="text-align:right;padding:8px 6px;color:${parseFloat(s.volRatio) >= 2 ? 'var(--amber)' : 'var(--subtext)'}">
-            ${s.volRatio}×
-          </td>
-          <td style="text-align:center;padding:8px 6px;color:var(--text)">${mentions}</td>
-          <td style="padding:8px 6px;font-size:11px;white-space:nowrap">${s.signal}</td>
-          <td style="padding:8px 14px">
-            <div style="display:flex;align-items:center;gap:8px">
-              <!-- Stacked heat bar -->
-              <div style="flex:1;height:8px;border-radius:4px;background:rgba(255,255,255,0.07);
-                          overflow:hidden;display:flex;min-width:100px">
-                <div style="width:${socW}%;background:#5b7fff;height:100%;transition:width 0.6s ease"></div>
-                <div style="width:${momW}%;background:var(--amber);height:100%;transition:width 0.6s ease"></div>
-                <div style="width:${volW}%;background:var(--green);height:100%;transition:width 0.6s ease"></div>
-              </div>
-              <span style="font-size:11px;font-weight:700;color:${heat >= 70 ? '#ff7733' : heat >= 50 ? 'var(--amber)' : 'var(--subtext)'}">
-                ${heat}
-              </span>
-            </div>
-          </td>
-        </tr>`;
-    }).join('');
-
-  } catch(e) {
-    console.error('[HotStocks]', e);
-    if (body) body.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--red);padding:20px">Error loading data</td></tr>';
-    if (tagEl) tagEl.textContent = 'Error';
-  }
-}
-
 // ── Macro Pulse Strip ─────────────────────────────────────────────────────────
 const MACRO_SYMBOLS = [
   { key:'SPY',      label:'SPY',    emoji:'📈' },
@@ -8221,66 +7548,6 @@ async function refreshEtfFlows(force = false) {
 // ── Per-ticker elite indicators are wired directly in fetchLiveData() ────────
 // (loadMultiTF, loadRelativeStrength, loadDarkPool called after populateLiveDashboard)
 
-
-// ── S&P 500 Heat Map ─────────────────────────────────────────────────────────
-async function refreshHeatmap(force = false) {
-  if (!SERVER_MODE) return;
-  const grid = document.getElementById('heatmapGrid');
-  const tsEl = document.getElementById('heatmapTs');
-  if (force && grid) grid.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:20px 0;text-align:center">Refreshing…</div>';
-
-  try {
-    const r = await fetch('/api/heatmap' + (force ? '?force=1' : ''));
-    const d = await r.json();
-    if (d.error || !d.sectors) return;
-    if (tsEl) tsEl.textContent = 'Updated ' + (d.as_of || '');
-    renderHeatmap(d.sectors);
-  } catch(e) { console.error('[Heatmap]', e); }
-}
-
-function heatColor(pct) {
-  const abs = Math.min(Math.abs(pct), 5);
-  const intensity = abs / 5;
-  if (pct >= 0) {
-    // green: from rgba(0,230,118,0.12) to rgba(0,230,118,0.85)
-    return `rgba(0,230,118,${(0.12 + intensity * 0.73).toFixed(2)})`;
-  } else {
-    // red: from rgba(255,61,87,0.12) to rgba(255,61,87,0.85)
-    return `rgba(255,61,87,${(0.12 + intensity * 0.73).toFixed(2)})`;
-  }
-}
-
-function renderHeatmap(sectors) {
-  const grid = document.getElementById('heatmapGrid');
-  if (!grid) return;
-
-  grid.innerHTML = sectors.map(sector => {
-    const stocksHtml = sector.stocks.map(s => {
-      const bg    = heatColor(s.pct);
-      const color = s.pct >= 0 ? 'var(--green)' : 'var(--red)';
-      const sign  = s.pct >= 0 ? '+' : '';
-      const abs   = Math.abs(s.pct);
-      // Bigger text if big move
-      const fontSize = abs >= 3 ? '12px' : abs >= 1.5 ? '11px' : '10px';
-      return `<div onclick="loadTicker('${s.sym}')" style="
-          background:${bg};border-radius:5px;padding:6px 4px;text-align:center;
-          cursor:pointer;transition:filter 0.15s;min-width:0"
-          onmouseover="this.style.filter='brightness(1.3)'"
-          onmouseout="this.style.filter=''">
-        <div style="font-weight:700;font-size:11px;color:var(--text-hi);font-family:'JetBrains Mono',monospace;white-space:nowrap">${s.sym}</div>
-        <div style="font-weight:700;font-size:${fontSize};color:${color};margin-top:1px">${sign}${s.pct.toFixed(2)}%</div>
-      </div>`;
-    }).join('');
-
-    return `<div>
-      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
-                  letter-spacing:0.5px;margin-bottom:5px">${sector.name}</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(68px,1fr));gap:4px">
-        ${stocksHtml}
-      </div>
-    </div>`;
-  }).join('');
-}
 
 // ── Sector Rotation Radar ─────────────────────────────────────────────────────
 let _radarChartInst = null;
