@@ -5599,6 +5599,7 @@ _ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.010"))      # 1.
 _ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.020"))# 2.0% for STRONG
 _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "65"))             # min confidence
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "3"))            # min streak count — data shows streak=3 is 50% WR vs streak=2 at 40%
+_ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "15.0"))        # min stock price — low-priced stocks have wide spread-to-move ratio, stop out immediately
 _ALP_DEDUP_SECS       = 1800   # don't re-enter same ticker+direction within 30 min
 
 _alp_last_traded  = {}   # { sym: {"dir": str, "ts": float} }
@@ -6160,6 +6161,14 @@ def _alp_execute_signal(res: dict):
 
     if not price:
         print(f"[Alpaca] {sym} — SKIPPED: no price available")
+        return
+
+    # ── Minimum Price Filter ───────────────────────────────────────────────────
+    # Low-priced stocks (<$15) have wide bid-ask spreads relative to the 0.5% stop.
+    # In practice they stop out in seconds before the move develops.
+    # Examples today: CLOV $2.61 (stop hit in 13s), BLDP $3.95, ARRY $8.15.
+    if _ALP_MIN_PRICE > 0 and price < _ALP_MIN_PRICE:
+        print(f"[Alpaca] {sym} — SKIPPED: price ${price:.2f} below min ${_ALP_MIN_PRICE:.2f}")
         return
 
     # ── Tape Alignment Filter ──────────────────────────────────────────────────
