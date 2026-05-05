@@ -5285,16 +5285,44 @@ _breadth_state = {
 }
 _breadth_lock = threading.Lock()
 
-# Overrideable via Railway Variables
-# Raised easy-direction floors to 75 — EOD data 5/5/26 showed 70-79% tier at
-# only 18% WR (2/11 signals), while 80%+ tier held at 50-100%. The 65/70 floors
-# were admitting too many weak signals. Counter-regime floors stay at 85.
-_BREADTH_BEAR_CONF_BEARISH  = int(os.getenv("BREADTH_BEAR_CONF_BEARISH",  "75"))  # was 65
-_BREADTH_BULL_CONF_BEARISH  = int(os.getenv("BREADTH_BULL_CONF_BEARISH",  "85"))  # unchanged
-_BREADTH_BEAR_CONF_NEUTRAL  = int(os.getenv("BREADTH_BEAR_CONF_NEUTRAL",  "75"))  # was 70
-_BREADTH_BULL_CONF_NEUTRAL  = int(os.getenv("BREADTH_BULL_CONF_NEUTRAL",  "75"))  # was 70
-_BREADTH_BEAR_CONF_BULLISH  = int(os.getenv("BREADTH_BEAR_CONF_BULLISH",  "85"))  # unchanged
-_BREADTH_BULL_CONF_BULLISH  = int(os.getenv("BREADTH_BULL_CONF_BULLISH",  "70"))  # was 65→75, dialed back: bull signals on bullish days need less confirmation
+# ── Dynamic Confidence Floors ─────────────────────────────────────────────────
+# With-trend floor scales automatically with breadth score strength:
+#   Neutral edge (score=35 or 65): easy-direction floor = BREADTH_EASY_CONF_NEUTRAL (75)
+#   Extreme trend (score=0 or 100): easy-direction floor = BREADTH_EASY_CONF_EXTREME (65)
+#   Counter-regime signals always require BREADTH_COUNTER_CONF (85) regardless of score.
+# Example: BULLISH 73 → bull_conf=73, bear_conf=85
+#          BULLISH 90 → bull_conf=68, bear_conf=85
+#          BEARISH 25 → bull_conf=85, bear_conf=72
+#          NEUTRAL 50 → bull_conf=75, bear_conf=75
+_BREADTH_EASY_CONF_NEUTRAL = int(os.getenv("BREADTH_EASY_CONF_NEUTRAL", "75"))   # floor at regime boundary
+_BREADTH_EASY_CONF_EXTREME = int(os.getenv("BREADTH_EASY_CONF_EXTREME", "65"))   # floor at max trend strength
+_BREADTH_COUNTER_CONF      = int(os.getenv("BREADTH_COUNTER_CONF",      "85"))   # counter-regime always
+
+def _dynamic_conf_floors(score: float):
+    """
+    Returns (bull_conf, bear_conf) scaled to current breadth score.
+    Strong trend → lower bar for with-trend signals.
+    Counter-regime always locked at _BREADTH_COUNTER_CONF.
+    """
+    _range = _BREADTH_EASY_CONF_NEUTRAL - _BREADTH_EASY_CONF_EXTREME  # e.g. 10
+    if score < 35:
+        # BEARISH — bear is easy, bull is counter
+        trend_strength = (35 - score) / 35          # 0 at edge, 1 at extreme
+        bear_conf = round(_BREADTH_EASY_CONF_NEUTRAL - trend_strength * _range)
+        bull_conf = _BREADTH_COUNTER_CONF
+        regime    = "BEARISH"
+    elif score > 65:
+        # BULLISH — bull is easy, bear is counter
+        trend_strength = (score - 65) / 35          # 0 at edge, 1 at extreme
+        bull_conf = round(_BREADTH_EASY_CONF_NEUTRAL - trend_strength * _range)
+        bear_conf = _BREADTH_COUNTER_CONF
+        regime    = "BULLISH"
+    else:
+        # NEUTRAL — both directions get the neutral floor
+        bull_conf = _BREADTH_EASY_CONF_NEUTRAL
+        bear_conf = _BREADTH_EASY_CONF_NEUTRAL
+        regime    = "NEUTRAL"
+    return regime, bull_conf, bear_conf
 
 # ── Tape Alignment Filter ──────────────────────────────────────────────────────
 # When the tape is running strongly in one direction (e.g. 72%+ BEAR signals),
@@ -5499,19 +5527,8 @@ def _compute_breadth_score() -> None:
 
     score = max(0.0, min(100.0, 50.0 + spy_pts + qqq_pts + sig_pts + ad_pts))
 
-    # Determine regime + thresholds
-    if score < 35:
-        regime    = "BEARISH"
-        bull_conf = _BREADTH_BULL_CONF_BEARISH   # 85 — harder to go long
-        bear_conf = _BREADTH_BEAR_CONF_BEARISH   # 75 — easier to go short
-    elif score > 65:
-        regime    = "BULLISH"
-        bull_conf = _BREADTH_BULL_CONF_BULLISH   # 75 — easier to go long
-        bear_conf = _BREADTH_BEAR_CONF_BULLISH   # 85 — harder to go short
-    else:
-        regime    = "NEUTRAL"
-        bull_conf = _BREADTH_BULL_CONF_NEUTRAL   # 75
-        bear_conf = _BREADTH_BEAR_CONF_NEUTRAL   # 75
+    # Determine regime + dynamic conf floors (scale with trend strength)
+    regime, bull_conf, bear_conf = _dynamic_conf_floors(score)
 
     with _breadth_lock:
         _breadth_state.update({
