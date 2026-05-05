@@ -5300,6 +5300,14 @@ _BREADTH_BULL_CONF_BULLISH  = int(os.getenv("BREADTH_BULL_CONF_BULLISH",  "60"))
 # Set TAPE_FILTER_THRESHOLD=0 in Railway Variables to disable.
 _TAPE_FILTER_THRESHOLD = float(os.getenv("TAPE_FILTER_THRESHOLD", "0.72"))
 
+# ── ELITE Preemption ───────────────────────────────────────────────────────────
+# When all position slots are full and an ELITE signal arrives (both_agree=1,
+# conf ≥ ELITE_PREEMPT_CONF), close the worst-performing open position to make
+# room. Only preempts positions that are already losing (unrealized_plpc < 0).
+# This ensures the highest-conviction signals always get a slot.
+# Set ELITE_PREEMPT_CONF=0 in Railway Variables to disable.
+_ELITE_PREEMPT_CONF = int(os.getenv("ELITE_PREEMPT_CONF", "85"))
+
 # ── Social Sentiment Confidence Boost ─────────────────────────────────────────
 # Background-refreshed dict of tickers currently trending on Reddit/ApeWisdom.
 # Used by _alp_execute_signal to add +5 conf pts when a Kronos signal
@@ -6166,10 +6174,49 @@ def _alp_execute_signal(res: dict):
         # 3x and blocks new entries.
         total_exposure = len(open_positions)
         if total_exposure >= _ALP_MAX_POSITIONS:
-            print(f"[Alpaca] {sym} — SKIPPED: max positions reached ({total_exposure}/{_ALP_MAX_POSITIONS})")
-            with _alp_lock:
-                _alp_last_traded.pop(sym, None)  # clear dedup so retry works
-            return
+            # ── ELITE Preemption ──────────────────────────────────────────────
+            # If this is an ELITE signal (both_agree=1, conf ≥ threshold) and
+            # all slots are full, try to close the worst-performing position to
+            # make room. Only ejects positions that are already in the red.
+            is_elite_signal = (res.get("both_agree") == 1
+                               and eff_conf >= _ELITE_PREEMPT_CONF
+                               and _ELITE_PREEMPT_CONF > 0)
+            if is_elite_signal:
+                try:
+                    r_pos = requests.get(f"{_ALPACA_BASE_URL}/v2/positions",
+                                         headers=_alp_headers(), timeout=8)
+                    if r_pos.status_code == 200:
+                        pos_list = r_pos.json()
+                        # Find worst unrealized P&L position (only eject losers)
+                        losers = [p for p in pos_list
+                                  if float(p.get("unrealized_plpc", 0)) < 0
+                                  and p["symbol"] != sym]
+                        if losers:
+                            worst = min(losers,
+                                        key=lambda p: float(p.get("unrealized_plpc", 0)))
+                            worst_sym  = worst["symbol"]
+                            worst_side = worst.get("side", "long")
+                            worst_pct  = float(worst.get("unrealized_plpc", 0)) * 100
+                            print(f"[ELITE] {sym} conf={eff_conf:.0f}% — preempting "
+                                  f"{worst_sym} ({worst_pct:+.2f}% unrealized) to free slot")
+                            _alp_close_position(worst_sym, worst_side)
+                            with _alp_lock:
+                                _alp_last_traded.pop(worst_sym, None)
+                            time.sleep(1.5)   # brief pause for close to settle
+                            # Re-check position count after close
+                            open_positions = _alp_get_open_positions()
+                            total_exposure = len(open_positions)
+                        else:
+                            print(f"[ELITE] {sym} conf={eff_conf:.0f}% — all {total_exposure} "
+                                  f"positions profitable, no preemption (slots full)")
+                except Exception as e:
+                    print(f"[ELITE] preemption error: {e}")
+
+            if total_exposure >= _ALP_MAX_POSITIONS:
+                print(f"[Alpaca] {sym} — SKIPPED: max positions reached ({total_exposure}/{_ALP_MAX_POSITIONS})")
+                with _alp_lock:
+                    _alp_last_traded.pop(sym, None)  # clear dedup so retry works
+                return
 
         social_tag = f" social+{social_boost}" if social_boost > 0 else ""
         print(f"[Alpaca] {sym} — FIRING bracket: {direction.upper()} "
