@@ -5714,7 +5714,7 @@ _alp_pending      = {}    # { sym: ts_placed }  — cleared after 60s or on conf
 _alp_pending_lock = threading.Lock()
 
 # Time-based exit: max minutes a position can sit without hitting stop/target
-_ALP_MAX_HOLD_MINS = int(os.getenv("ALPACA_MAX_HOLD_MINS", "45"))
+_ALP_MAX_HOLD_MINS = int(os.getenv("ALPACA_MAX_HOLD_MINS", "20"))
 
 
 def _alp_headers():
@@ -5864,19 +5864,56 @@ def _alp_recover_positions():
     try:
         r = requests.get(f"{_ALPACA_BASE_URL}/v2/positions",
                          headers=_alp_headers(), timeout=8)
-        if r.status_code == 200:
-            now = time.time()
-            recovered = 0
-            with _alp_lock:
-                for pos in r.json():
-                    sym = pos["symbol"]
-                    if sym not in _alp_last_traded:
-                        direction = "bull" if pos.get("side", "long") == "long" else "bear"
-                        _alp_last_traded[sym] = {"dir": direction, "ts": now}
-                        recovered += 1
-            if recovered:
-                print(f"[Alpaca] ♻️  Recovered {recovered} pre-existing position(s) into "
-                      f"time-exit tracker — timer starts from now")
+        if r.status_code != 200:
+            return
+        positions = r.json()
+        if not positions:
+            return
+
+        # Fetch recent filled orders once to look up actual entry times.
+        # This fixes the bug where every redeploy reset the time-exit clock to now,
+        # allowing positions to survive indefinitely through multiple deploys.
+        filled_orders = {}
+        try:
+            syms = ",".join(p["symbol"] for p in positions)
+            ord_r = requests.get(
+                f"{_ALPACA_BASE_URL}/v2/orders",
+                headers=_alp_headers(),
+                params={"status": "filled", "symbols": syms,
+                        "limit": 50, "direction": "desc"},
+                timeout=8
+            )
+            if ord_r.status_code == 200:
+                for o in ord_r.json():
+                    s = o.get("symbol", "")
+                    if s and s not in filled_orders and o.get("filled_at"):
+                        filled_orders[s] = o["filled_at"]
+        except Exception as _oe:
+            print(f"[Alpaca] Recovery: order lookup failed ({_oe}), will use now as fallback")
+
+        now = time.time()
+        recovered = 0
+        with _alp_lock:
+            for pos in positions:
+                sym = pos["symbol"]
+                if sym not in _alp_last_traded:
+                    direction = "bull" if pos.get("side", "long") == "long" else "bear"
+                    # Use actual fill time if we have it, else fall back to now
+                    entry_ts = now
+                    if sym in filled_orders:
+                        try:
+                            ts_str = filled_orders[sym].replace("Z", "+00:00")
+                            entry_ts = datetime.fromisoformat(ts_str).timestamp()
+                        except Exception:
+                            pass
+                    age_mins = (now - entry_ts) / 60
+                    _alp_last_traded[sym] = {"dir": direction, "ts": entry_ts}
+                    recovered += 1
+                    print(f"[Alpaca] ♻️  {sym} recovered — entered {age_mins:.0f}m ago "
+                          f"(max hold={_ALP_MAX_HOLD_MINS}m, "
+                          f"{'will exit soon' if age_mins >= _ALP_MAX_HOLD_MINS else f'{_ALP_MAX_HOLD_MINS - age_mins:.0f}m remaining'})")
+        if recovered:
+            print(f"[Alpaca] ♻️  Recovered {recovered} position(s) with real entry times")
     except Exception as e:
         print(f"[Alpaca] Position recovery error: {e}")
 
@@ -6210,11 +6247,35 @@ def _alp_time_exit_loop():
                 entry_ts = entry_info.get("ts", 0)
                 if not entry_ts:
                     # Position exists in Alpaca but not in our tracker (survived a redeploy).
-                    # Seed it now so the timer starts from this check cycle.
+                    # BUG FIX: previously used now_ts, which reset the clock on every deploy
+                    # and let positions live forever. Now we look up the actual fill time
+                    # from Alpaca orders so the timer is always anchored to real entry.
                     direction = "bull" if side == "long" else "bear"
+                    actual_ts = now_ts  # default fallback
+                    try:
+                        ord_r = requests.get(
+                            f"{_ALPACA_BASE_URL}/v2/orders",
+                            headers=_alp_headers(),
+                            params={"status": "filled", "symbols": sym,
+                                    "limit": 5, "direction": "desc"},
+                            timeout=5
+                        )
+                        if ord_r.status_code == 200:
+                            entry_side = "buy" if side == "long" else "sell"
+                            for o in ord_r.json():
+                                if o.get("side") == entry_side and o.get("filled_at"):
+                                    # Alpaca timestamps: "2026-05-05T14:23:45.123456Z"
+                                    ts_str = o["filled_at"].replace("Z", "+00:00")
+                                    from datetime import timezone as _tz
+                                    actual_ts = datetime.fromisoformat(ts_str).timestamp()
+                                    break
+                    except Exception as _seed_err:
+                        print(f"[TimeExit] {sym} — order lookup failed ({_seed_err}), seeding with now")
+                    age_mins = (now_ts - actual_ts) / 60
                     with _alp_lock:
-                        _alp_last_traded[sym] = {"dir": direction, "ts": now_ts}
-                    print(f"[TimeExit] {sym} — seeded into tracker (pre-deploy position, timer starts now)")
+                        _alp_last_traded[sym] = {"dir": direction, "ts": actual_ts}
+                    print(f"[TimeExit] {sym} — seeded with actual entry {age_mins:.0f}m ago "
+                          f"(max hold={_ALP_MAX_HOLD_MINS}m)")
                     continue   # will be evaluated on the next cycle
                 age_mins = (now_ts - entry_ts) / 60
                 if age_mins >= _ALP_MAX_HOLD_MINS:
