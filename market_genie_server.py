@@ -5733,9 +5733,9 @@ _tech_snap_cache  = {}   # { sym: (result_dict, expiry_ts) }
 _tech_snap_lock   = threading.Lock()
 
 # Gates — set to 0 in Railway Variables to disable
-_RSI_OVERBOUGHT   = int(os.getenv("TECH_RSI_OVERBOUGHT",  "78"))   # block BULL if RSI ≥ this
-_RSI_OVERSOLD     = int(os.getenv("TECH_RSI_OVERSOLD",    "22"))   # block BEAR if RSI ≤ this
-_VOL_SURGE_MIN    = float(os.getenv("TECH_VOL_SURGE_MIN",  "2.0")) # hard gate: need 2× avg volume
+_RSI_OVERBOUGHT   = int(os.getenv("TECH_RSI_OVERBOUGHT",  "82"))   # block BULL if RSI ≥ this (82 = Reddit rec; 78 was too tight, blocks breakouts)
+_RSI_OVERSOLD     = int(os.getenv("TECH_RSI_OVERSOLD",    "18"))   # block BEAR if RSI ≤ this (18 = matching loosening)
+_VOL_SURGE_MIN    = float(os.getenv("TECH_VOL_SURGE_MIN",  "1.5")) # hard gate: 1.5× avg (2.0 blocked ~50% of valid setups with no live data support)
 _VWAP_BOOST       = int(os.getenv("TECH_VWAP_BOOST",       "5"))   # conf pts when price on right side of VWAP
 _EMA_BOOST        = int(os.getenv("TECH_EMA_BOOST",         "5"))   # conf pts when 5/13/34 stack aligned
 
@@ -6312,10 +6312,11 @@ def _alp_execute_signal(res: dict):
     if streak < _ALP_MIN_STREAK:
         print(f"[Alpaca] {sym} — SKIPPED: streak {streak} < min {_ALP_MIN_STREAK}")
         return
-    # both_agree gate: only trade when Kronos + TFM agree — 88.4% WR vs 50% without
-    if not res.get("both_agree"):
-        print(f"[Alpaca] {sym} — SKIPPED: both_agree=0 (models disagree on direction)")
-        return
+    # both_agree gate REMOVED — live data showed ba=0 WR (54.2%) ≥ ba=1 WR (53.1%).
+    # Gate was blocking ~50% of signals with no measurable quality improvement.
+    # ba=1 signals still get priority sorting in the scanner and VWAP/EMA boosts.
+    ba = res.get("both_agree", 0)
+    print(f"[Alpaca] {sym} — both_agree={ba} (informational only, not gating)")
 
     # ── Kronos Strength Gate ──────────────────────────────────────────────────
     # Require |kronos_pct| >= threshold. Weak Kronos (<0.5%) = 50% WR coin flip.
