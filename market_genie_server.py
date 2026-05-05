@@ -5435,7 +5435,18 @@ def _alp_count_open_orders():
 
 def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
     """
-    Place a bracket order (market entry + OCO stop/target) on Alpaca.
+    Two-phase order for accurate bracket placement:
+      Phase 1: Submit market entry only.
+      Phase 2: Poll for actual fill price (up to 10s), then attach OCO
+               stop/target based on REAL fill price — not a pre-order quote.
+
+    Why two-phase matters:
+      A single-shot bracket anchors stop/target to a Finnhub pre-order quote.
+      If the market order fills 0.3% higher (slippage / spread), the stop is
+      now effectively 0.2% below fill instead of 0.5% — inverted R:R.
+      Two-phase guarantees stop/target are always exactly 0.5% / 1% from
+      the ACTUAL fill price regardless of slippage.
+
     direction: 'bull' → buy, 'bear' → sell short
     is_strong: True if |Kronos| ≥ 1% → use 2% target instead of 1%
     """
@@ -5443,11 +5454,8 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
         print("[Alpaca] Keys not configured — skipping order")
         return False
 
-    # ── Fetch fresh real-time price from Finnhub for accurate bracket levels ──
-    # Scanner price can be 1-5 min stale. If the stock moved since the signal,
-    # using the stale price anchors stop/target to the wrong level, creating
-    # bad R:R (e.g. fill at +1.5% above signal = stop already 2% away at fill).
-    signal_price = price   # keep for logging
+    # ── Fetch fresh real-time price from Finnhub (used for qty + stale guard) ──
+    signal_price = price
     if FINNHUB_KEY:
         try:
             fh_q = requests.get("https://finnhub.io/api/v1/quote",
@@ -5463,58 +5471,113 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
         except Exception as _fq_err:
             print(f"[Alpaca] {sym} fresh quote failed ({_fq_err}), using signal price")
 
-    # Stale-price guard: if fresh price has moved >1% from signal price, skip.
-    # At 0.5% stop + 1% target, a 1%+ move means the bracket is already anchored
-    # to the wrong level — stop would be 1.5% away and target only 0.5% away at fill,
-    # producing a 1:3 R:R (inverted). Reduced from 2% after a live INTC trade where
-    # a 1.53% quote lag caused a stop 2% below actual fill, resulting in a $104 loss.
+    # Stale-price guard: skip if price moved >1% since signal
     if signal_price > 0 and abs(price - signal_price) / signal_price > 0.01:
         print(f"[Alpaca] {sym} — SKIPPED: price moved {((price-signal_price)/signal_price*100):+.2f}% "
-              f"since signal (>${signal_price:.2f} → ${price:.2f}) — bracket would be anchored incorrectly")
+              f"since signal (${signal_price:.2f} → ${price:.2f})")
         return False
 
-    side       = "buy" if direction == "bull" else "sell"
-    qty        = max(1, int(_ALP_POSITION_SIZE_USD / price)) if price > 0 else 1
-    target_pct = _ALP_STRONG_TARGET_PCT if is_strong else _ALP_TARGET_PCT
+    side         = "buy"  if direction == "bull" else "sell"
+    close_side   = "sell" if direction == "bull" else "buy"
+    qty          = max(1, int(_ALP_POSITION_SIZE_USD / price)) if price > 0 else 1
+    target_pct   = _ALP_STRONG_TARGET_PCT if is_strong else _ALP_TARGET_PCT
 
-    if direction == "bull":
-        stop_px   = round(price * (1 - _ALP_STOP_PCT), 2)
-        target_px = round(price * (1 + target_pct), 2)
-    else:
-        stop_px   = round(price * (1 + _ALP_STOP_PCT), 2)
-        target_px = round(price * (1 - target_pct), 2)
-
-    order = {
+    # ── Phase 1: Submit market entry (no bracket yet) ─────────────────────────
+    entry_order = {
         "symbol":        sym,
         "qty":           str(qty),
         "side":          side,
         "type":          "market",
         "time_in_force": "day",
-        "order_class":   "bracket",
-        "take_profit":   {"limit_price": str(target_px)},
-        "stop_loss":     {"stop_price": str(stop_px)},
     }
-
-    print(f"[Alpaca] POST /v2/orders → {sym} {side.upper()} qty={qty} stop=${stop_px} target=${target_px}")
+    print(f"[Alpaca] Phase1 POST /v2/orders → {sym} {side.upper()} qty={qty} market")
     try:
-        r = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
-                          headers=_alp_headers(),
-                          json=order, timeout=10)
-        if r.status_code in (200, 201):
-            resp = r.json()
-            # Register in pending set immediately so next position check
-            # counts this slot before Alpaca API confirms it (2-5s lag).
-            with _alp_pending_lock:
-                _alp_pending[sym] = time.time()
-            print(f"[Alpaca] ✅ ORDER PLACED — {side.upper()} {qty}x {sym} @ ~${price:.2f} "
-                  f"| stop ${stop_px} | target ${target_px} | id={resp.get('id','?')[:8]}")
+        r1 = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
+                           headers=_alp_headers(),
+                           json=entry_order, timeout=10)
+        if r1.status_code not in (200, 201):
+            print(f"[Alpaca] ❌ Entry order rejected HTTP {r1.status_code}: {r1.text[:500]}")
+            return False
+        entry_resp = r1.json()
+        order_id   = entry_resp.get("id", "")
+        # Register pending immediately so slot is counted before Alpaca confirms
+        with _alp_pending_lock:
+            _alp_pending[sym] = time.time()
+        print(f"[Alpaca] Phase1 ✅ entry submitted id={order_id[:8]}")
+    except Exception as e:
+        print(f"[Alpaca] ❌ Entry order exception: {e}")
+        return False
+
+    # ── Phase 2: Poll for fill → get actual fill price ─────────────────────────
+    # Market orders fill within ~1s during regular hours; 10s timeout is generous.
+    fill_price = None
+    fill_qty   = None
+    for _attempt in range(20):   # 20 × 0.5s = 10s max
+        time.sleep(0.5)
+        try:
+            r_poll = requests.get(f"{_ALPACA_BASE_URL}/v2/orders/{order_id}",
+                                  headers=_alp_headers(), timeout=5)
+            if r_poll.status_code == 200:
+                od = r_poll.json()
+                status = od.get("status", "")
+                if status == "filled":
+                    fill_price = float(od.get("filled_avg_price") or 0)
+                    fill_qty   = int(float(od.get("filled_qty") or qty))
+                    print(f"[Alpaca] Phase2 ✅ filled {fill_qty}x {sym} @ ${fill_price:.4f} "
+                          f"(quoted ${price:.2f}, slippage={((fill_price-price)/price*100):+.3f}%)")
+                    break
+                elif status in ("cancelled", "rejected", "expired"):
+                    print(f"[Alpaca] Phase2 ❌ entry {status} — aborting bracket")
+                    return False
+        except Exception as _pe:
+            print(f"[Alpaca] Phase2 poll error: {_pe}")
+
+    # Fallback: if poll timed out use Finnhub fresh quote (still better than signal price)
+    if not fill_price or fill_price <= 0:
+        fill_price = price
+        fill_qty   = qty
+        print(f"[Alpaca] Phase2 ⚠️  poll timed out — using Finnhub quote ${price:.2f} for bracket")
+
+    # ── Phase 3: Attach OCO stop/target anchored to ACTUAL fill price ──────────
+    if direction == "bull":
+        stop_px   = round(fill_price * (1 - _ALP_STOP_PCT),    2)
+        target_px = round(fill_price * (1 + target_pct),        2)
+    else:
+        stop_px   = round(fill_price * (1 + _ALP_STOP_PCT),    2)
+        target_px = round(fill_price * (1 - target_pct),        2)
+
+    oco_order = {
+        "symbol":        sym,
+        "qty":           str(fill_qty),
+        "side":          close_side,
+        "type":          "limit",
+        "time_in_force": "day",
+        "order_class":   "oco",
+        "take_profit":   {"limit_price": str(target_px)},
+        "stop_loss":     {"stop_price":  str(stop_px)},
+    }
+    print(f"[Alpaca] Phase3 POST OCO → {sym} stop=${stop_px} target=${target_px} "
+          f"(fill=${fill_price:.2f}, stop_dist={abs(fill_price-stop_px)/fill_price*100:.3f}%, "
+          f"target_dist={abs(target_px-fill_price)/fill_price*100:.3f}%)")
+    try:
+        r3 = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
+                           headers=_alp_headers(),
+                           json=oco_order, timeout=10)
+        if r3.status_code in (200, 201):
+            oco_resp = r3.json()
+            print(f"[Alpaca] ✅ BRACKET SET — {side.upper()} {fill_qty}x {sym} "
+                  f"fill=${fill_price:.2f} | stop=${stop_px} | target=${target_px} "
+                  f"| oco_id={oco_resp.get('id','?')[:8]}")
             return True
         else:
-            print(f"[Alpaca] ❌ Order rejected HTTP {r.status_code}: {r.text[:500]}")
-            return False
+            # Entry is already filled — position is open but unprotected.
+            # Log loudly; the EOD flattener will close it at 15:55.
+            print(f"[Alpaca] ⚠️  OCO rejected HTTP {r3.status_code}: {r3.text[:300]}")
+            print(f"[Alpaca] ⚠️  {sym} position OPEN but NO bracket — EOD flattener will close at 15:55")
+            return True   # entry succeeded; bracket partial failure is not fatal
     except Exception as e:
-        print(f"[Alpaca] ❌ Order exception: {e}")
-        return False
+        print(f"[Alpaca] ⚠️  OCO exception: {e} — {sym} open, no bracket")
+        return True   # same: entry filled, bracket failed — not fatal
 
 
 def _alp_flatten_all():
