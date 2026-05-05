@@ -5604,6 +5604,7 @@ _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "65"))             # mi
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
 _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "8.0"))         # min stock price — below $8 spread-to-move ratio gets too wide for 0.5% stops
 _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.15"))   # max bid-ask spread % — FSLR had 0.16% (blocked); 0.15% passes large/mid caps, blocks thin stocks
+_ALP_MIN_DAY_RANGE_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5")) # min % move from today's open — filters flat/dead stocks (SBUX, SCHW sitting still); dynamic so it only blocks stocks dead *today*
 _ALP_DEDUP_SECS       = 1800   # don't re-enter same ticker+direction within 30 min
 
 _alp_last_traded  = {}   # { sym: {"dir": str, "ts": float} }
@@ -5807,6 +5808,21 @@ def _get_tech_snapshot(sym: str) -> dict:
         avg_vol  = sum(vols[:-1]) / max(len(vols) - 1, 1)
         vol_ratio = round(vols[-1] / avg_vol, 2) if avg_vol > 0 else 1.0
 
+        # Today's open: pull 1 daily bar — gives the official 9:30 open price.
+        # Used for the day-range filter in _alp_execute_signal.
+        day_open = 0.0
+        try:
+            dr = requests.get(
+                f"{data_url}/v2/stocks/{sym}/bars?timeframe=1Day&limit=1&feed=iex",
+                headers=_alp_headers(), timeout=4
+            )
+            if dr.status_code == 200:
+                dbars = dr.json().get("bars", [])
+                if dbars:
+                    day_open = float(dbars[0].get("o", 0))
+        except Exception:
+            pass   # fail open — day_open stays 0, filter skipped gracefully
+
         result = {
             "rsi":       rsi,
             "ema5":      ema5,
@@ -5815,6 +5831,7 @@ def _get_tech_snapshot(sym: str) -> dict:
             "ema50":     ema50,
             "vol_ratio": vol_ratio,
             "vwap":      vwap_b,
+            "day_open":  day_open,
         }
         with _tech_snap_lock:
             _tech_snap_cache[sym] = (result, time.time() + 300)  # 5 min cache
@@ -6503,6 +6520,22 @@ def _alp_execute_signal(res: dict):
     if _ALP_MIN_PRICE > 0 and price < _ALP_MIN_PRICE:
         print(f"[Alpaca] {sym} — SKIPPED: price ${price:.2f} below min ${_ALP_MIN_PRICE:.2f}")
         return
+
+    # ── Today's Range Filter ──────────────────────────────────────────────────
+    # If a stock hasn't moved at least 0.5% from today's open, it's dead today.
+    # No point entering a flat stock and hoping it suddenly moves enough to hit
+    # a 1.5% target. This is dynamic — a stock that's dead at 10 AM might be
+    # active at 2 PM and pass fine. Fails open if day_open unavailable (no block).
+    if tech:
+        day_open = tech.get("day_open", 0.0)
+        if day_open > 0 and _ALP_MIN_DAY_RANGE_PCT > 0:
+            range_from_open = abs(price - day_open) / day_open * 100
+            if range_from_open < _ALP_MIN_DAY_RANGE_PCT:
+                print(f"[Alpaca] {sym} — SKIPPED: only moved {range_from_open:.2f}% from open "
+                      f"(${day_open:.2f} → ${price:.2f}), min {_ALP_MIN_DAY_RANGE_PCT}% required")
+                return
+            else:
+                print(f"[Alpaca] {sym} — day range {range_from_open:.2f}% from open ✓")
 
     # ── Technical Hard Gates ──────────────────────────────────────────────────
     # Soft boosts (VWAP, EMA) already applied above before the conf gate.
