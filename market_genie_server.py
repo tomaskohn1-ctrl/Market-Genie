@@ -5337,7 +5337,7 @@ _TAPE_FILTER_THRESHOLD = float(os.getenv("TAPE_FILTER_THRESHOLD", "0.72"))
 # room. Only preempts positions that are already losing (unrealized_plpc < 0).
 # This ensures the highest-conviction signals always get a slot.
 # Set ELITE_PREEMPT_CONF=0 in Railway Variables to disable.
-_ELITE_PREEMPT_CONF = int(os.getenv("ELITE_PREEMPT_CONF", "85"))
+_ELITE_PREEMPT_CONF = int(os.getenv("ELITE_PREEMPT_CONF", "0"))  # DISABLED — was churning positions out within seconds of entry, 15% execution WR vs 54% signal WR
 
 # ── Minimum Kronos Strength Gate ──────────────────────────────────────────────
 # Require |kronos_pct| >= threshold before executing.
@@ -5598,7 +5598,7 @@ _ALP_STOP_PCT         = float(os.getenv("ALPACA_STOP_PCT", "0.005"))        # 0.
 _ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.010"))      # 1.0% target
 _ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.020"))# 2.0% for STRONG
 _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "65"))             # min confidence
-_ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak count
+_ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "3"))            # min streak count — data shows streak=3 is 50% WR vs streak=2 at 40%
 _ALP_DEDUP_SECS       = 1800   # don't re-enter same ticker+direction within 30 min
 
 _alp_last_traded  = {}   # { sym: {"dir": str, "ts": float} }
