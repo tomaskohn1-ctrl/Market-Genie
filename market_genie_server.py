@@ -5287,16 +5287,19 @@ _breadth_lock = threading.Lock()
 
 # ── Dynamic Confidence Floors ─────────────────────────────────────────────────
 # With-trend floor scales automatically with breadth score strength:
-#   Neutral edge (score=35 or 65): easy-direction floor = BREADTH_EASY_CONF_NEUTRAL (75)
-#   Extreme trend (score=0 or 100): easy-direction floor = BREADTH_EASY_CONF_EXTREME (65)
-#   Counter-regime signals always require BREADTH_COUNTER_CONF (85) regardless of score.
-# Example: BULLISH 73 → bull_conf=73, bear_conf=85
-#          BULLISH 90 → bull_conf=68, bear_conf=85
-#          BEARISH 25 → bull_conf=85, bear_conf=72
-#          NEUTRAL 50 → bull_conf=75, bear_conf=75
-_BREADTH_EASY_CONF_NEUTRAL = int(os.getenv("BREADTH_EASY_CONF_NEUTRAL", "75"))   # floor at regime boundary
-_BREADTH_EASY_CONF_EXTREME = int(os.getenv("BREADTH_EASY_CONF_EXTREME", "65"))   # floor at max trend strength
-_BREADTH_COUNTER_CONF      = int(os.getenv("BREADTH_COUNTER_CONF",      "85"))   # counter-regime always
+#   Neutral edge (score=35 or 65): easy-direction floor = BREADTH_EASY_CONF_NEUTRAL (65)
+#   Extreme trend (score=0 or 100): easy-direction floor = BREADTH_EASY_CONF_EXTREME (55)
+#   Counter-regime signals always require BREADTH_COUNTER_CONF (80) regardless of score.
+# Example: BULLISH 77 → bull_conf=63, bear_conf=80
+#          BULLISH 90 → bull_conf=58, bear_conf=80
+#          BEARISH 25 → bull_conf=80, bear_conf=63
+#          NEUTRAL 50 → bull_conf=65, bear_conf=65
+# Lowered from 75/65/85 — original values were too conservative given:
+#   a) data showed conf inversion (higher conf = worse WR in 70-80% range)
+#   b) system was consistently stuck at 1-2/5 slots on bullish days
+_BREADTH_EASY_CONF_NEUTRAL = int(os.getenv("BREADTH_EASY_CONF_NEUTRAL", "65"))   # floor at regime boundary (was 75)
+_BREADTH_EASY_CONF_EXTREME = int(os.getenv("BREADTH_EASY_CONF_EXTREME", "55"))   # floor at max trend strength (was 65)
+_BREADTH_COUNTER_CONF      = int(os.getenv("BREADTH_COUNTER_CONF",      "80"))   # counter-regime always (was 85)
 
 def _dynamic_conf_floors(score: float):
     """
