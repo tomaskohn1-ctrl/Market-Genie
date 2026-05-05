@@ -6125,6 +6125,18 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
             print(f"[Alpaca] ✅ BRACKET SET — {side.upper()} {fill_qty}x {sym} "
                   f"fill=${fill_price:.2f} | stop=${stop_px} | target=${target_px} "
                   f"| oco_id={oco_resp.get('id','?')[:8]}")
+
+            # ── 90-second conviction check ────────────────────────────────────
+            # Fires in background after 90s. If Alpha Engine has reversed or
+            # lost streak by then, exits at market before the stop is hit.
+            _cc = threading.Thread(
+                target=_conviction_check,
+                args=(sym, direction, fill_price, fill_qty),
+                daemon=True,
+                name=f"ConvCheck-{sym}"
+            )
+            _cc.start()
+            print(f"[ConvCheck] {sym} — 90s conviction check armed")
             return True
         else:
             # Entry is already filled — position is open but unprotected.
@@ -6220,6 +6232,87 @@ def _alp_close_position(sym: str, side: str):
             print(f"[TimeExit] ❌ {sym} close failed HTTP {r.status_code}: {r.text[:200]}")
     except Exception as e:
         print(f"[TimeExit] {sym} close exception: {e}")
+
+
+def _conviction_check(sym: str, direction: str, fill_price: float, fill_qty: int):
+    """
+    90-second post-entry conviction check.
+
+    After entering a position, wait 90 seconds and ask the Alpha Engine:
+    'Do you still believe in this trade?' If conviction has collapsed,
+    exit at market before the full 0.75% stop is hit.
+
+    Exit triggers (either one is enough):
+      - Direction flipped: model now calls the opposite direction
+      - Streak collapsed to 1: signal lost consecutive confirmation immediately
+
+    Hold triggers (all must be true):
+      - Direction unchanged
+      - Streak still ≥ 2
+
+    Why 90 seconds: long enough for a real reversal to show up in the signal
+    (requires 1 full rescan cycle), short enough to exit before a bad trade
+    digs too deep into the stop buffer.
+    """
+    time.sleep(90)
+
+    try:
+        # ── Step 1: Is the position still open? ──────────────────────────────
+        # May have hit stop or target in the 90s — nothing to do.
+        r_pos = requests.get(f"{_ALPACA_BASE_URL}/v2/positions/{sym}",
+                             headers=_alp_headers(), timeout=5)
+        if r_pos.status_code == 404:
+            print(f"[ConvCheck] {sym} — already closed before 90s check, skipping")
+            return
+        if r_pos.status_code != 200:
+            print(f"[ConvCheck] {sym} — position check HTTP {r_pos.status_code}, skipping")
+            return
+
+        pos = r_pos.json()
+        unrealized_pct = float(pos.get("unrealized_plpc", 0)) * 100
+        pos_side       = pos.get("side", "long")
+
+        # ── Step 2: What does the Alpha Engine say now? ───────────────────────
+        with _predict_lock:
+            sig = dict(_predict_results.get(sym, {}))
+
+        current_dir    = (sig.get("consensus_dir") or "").lower()
+        current_streak = sig.get("streak_count", 0)
+        current_conf   = sig.get("confidence", 0)
+
+        if not current_dir:
+            # Signal data missing (ticker not in recent scan) — hold, don't exit
+            print(f"[ConvCheck] {sym} — no signal data at 90s, holding "
+                  f"(unrealized={unrealized_pct:+.2f}%)")
+            return
+
+        # ── Step 3: Evaluate conviction ───────────────────────────────────────
+        direction_flipped  = (current_dir != direction)
+        streak_collapsed   = (current_streak <= 1)
+
+        if direction_flipped or streak_collapsed:
+            reasons = []
+            if direction_flipped:
+                reasons.append(f"direction flipped {direction.upper()}→{current_dir.upper()}")
+            if streak_collapsed:
+                reasons.append(f"streak collapsed to {current_streak}")
+
+            print(f"[ConvCheck] {sym} ❌ CUTTING — {', '.join(reasons)} | "
+                  f"conf={current_conf:.1f}% | unrealized={unrealized_pct:+.2f}% | "
+                  f"fill=${fill_price:.2f}")
+
+            _alp_close_position(sym, pos_side)
+
+            # Clear dedup so system can re-enter if a fresh signal forms
+            with _alp_lock:
+                _alp_last_traded.pop(sym, None)
+        else:
+            print(f"[ConvCheck] {sym} ✅ HOLDING — dir={current_dir.upper()} "
+                  f"streak={current_streak} conf={current_conf:.1f}% "
+                  f"unrealized={unrealized_pct:+.2f}%")
+
+    except Exception as e:
+        print(f"[ConvCheck] {sym} — error: {e}")
 
 
 def _alp_time_exit_loop():
