@@ -6196,10 +6196,6 @@ def _alp_execute_signal(res: dict):
     if not _us_market_open():
         print(f"[Alpaca] {sym} — SKIPPED: market closed")
         return
-    # No new entries after 15:30 ET — not enough time to reach target before close
-    if not _safe_to_enter():
-        print(f"[Alpaca] {sym} — SKIPPED: past 15:30 ET entry cutoff")
-        return
 
     direction = (res.get("consensus_dir") or res.get("direction") or "").lower()
     conf      = res.get("confidence") or res.get("conf") or 0
@@ -6223,6 +6219,36 @@ def _alp_execute_signal(res: dict):
         boost_tag = "⚡SPIKE" if social_boost >= _SOCIAL_BOOST_SPIKE else "🔥HOT"
         print(f"[SocialBoost] {sym} trending ({boost_tag}) — conf {conf:.1f} → {eff_conf:.1f} "
               f"(+{social_boost} pts)")
+
+    # ── Technical Soft Boosts (BEFORE conf gate so they can push borderline signals) ──
+    # Fetch VWAP and EMA stack now. These boosts must come BEFORE the conf gate so
+    # a signal at e.g. 72% conf on a bullish day (floor=73) can get +5 VWAP and
+    # +5 EMA → 82% and actually pass. Hard gates (RSI, volume) applied after.
+    tech = _get_tech_snapshot(sym)
+    if tech:
+        vwap  = tech.get("vwap")
+        ema5  = tech.get("ema5", 0)
+        ema13 = tech.get("ema13", 0)
+        ema34 = tech.get("ema34", 0)
+
+        # VWAP soft boost — price on correct side of VWAP confirms trend
+        if vwap and _VWAP_BOOST > 0:
+            if (direction == "bull" and price > vwap) or (direction == "bear" and price < vwap):
+                eff_conf += _VWAP_BOOST
+                print(f"[TechBoost] {sym} VWAP aligned (price={price:.2f} vwap={vwap:.2f}) "
+                      f"+{_VWAP_BOOST} conf → {eff_conf:.1f}")
+
+        # EMA stack soft boost — 5 > 13 > 34 for bull, 5 < 13 < 34 for bear
+        if ema5 and ema13 and ema34 and _EMA_BOOST > 0:
+            ema_bull = ema5 > ema13 > ema34
+            ema_bear = ema5 < ema13 < ema34
+            if (direction == "bull" and ema_bull) or (direction == "bear" and ema_bear):
+                eff_conf += _EMA_BOOST
+                print(f"[TechBoost] {sym} EMA stack aligned "
+                      f"(5={ema5:.2f}/13={ema13:.2f}/34={ema34:.2f}) "
+                      f"+{_EMA_BOOST} conf → {eff_conf:.1f}")
+    else:
+        print(f"[TechSnap] {sym} — no tech data, proceeding without soft boosts")
 
     # ── Dynamic breadth-adjusted confidence gate ──────────────────────────────
     # Threshold shifts based on market regime so the system naturally favors
@@ -6266,18 +6292,12 @@ def _alp_execute_signal(res: dict):
         print(f"[Alpaca] {sym} — SKIPPED: price ${price:.2f} below min ${_ALP_MIN_PRICE:.2f}")
         return
 
-    # ── Technical Indicator Gates + Boosts ────────────────────────────────────
-    # Fetches last 20 five-min bars → RSI, EMA stack, volume ratio, VWAP.
-    # Hard blocks: RSI overbought/oversold, volume below 2× avg.
-    # Soft boosts: VWAP alignment +5, EMA stack aligned +5.
-    tech = _get_tech_snapshot(sym)
+    # ── Technical Hard Gates ──────────────────────────────────────────────────
+    # Soft boosts (VWAP, EMA) already applied above before the conf gate.
+    # Only hard rejections here: RSI extremes and volume confirmation.
     if tech:
         rsi       = tech.get("rsi", 50.0)
         vol_ratio = tech.get("vol_ratio", 1.0)
-        vwap      = tech.get("vwap")
-        ema5      = tech.get("ema5", 0)
-        ema13     = tech.get("ema13", 0)
-        ema34     = tech.get("ema34", 0)
 
         # RSI overbought/oversold hard block
         if _RSI_OVERBOUGHT > 0 and direction == "bull" and rsi >= _RSI_OVERBOUGHT:
@@ -6291,22 +6311,6 @@ def _alp_execute_signal(res: dict):
         if _VOL_SURGE_MIN > 0 and vol_ratio < _VOL_SURGE_MIN:
             print(f"[TechGate] {sym} — SKIPPED: vol_ratio {vol_ratio:.2f}× < {_VOL_SURGE_MIN}× required")
             return
-
-        # VWAP soft boost — price on right side of VWAP
-        if vwap and _VWAP_BOOST > 0:
-            if (direction == "bull" and price > vwap) or (direction == "bear" and price < vwap):
-                eff_conf += _VWAP_BOOST
-                print(f"[TechBoost] {sym} VWAP aligned (price={price:.2f} vwap={vwap:.2f}) +{_VWAP_BOOST} conf → {eff_conf:.1f}")
-
-        # EMA stack soft boost — 5 > 13 > 34 for bull, 5 < 13 < 34 for bear
-        if ema5 and ema13 and ema34 and _EMA_BOOST > 0:
-            ema_bull = ema5 > ema13 > ema34
-            ema_bear = ema5 < ema13 < ema34
-            if (direction == "bull" and ema_bull) or (direction == "bear" and ema_bear):
-                eff_conf += _EMA_BOOST
-                print(f"[TechBoost] {sym} EMA stack aligned (5={ema5:.2f}/13={ema13:.2f}/34={ema34:.2f}) +{_EMA_BOOST} conf → {eff_conf:.1f}")
-    else:
-        print(f"[TechSnap] {sym} — no tech data, proceeding without technical filters")
 
     # ── Tape Alignment Filter ──────────────────────────────────────────────────
     # If 72%+ of signals this hour are running in one direction, don't fight the tape.
