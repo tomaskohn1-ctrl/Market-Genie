@@ -5602,7 +5602,7 @@ _ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.015"))      # 1.
 _ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.030"))# 3.0% for STRONG (was 2.0%)
 _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "65"))             # min confidence
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
-_ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "8.0"))         # min stock price — below $8 spread-to-move ratio gets too wide for 0.5% stops
+_ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "15.0"))        # min stock price — CLOV $2.62 (3 losses -$114), DJT $9.23, AI $9.25, SNAP $6.18 all under $10 and all losers today; $15 floor eliminates the worst noise
 _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.15"))   # max bid-ask spread % — FSLR had 0.16% (blocked); 0.15% passes large/mid caps, blocks thin stocks
 _ALP_MIN_DAY_RANGE_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5")) # min % move from today's open — filters flat/dead stocks (SBUX, SCHW sitting still); dynamic so it only blocks stocks dead *today*
 _ALP_DEDUP_SECS       = 1800   # don't re-enter same ticker+direction within 30 min
@@ -6578,9 +6578,14 @@ def _alp_execute_signal(res: dict):
     now = time.time()
     with _alp_lock:
         last = _alp_last_traded.get(sym, {})
-        if last.get("dir") == direction and (now - last.get("ts", 0)) < _ALP_DEDUP_SECS:
+        # Block ANY re-entry on same symbol for 30 min, regardless of direction.
+        # Previously only blocked same-direction, which allowed BULL→BEAR→BULL churn
+        # on choppy stocks (FNGD 5x, WDAY 4x, BITI 4x today). Directional flip on a
+        # ranging stock is noise, not a new opportunity.
+        if last and (now - last.get("ts", 0)) < _ALP_DEDUP_SECS:
             age_min = int((now - last.get("ts", 0)) / 60)
-            print(f"[Alpaca] {sym} — SKIPPED: dedup ({age_min}m ago, same dir={direction})")
+            last_dir = last.get("dir", "?")
+            print(f"[Alpaca] {sym} — SKIPPED: dedup ({age_min}m ago, last dir={last_dir}, new dir={direction})")
             return
         # NOTE: dedup entry is written AFTER successful order (see _alp_place_bracket)
         # Storing tentative here to prevent race, will clear on failure
