@@ -4942,13 +4942,27 @@ def _wr_log_signal(res):
         pass
 
     now = time.time()
+    _wr_deduped = False
     with _wr_lock:
         last = _wr_last_logged.get(sym, {})
         if last.get("dir") == direction and (now - last.get("ts", 0)) < 1800:
             _wr_gate_stats["dedup"] += 1
-            return   # same direction within 30 min → skip
-        _wr_last_logged[sym] = {"dir": direction, "ts": now}
-    _wr_gate_stats["logged"] += 1
+            _wr_deduped = True   # skip DB log but still attempt Alpaca execution
+        else:
+            _wr_last_logged[sym] = {"dir": direction, "ts": now}
+    if not _wr_deduped:
+        _wr_gate_stats["logged"] += 1
+
+    # If WR dedup fired, skip DB write but still attempt Alpaca execution —
+    # _alp_execute_signal has its own independent 30-min dedup so no double-trades.
+    # This fixes the 9:30–9:45 opening window: signals logged pre-entry-gate were
+    # deduped at 9:45+ and never reached the executor.
+    if _wr_deduped:
+        try:
+            _alp_execute_signal(res)
+        except Exception as e:
+            print(f"[Alpaca] Execute error (dedup path): {e}")
+        return
 
     # Get current price for entry
     price = res.get("last_price") or res.get("price") or 0.0
