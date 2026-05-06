@@ -837,20 +837,33 @@ def _alp_ws_on_message(ws, raw):
                 if info == "connected":
                     _alp_ws_status["connected"] = True
                     print("[AlpacaWS] Connected — sending auth")
+                    # Read keys at call time — module may not have finished loading
+                    # when this callback fires (same fix as _alp_ws_runner)
                     ws.send(json.dumps({
                         "action": "auth",
-                        "key":    _ALPACA_KEY,
-                        "secret": _ALPACA_SECRET,
+                        "key":    os.getenv("ALPACA_API_KEY", ""),
+                        "secret": os.getenv("ALPACA_SECRET_KEY", ""),
                     }))
                 elif info == "authenticated":
                     _alp_ws_status["authenticated"] = True
-                    print("[AlpacaWS] Authenticated — subscribing to trades + bars")
-                    tickers = list(_PREDICT_WATCHLIST)
-                    # Subscribe to trades (real-time last price) + bars (OHLCV)
+                    # Alpaca paper accounts cap WebSocket subscriptions at 30 symbols.
+                    # We don't need real-time Alpaca ticks for all 283 universe tickers —
+                    # the Massive/Finnhub WS handles market data; this stream is used for
+                    # position-level price monitoring on our highest-conviction names.
+                    # Priority: leveraged ETFs (regime plays) + top liquid high-beta stocks.
+                    _ALP_WS_TICKERS = [
+                        # Leveraged ETFs — regime plays (bullish + bearish)
+                        "TQQQ","SQQQ","SPXL","SPXS","SOXL","SOXS","FNGU","FNGD",
+                        "BULZ","BERZ","NVDL","TSLL","TNA","TZA","UVXY","VXX",
+                        # Top liquid high-beta — most likely signal generators
+                        "NVDA","TSLA","AMD","META","AAPL","MSFT","AMZN","GOOGL",
+                        "PLTR","COIN","MARA","RIOT","SOFI","HOOD","RKLX",
+                    ][:30]   # hard cap at 30 — Alpaca paper limit
+                    print(f"[AlpacaWS] Authenticated — subscribing to {len(_ALP_WS_TICKERS)} tickers (paper cap=30)")
                     ws.send(json.dumps({
                         "action": "subscribe",
-                        "trades": tickers,
-                        "bars":   tickers,
+                        "trades": _ALP_WS_TICKERS,
+                        "bars":   _ALP_WS_TICKERS,
                     }))
             elif t == "subscription":
                 n = len(msg.get("trades", []))
