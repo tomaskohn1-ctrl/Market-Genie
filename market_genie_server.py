@@ -4257,8 +4257,12 @@ def kronos_scanner():
 # Works 24/7: pre-market, regular hours, after-hours (price-only, no volume needed)
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Prediction engine universe — 350 liquid, high-beta tickers across sectors
-# Rotated through 7 buckets of 50; full cycle every ~7 minutes
+# Prediction engine universe — ~340 liquid, high-beta tickers across sectors
+# Cleaned May 2026: removed 7 duplicates (ASTS, CORZ, GRAB, MELI, MNDY, NU, TSLA),
+# 14 OTC/untradeable (BALLARD, LNVGF, HTHIY, SSNLF, STMICRO, TCEHY, HIVE, BSRT,
+# SMLR, MGOL, GRUB, ANGI, YELP, FSR), added leveraged ETFs (SPXL, SPXS, BULZ,
+# BERZ, NVDL, TSLL) and replaced OTC slots with liquid alternatives.
+# Rotated through 14 buckets of ~25; full cycle every ~3.5 minutes
 _PREDICT_WATCHLIST = [
     # ── Mega-cap tech ──────────────────────────────────────────────────────────
     "AAPL","MSFT","NVDA","TSLA","AMZN","META","AMD","GOOGL","GOOG","AVGO",
@@ -4270,23 +4274,25 @@ _PREDICT_WATCHLIST = [
     # ── Software / cloud / cybersecurity ──────────────────────────────────────
     "CRWD","PANW","NET","SNOW","DDOG","TEAM","ZS","MNDY","APP","AXON",
     "FTNT","OKTA","CFLT","MDB","GTLB","PATH","BILL","HUBS","WDAY","NOW",
-    "VEEV","DSGX","PCTY","CELH","S","MNDY","ASAN","BOX","DOCN","BRZE",
+    "VEEV","DSGX","PCTY","CELH","S","ASAN","BOX","DOCN","BRZE","ESTC",
     # ── Consumer internet / social / streaming ────────────────────────────────
     "NFLX","ROKU","SPOT","TTD","PINS","SNAP","RDDT","RBLX","MTCH","IAC",
-    "UBER","LYFT","ABNB","DASH","GRUB","EXPE","BKNG","TRIP","YELP","ANGI",
+    "UBER","LYFT","ABNB","DASH","EXPE","BKNG","TRIP","EBAY","ETSY","GRAB",
     # ── High-beta / meme / Reddit favorites ───────────────────────────────────
     "GME","AMC","HIMS","RKLB","ASTS","SOFI","HOOD","OPEN","UPST","AFRM",
-    "LMND","ROOT","CLOV","SPCE","CORZ","ACHR","JOBY","ASTS","DJT","GRAB",
+    "LMND","ROOT","CLOV","SPCE","CORZ","ACHR","JOBY","DJT","CHWY","NKLA",
     # ── Crypto-adjacent / Bitcoin miners ──────────────────────────────────────
-    "COIN","MARA","RIOT","MSTR","CLSK","BTBT","CIFR","WULF","HUT","CORZ",
-    "BTDR","IREN","HIVE","BSRT","SMLR","MGOL","BITI","BITO","GBTC","IBIT",
-    # ── Major ETFs (leveraged + sector) ───────────────────────────────────────
-    "SPY","QQQ","IWM","TQQQ","SQQQ","SOXL","SOXS","ARKK","VXX","UVXY",
-    "GLD","SLV","USO","XBI","XLF","XLE","XLK","IBB","SMH","TNA",
-    "TZA","LABU","LABD","FNGU","FNGD","TECL","TECS","NAIL","DPST","CURE",
+    "COIN","MARA","RIOT","MSTR","CLSK","BTBT","CIFR","WULF","HUT",
+    "BTDR","IREN","BITI","BITO","GBTC","IBIT","MSTX","CONY","MSFO","BITX",
+    # ── Major ETFs — broad market + leveraged S&P/Nasdaq ─────────────────────
+    "SPY","QQQ","IWM","TQQQ","SQQQ","SPXL","SPXS","BULZ","BERZ","VXX",
+    "UVXY","ARKK","GLD","SLV","USO","XBI","XLF","XLE","XLK","SMH",
+    # ── Leveraged single-stock + sector ETFs ─────────────────────────────────
+    "SOXL","SOXS","NVDL","TSLL","LABU","LABD","FNGU","FNGD","TECL","TECS",
+    "TNA","TZA","IBB","NAIL","DPST","CURE","BOIL","KOLD","WEBL","WEBS",
     # ── EV / clean energy ─────────────────────────────────────────────────────
-    "RIVN","LCID","NIO","LI","XPEV","FSR","TSLA","CHPT","BLNK","EVGO",
-    "PLUG","FCEL","BE","BLDP","BALLARD","RUN","NOVA","MAXN","CSIQ","JKS",
+    "RIVN","LCID","NIO","LI","XPEV","CHPT","BLNK","EVGO",
+    "PLUG","FCEL","BE","BLDP","RUN","NOVA","MAXN","CSIQ","JKS","STEM",
     # ── Financials / banks / fintech ──────────────────────────────────────────
     "JPM","BAC","GS","MS","C","WFC","SCHW","V","MA","PYPL",
     "AXP","COF","DFS","SQ","NU","MELI","PAGS","STNE","XP","FLYW",
@@ -4299,8 +4305,8 @@ _PREDICT_WATCHLIST = [
     "WMT","TGT","COST","HD","LOW","SBUX","MCD","CMG","LULU","NKE",
     "PTON","BIRK","ONON","SKX","UAA","UA","PVH","GPS","URBN","ANF",
     # ── International ADRs / large-cap growth ─────────────────────────────────
-    "BABA","JD","PDD","TCEHY","BIDU","TSM","ASML","SHOP","SE","GRAB",
-    "MELI","NU","INFY","WIT","ERIC","NOK","STMICRO","LNVGF","HTHIY","SSNLF",
+    "BABA","JD","PDD","BIDU","TSM","ASML","SHOP","SE",
+    "INFY","WIT","ERIC","NOK","STM","NTES","GLOB","DESP",
 ]
 
 _predict_results  = {}      # { sym: result_dict }  — accumulated across all buckets
@@ -5604,12 +5610,14 @@ _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "65"))             # mi
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
 _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "15.0"))        # min stock price — CLOV $2.62 (3 losses -$114), DJT $9.23, AI $9.25, SNAP $6.18 all under $10 and all losers today; $15 floor eliminates the worst noise
 _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.15"))   # max bid-ask spread % — FSLR had 0.16% (blocked); 0.15% passes large/mid caps, blocks thin stocks
-_ALP_MIN_DAY_RANGE_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5")) # min % move from today's open — filters flat/dead stocks (SBUX, SCHW sitting still); dynamic so it only blocks stocks dead *today*
-_ALP_DEDUP_SECS       = 1800   # don't re-enter same ticker+direction within 30 min
+_ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
+_ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
+_ALP_DEDUP_SECS       = 2700   # 45 min dedup — COP cycled 6x at 20-min intervals today because dedup expired exactly when time-exit fired; 45 min prevents re-entry churn
 
-_alp_last_traded  = {}   # { sym: {"dir": str, "ts": float} }
+_alp_last_traded  = {}   # { sym: {"dir": str, "ts": float, "fill": float} }
 _alp_lock         = threading.Lock()
 _alp_order_lock   = threading.Lock()   # serializes position-check → place to prevent over-filling
+_alp_breakeven_set = set()   # syms whose stop has been moved to breakeven — prevents double-moves
 
 # ── Alpaca Data API — real-time batch quote cache ─────────────────────────────
 # Uses the same API keys already in _ALPACA_KEY / _ALPACA_SECRET.
@@ -5718,8 +5726,13 @@ print("[AlpacaData] Snapshot refresh thread started — real-time batch quotes a
 _alp_pending      = {}    # { sym: ts_placed }  — cleared after 60s or on confirm
 _alp_pending_lock = threading.Lock()
 
-# Time-based exit: max minutes a position can sit without hitting stop/target
-_ALP_MAX_HOLD_MINS = int(os.getenv("ALPACA_MAX_HOLD_MINS", "20"))
+# Time-based exit: asymmetric hold limits
+# Losers (unrealized P&L < 0) get cut at LOSER_EXIT_MINS — no point holding a drifter.
+# Winners (unrealized P&L >= 0) ride until WINNER_MAX_MINS to let momentum play out.
+# This directly improves R:R by allowing wins to grow while cutting losses short.
+_ALP_LOSER_EXIT_MINS  = int(os.getenv("ALPACA_LOSER_EXIT_MINS",  "20"))
+_ALP_WINNER_MAX_MINS  = int(os.getenv("ALPACA_WINNER_MAX_MINS",  "40"))
+_ALP_MAX_HOLD_MINS    = _ALP_LOSER_EXIT_MINS   # kept for legacy log references
 
 
 def _alp_headers():
@@ -6143,6 +6156,12 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
                   f"fill=${fill_price:.2f} | stop=${stop_px} | target=${target_px} "
                   f"| oco_id={oco_resp.get('id','?')[:8]}")
 
+            # Store fill price so breakeven stop monitor can reference entry
+            with _alp_lock:
+                if sym in _alp_last_traded:
+                    _alp_last_traded[sym]["fill"] = fill_price
+                _alp_breakeven_set.discard(sym)   # reset breakeven flag for new trade
+
             # ── 90-second conviction check ────────────────────────────────────
             # Fires in background after 90s. If Alpha Engine has reversed or
             # lost streak by then, exits at market before the stop is hit.
@@ -6323,6 +6342,7 @@ def _conviction_check(sym: str, direction: str, fill_price: float, fill_qty: int
             # Clear dedup so system can re-enter if a fresh signal forms
             with _alp_lock:
                 _alp_last_traded.pop(sym, None)
+                _alp_breakeven_set.discard(sym)
         else:
             print(f"[ConvCheck] {sym} ✅ HOLDING — dir={current_dir.upper()} "
                   f"streak={current_streak} conf={current_conf:.1f}% "
@@ -6334,13 +6354,15 @@ def _conviction_check(sym: str, direction: str, fill_price: float, fill_qty: int
 
 def _alp_time_exit_loop():
     """
-    Time-based position exit: runs every 2 minutes.
-    Any position open longer than _ALP_MAX_HOLD_MINS without hitting its
-    bracket target or stop gets closed at market to free the slot.
+    Asymmetric time-based exit: runs every 2 minutes.
 
-    Why: ranging stocks pin capital in a 0.5%/1% corridor indefinitely,
-    blocking better signals from entering. Closing after 45 min forces
-    turnover and keeps the portfolio in fresh, high-conviction setups.
+    LOSERS  (unrealized P&L < 0): closed at _ALP_LOSER_EXIT_MINS (20 min).
+    WINNERS (unrealized P&L >= 0): allowed to ride until _ALP_WINNER_MAX_MINS (40 min).
+
+    Why asymmetric: the prior symmetric 20-min exit was the main R:R killer —
+    it cut winners at the same time as losers, capping avg wins at ~$13 while
+    avg losses (bracket stop-outs) hit ~$25. Letting winners breathe an extra
+    20 min while cutting losers early directly expands the R:R ratio.
     """
     while True:
         time.sleep(120)   # check every 2 minutes
@@ -6397,17 +6419,87 @@ def _alp_time_exit_loop():
                     with _alp_lock:
                         _alp_last_traded[sym] = {"dir": direction, "ts": actual_ts}
                     print(f"[TimeExit] {sym} — seeded with actual entry {age_mins:.0f}m ago "
-                          f"(max hold={_ALP_MAX_HOLD_MINS}m)")
+                          f"(loser exit={_ALP_LOSER_EXIT_MINS}m, winner max={_ALP_WINNER_MAX_MINS}m)")
                     continue   # will be evaluated on the next cycle
-                age_mins = (now_ts - entry_ts) / 60
-                if age_mins >= _ALP_MAX_HOLD_MINS:
-                    unrealized_pct = float(pos.get("unrealized_plpc", 0)) * 100
-                    print(f"[TimeExit] {sym} open {age_mins:.0f}m "
-                          f"({unrealized_pct:+.2f}% unrealized) — closing at market")
+                age_mins       = (now_ts - entry_ts) / 60
+                unrealized_pct = float(pos.get("unrealized_plpc", 0)) * 100
+                is_winner      = unrealized_pct >= 0
+                fill_price     = entry_info.get("fill", 0.0)
+
+                # ── BREAKEVEN STOP ────────────────────────────────────────────
+                # Once a position reaches +0.4% gain, cancel the OCO bracket
+                # and replace the stop with a stop-limit AT entry price.
+                # This locks in scratch (no loss) and lets winners run freely
+                # until the 40-min hard max. Only fires once per trade.
+                if (unrealized_pct >= 0.4
+                        and fill_price > 0
+                        and sym not in _alp_breakeven_set):
+                    try:
+                        pos_side   = pos.get("side", "long")
+                        close_side = "sell" if pos_side == "long" else "buy"
+                        fill_qty   = abs(int(float(pos.get("qty", 1))))
+
+                        # Cancel all open orders for this symbol (clears the OCO)
+                        cancel_r = requests.delete(
+                            f"{_ALPACA_BASE_URL}/v2/orders",
+                            headers=_alp_headers(),
+                            params={"symbol": sym},
+                            timeout=5
+                        )
+                        time.sleep(0.5)   # allow cancels to settle
+
+                        # Breakeven stop: stop at fill_price, limit 0.15% below
+                        be_stop  = round(fill_price, 2)
+                        be_limit = round(fill_price * (0.9985 if pos_side == "long" else 1.0015), 2)
+                        stop_order = {
+                            "symbol":        sym,
+                            "qty":           str(fill_qty),
+                            "side":          close_side,
+                            "type":          "stop_limit",
+                            "time_in_force": "day",
+                            "stop_price":    str(be_stop),
+                            "limit_price":   str(be_limit),
+                        }
+                        be_r = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
+                                             headers=_alp_headers(),
+                                             json=stop_order, timeout=8)
+                        if be_r.status_code in (200, 201):
+                            with _alp_lock:
+                                _alp_breakeven_set.add(sym)
+                            print(f"[TimeExit] 🔒 {sym} BREAKEVEN STOP — {unrealized_pct:+.2f}% gain, "
+                                  f"stop moved to fill ${fill_price:.2f} "
+                                  f"(stop={be_stop}, lim={be_limit})")
+                        else:
+                            print(f"[TimeExit] ⚠️  {sym} breakeven stop order failed "
+                                  f"HTTP {be_r.status_code}: {be_r.text[:200]}")
+                    except Exception as _be_err:
+                        print(f"[TimeExit] ⚠️  {sym} breakeven stop exception: {_be_err}")
+
+                # ── ASYMMETRIC EXIT LOGIC ─────────────────────────────────────
+                # Case 1: Loser at/past 20-min mark → cut immediately
+                if not is_winner and age_mins >= _ALP_LOSER_EXIT_MINS:
+                    print(f"[TimeExit] ✂️  {sym} LOSER exit — open {age_mins:.0f}m, "
+                          f"{unrealized_pct:+.2f}% → closing at market (loser cutoff={_ALP_LOSER_EXIT_MINS}m)")
                     _alp_close_position(sym, side)
-                    # Clear dedup so system can re-enter on a fresh signal
                     with _alp_lock:
                         _alp_last_traded.pop(sym, None)
+                        _alp_breakeven_set.discard(sym)
+                # Case 2: Winner past 20 min — log that we're letting it ride
+                elif is_winner and age_mins >= _ALP_LOSER_EXIT_MINS and age_mins < _ALP_WINNER_MAX_MINS:
+                    remaining = _ALP_WINNER_MAX_MINS - age_mins
+                    be_status  = "🔒 BE-locked" if sym in _alp_breakeven_set else "🔓 no BE yet"
+                    print(f"[TimeExit] 🟢 {sym} WINNER riding — open {age_mins:.0f}m, "
+                          f"{unrealized_pct:+.2f}% {be_status} "
+                          f"({remaining:.0f}m left before hard stop)")
+                # Case 3: Anyone still open at 40-min hard max → close regardless
+                elif age_mins >= _ALP_WINNER_MAX_MINS:
+                    emoji = "🏁" if is_winner else "⏱️"
+                    print(f"[TimeExit] {emoji} {sym} HARD MAX exit — open {age_mins:.0f}m, "
+                          f"{unrealized_pct:+.2f}% → closing at market (max={_ALP_WINNER_MAX_MINS}m)")
+                    _alp_close_position(sym, side)
+                    with _alp_lock:
+                        _alp_last_traded.pop(sym, None)
+                        _alp_breakeven_set.discard(sym)
         except Exception as e:
             print(f"[TimeExit] Loop error: {e}")
 
@@ -6424,6 +6516,13 @@ def _alp_execute_signal(res: dict):
         return
     if not _us_market_open():
         print(f"[Alpaca] {sym} — SKIPPED: market closed")
+        return
+    # Hard entry cutoff at 15:50 ET — EOD flattener fires at 15:55, so any entry
+    # after 15:50 could survive overnight if the flattener already ran for today.
+    # _us_market_open() allows until 16:00 which created an uncovered 5-min window.
+    et_now_chk = _get_et_now()
+    if et_now_chk.time() >= dtime(15, 50):
+        print(f"[Alpaca] {sym} — SKIPPED: past 15:50 ET entry cutoff (EOD safety buffer)")
         return
 
     direction = (res.get("consensus_dir") or res.get("direction") or "").lower()
@@ -6530,9 +6629,14 @@ def _alp_execute_signal(res: dict):
         day_open = tech.get("day_open", 0.0)
         if day_open > 0 and _ALP_MIN_DAY_RANGE_PCT > 0:
             range_from_open = abs(price - day_open) / day_open * 100
-            if range_from_open < _ALP_MIN_DAY_RANGE_PCT:
+            # Use looser threshold before noon ET — stocks haven't moved far yet
+            # but valid trends are forming. Tighten to full threshold after noon.
+            et_hour = _get_et_now().hour
+            threshold = _ALP_MIN_DAY_RANGE_EARLY_PCT if et_hour < 12 else _ALP_MIN_DAY_RANGE_PCT
+            if range_from_open < threshold:
                 print(f"[Alpaca] {sym} — SKIPPED: only moved {range_from_open:.2f}% from open "
-                      f"(${day_open:.2f} → ${price:.2f}), min {_ALP_MIN_DAY_RANGE_PCT}% required")
+                      f"(${day_open:.2f} → ${price:.2f}), min {threshold}% required "
+                      f"({'pre-noon' if et_hour < 12 else 'post-noon'})")
                 return
             else:
                 print(f"[Alpaca] {sym} — day range {range_from_open:.2f}% from open ✓")
