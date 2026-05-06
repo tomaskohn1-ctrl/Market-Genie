@@ -518,11 +518,18 @@ def _ws_build_sub_list():
     AM.* for all tickers (completed minute bars — price feed + scanner baseline).
     A.*  for scalp universe only (per-second bars — mid-bar surge detection).
     Regime tickers (SPY/QQQ/VXX) get AM only to conserve bandwidth.
+
+    NOTE: _EXT_UNIVERSE and _PREDICT_WATCHLIST are defined later in the module
+    (lines ~4262 and ~7555). This function is defined early (called at runtime,
+    not at definition time) so uses globals().get() to safely handle the case
+    where the WebSocket connects before those lists are initialised.
     """
+    _predict_wl  = globals().get("_PREDICT_WATCHLIST", [])
+    _ext_uni     = globals().get("_EXT_UNIVERSE", [])
     # Subscribe AM.* for full prediction universe (completed minute bars — surge detection)
-    am_tickers = list(dict.fromkeys(list(_PREDICT_WATCHLIST) + _EXT_UNIVERSE))
+    am_tickers = list(dict.fromkeys(list(_predict_wl) + _ext_uni))
     # Per-second A.* — scalp universe only (not regime tickers) to keep bandwidth manageable
-    a_tickers = [s for s in _EXT_UNIVERSE[:60] if s not in ("SPY","QQQ","VXX","IWM")][:60]
+    a_tickers = [s for s in _ext_uni[:60] if s not in ("SPY","QQQ","VXX","IWM")][:60]
 
     am_subs = ",".join(f"AM.{s}" for s in am_tickers)
     a_subs  = ",".join(f"A.{s}"  for s in a_tickers)
@@ -560,7 +567,9 @@ def _ws_seed_history():
             _ws_status["seed_done"] = True
         return
     import concurrent.futures
-    tickers = list(dict.fromkeys(list(_PREDICT_WATCHLIST) + _EXT_UNIVERSE))
+    _predict_wl = globals().get("_PREDICT_WATCHLIST", [])
+    _ext_uni    = globals().get("_EXT_UNIVERSE", [])
+    tickers = list(dict.fromkeys(list(_predict_wl) + _ext_uni))
     print(f"[WS/Seed] Pre-seeding {len(tickers)} tickers in parallel…")
     seeded = 0
     # 6 workers — balanced: fast enough without hammering Massive rate limits
@@ -913,7 +922,12 @@ def _alp_ws_on_close(ws, code, msg):
 
 def _alp_ws_runner():
     """Auto-reconnecting Alpaca Data WebSocket runner."""
-    if not _ALPACA_KEY or not _ALPACA_SECRET:
+    # Keys are defined later in the module (line ~5598).  The thread starts at
+    # import time (line ~935) so _ALPACA_KEY may not exist yet — read from env
+    # directly instead of the module-level constant to avoid NameError on startup.
+    _key    = os.getenv("ALPACA_API_KEY", "")
+    _secret = os.getenv("ALPACA_SECRET_KEY", "")
+    if not _key or not _secret:
         print("[AlpacaWS] No Alpaca keys — stream disabled")
         return
     import websocket as _wslib
