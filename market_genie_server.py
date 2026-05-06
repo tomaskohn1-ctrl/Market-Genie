@@ -6548,6 +6548,45 @@ def _alp_execute_signal(res: dict):
         print(f"[SocialBoost] {sym} trending ({boost_tag}) — conf {conf:.1f} → {eff_conf:.1f} "
               f"(+{social_boost} pts)")
 
+    # ── Regime ETF Boost ──────────────────────────────────────────────────────
+    # Leveraged ETFs aligned with the current breadth regime get a confidence
+    # bonus — they move with the whole tape, have no single-stock risk, and
+    # proved 100% WR on bullish days (QQQ/TQQQ). Crucially this works BOTH
+    # ways: inverse ETFs (SQQQ, SPXS, BERZ) get the same bonus on bearish days,
+    # giving the system a clean way to profit in down-tape environments without
+    # needing a short borrow or dealing with short-squeeze risk.
+    #
+    # Bullish tape (score > 65): boost long leveraged ETFs on BULL signals
+    # Bearish tape (score < 35): boost inverse ETFs on BEAR signals
+    # Neutral (35-65): no boost — regular single-stock signals take over
+    _ETF_BULL_NAMES = frozenset(["TQQQ","SPXL","BULZ","SOXL","FNGU","TECL",
+                                  "LABU","DPST","NAIL","CURE","BOIL","TNA",
+                                  "WEBL","NVDL","TSLL","UDOW","URPO"])
+    _ETF_BEAR_NAMES = frozenset(["SQQQ","SPXS","BERZ","SOXS","FNGD","TECS",
+                                  "LABD","TZA","WEBS","KOLD","UVXY","VXX",
+                                  "BITI","SDSOX"])
+    _ETF_REGIME_BOOST = 10   # pts — meaningful enough to push borderline ETF signals through
+
+    with _breadth_lock:
+        breadth_score = _breadth_state.get("score", 50.0)
+        breadth_regime = _breadth_state.get("regime", "NEUTRAL")
+
+    regime_etf_boost = 0
+    if breadth_score > 65 and direction == "bull" and sym in _ETF_BULL_NAMES:
+        regime_etf_boost = _ETF_REGIME_BOOST
+        eff_conf += regime_etf_boost
+        print(f"[RegimeETF] 🟢 {sym} BULL ETF + BULLISH tape (breadth={breadth_score:.0f}) "
+              f"— conf {conf:.1f} → {eff_conf:.1f} (+{regime_etf_boost} pts)")
+    elif breadth_score < 35 and direction == "bear" and sym in _ETF_BEAR_NAMES:
+        regime_etf_boost = _ETF_REGIME_BOOST
+        eff_conf += regime_etf_boost
+        print(f"[RegimeETF] 🔴 {sym} BEAR ETF + BEARISH tape (breadth={breadth_score:.0f}) "
+              f"— conf {conf:.1f} → {eff_conf:.1f} (+{regime_etf_boost} pts)")
+    elif sym in _ETF_BULL_NAMES or sym in _ETF_BEAR_NAMES:
+        # ETF is in the universe but tape doesn't favor it — log and let normal gates decide
+        print(f"[RegimeETF] ⚪ {sym} ETF signal ({direction.upper()}) but tape is "
+              f"{breadth_regime} (breadth={breadth_score:.0f}) — no boost")
+
     # ── Technical Soft Boosts (BEFORE conf gate so they can push borderline signals) ──
     # Fetch VWAP and EMA stack now. These boosts must come BEFORE the conf gate so
     # a signal at e.g. 72% conf on a bullish day (floor=73) can get +5 VWAP and
@@ -6586,9 +6625,12 @@ def _alp_execute_signal(res: dict):
     with _breadth_lock:
         regime = _breadth_state["regime"]
     if eff_conf < min_conf:
+        boosts = []
+        if social_boost:      boosts.append(f"social+{social_boost}")
+        if regime_etf_boost:  boosts.append(f"etf+{regime_etf_boost}")
+        boost_str = f", {', '.join(boosts)}" if boosts else ""
         print(f"[Alpaca] {sym} — SKIPPED: eff_conf {eff_conf:.1f} < {min_conf} "
-              f"({direction.upper()} threshold in {regime} regime"
-              f"{f', social+{social_boost}' if social_boost else ''})")
+              f"({direction.upper()} threshold in {regime} regime{boost_str})")
         return
 
     if streak < _ALP_MIN_STREAK:
