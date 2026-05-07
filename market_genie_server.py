@@ -5618,7 +5618,7 @@ def _breadth_loop():
     except Exception as e:
         print(f"[Breadth] Startup compute error: {e}")
     while True:
-        time.sleep(300)   # 5 minutes (was 15 min)
+        time.sleep(90)    # 90 seconds — faster regime detection (was 300s/5min)
         try:
             _compute_breadth_score()
         except Exception as e:
