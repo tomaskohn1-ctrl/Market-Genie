@@ -4327,6 +4327,23 @@ _ETF_BEAR_UNIVERSE = frozenset([
 
 _PREDICT_WATCHLIST = sorted(_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
 
+# ── Paired ETF conflict map ───────────────────────────────────────────────────
+# Each entry: bull ETF ↔ bear ETF covering the same underlying index/sector.
+# Holding both simultaneously = double-concentration in one direction with
+# zero net diversification (e.g. TECL short + TECS long = 2× bearish tech).
+# Gate in _alp_execute_signal blocks entry if the paired ETF is already open.
+_ETF_PAIRS: dict = {
+    "TQQQ": "SQQQ",  "SQQQ": "TQQQ",   # Nasdaq-100
+    "SPXL": "SPXS",  "SPXS": "SPXL",   # S&P 500
+    "SOXL": "SOXS",  "SOXS": "SOXL",   # Semiconductors
+    "TNA":  "TZA",   "TZA":  "TNA",    # Russell 2000
+    "TECL": "TECS",  "TECS": "TECL",   # Tech sector
+    "FAS":  "FAZ",   "FAZ":  "FAS",    # Financials
+    "LABU": "LABD",  "LABD": "LABU",   # Biotech
+    "FNGU": "FNGD",  "FNGD": "FNGU",   # FANG+
+    "UDOW": "SDOW",  "SDOW": "UDOW",   # Dow Jones
+}
+
 _predict_results  = {}      # { sym: result_dict }  — accumulated across all buckets
 _predict_lock     = threading.Lock()
 _predict_bg_on    = False
@@ -6863,6 +6880,19 @@ def _alp_execute_signal(res: dict):
             return
         if direction == "bear" and bear_count >= _ALP_MAX_BEAR_POSITIONS:
             print(f"[DirCap] {sym} — SKIPPED: bear cap reached ({bear_count}/{_ALP_MAX_BEAR_POSITIONS} bear positions)")
+            with _alp_lock:
+                _alp_last_traded.pop(sym, None)
+            return
+
+        # ── Paired ETF conflict gate ──────────────────────────────────────────
+        # Block entry if the inverse-pair ETF is already open.
+        # TECL short + TECS long = 2× bearish tech with zero diversification.
+        # Signal direction is irrelevant — any position in the paired ETF
+        # means we already have this sector exposure covered.
+        paired_sym = _ETF_PAIRS.get(sym)
+        if paired_sym and paired_sym in open_positions:
+            print(f"[PairGate] {sym} — SKIPPED: paired ETF {paired_sym} already open "
+                  f"(same sector, same direction economically)")
             with _alp_lock:
                 _alp_last_traded.pop(sym, None)
             return
