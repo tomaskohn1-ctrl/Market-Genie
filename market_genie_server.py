@@ -4923,12 +4923,11 @@ def _us_market_open() -> bool:
 
 
 def _safe_to_enter() -> bool:
-    """Return True only during the core tradeable window (Mon-Fri 10:00-15:30 ET).
+    """Return True only during the core tradeable window (Mon-Fri 09:45-15:30 ET).
     - First 15 min (9:30-9:45) excluded: opening volatility, wide spreads, and
-      erratic order flow before the market stabilizes. Revisit after more data —
-      today's (May 4) early losses were all post-10:00 so 9:45 vs 10:00 is TBD.
-    - Last 30 min (15:30-16:00) excluded: not enough time to reach target before
-      EOD flattener at 15:55."""
+      erratic order flow before price discovery settles.
+    - Last 25 min excluded: hard entry cutoff at 15:50 (separate check in
+      _alp_execute_signal) + EOD flattener at 15:55 — not enough runway."""
     et_now = _get_et_now()
     if et_now.weekday() > 4:
         return False
@@ -7530,7 +7529,7 @@ _SCALP_UNIVERSE = [
     # ── Energy / Power ───────────────────────────────────────────────────
     "XOM","CVX","SLB","HAL","OXY","DVN","FANG","AR","COP","EOG",
     "VST","GEV","ETN","PWR","CEG","NRG","TRGP",
-    "MPC","PSX","VLO","HES","PXD","CTRA","APA","MRO","WMB","KMI",
+    "MPC","PSX","VLO","RIG","CTRA","APA","WMB","KMI","NOV","BKR",
     "LNG","OKE","ET","EPD","TRGP","RRC","EQT","CRK","SM","NOG",
     # ── Healthcare / Large-cap Pharma ─────────────────────────────────────
     "MRNA","NVAX","BNTX","PFE","ABBV","LLY","ISRG","DXCM","JNJ","UNH",
@@ -7568,7 +7567,7 @@ _SCALP_UNIVERSE = [
     # ── Utilities / Clean Energy ──────────────────────────────────────────
     "NEE","DUK","SO","D","EXC","PCG","PEG","ES","XEL","WEC",
     "AEE","CMS","LNT","EVRG","NI","ETR","FE","PPL","EIX","AES",
-    "ENPH","SEDG","FSLR","CSIQ","JKS","SPWR","NOVA","RUN","BE","PLUG",
+    "ENPH","SEDG","FSLR","CSIQ","JKS","SPWR","STEM","RUN","BE","PLUG",
     "BLDP","FCEL","HTOO","CWEN","NEP","BEP","AY","ARRY",
     # ── Real Estate / REITs ───────────────────────────────────────────────
     "AMT","PLD","EQIX","CCI","WELL","O","SPG","DLR","IRM","VICI",
