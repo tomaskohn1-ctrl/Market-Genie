@@ -851,14 +851,13 @@ def _alp_ws_on_message(ws, raw):
                     # the Massive/Finnhub WS handles market data; this stream is used for
                     # position-level price monitoring on our highest-conviction names.
                     # Priority: leveraged ETFs (regime plays) + top liquid high-beta stocks.
+                    # ETF-only universe — all 22 tickers fit under the 30-ticker paper cap
                     _ALP_WS_TICKERS = [
-                        # Leveraged ETFs — regime plays (bullish + bearish)
-                        "TQQQ","SQQQ","SPXL","SPXS","SOXL","SOXS","FNGU","FNGD",
-                        "BULZ","BERZ","NVDL","TSLL","TNA","TZA","UVXY","VXX",
-                        # Top liquid high-beta — most likely signal generators
-                        "NVDA","TSLA","AMD","META","AAPL","MSFT","AMZN","GOOGL",
-                        "PLTR","COIN","MARA","RIOT","SOFI","HOOD","RKLX",
-                    ][:30]   # hard cap at 30 — Alpaca paper limit
+                        # Bull ETFs
+                        "TQQQ","SPXL","SOXL","TNA","TECL","FAS","LABU","FNGU","NVDL","TSLL","UDOW",
+                        # Bear ETFs
+                        "SQQQ","SPXS","SOXS","TZA","TECS","FAZ","LABD","FNGD","UVXY","VXX","SDOW",
+                    ][:30]   # hard cap at 30 — Alpaca paper limit (22 ETFs well under cap)
                     print(f"[AlpacaWS] Authenticated — subscribing to {len(_ALP_WS_TICKERS)} tickers (paper cap=30)")
                     ws.send(json.dumps({
                         "action": "subscribe",
@@ -4290,51 +4289,43 @@ def kronos_scanner():
 # SMLR, MGOL, GRUB, ANGI, YELP, FSR), added leveraged ETFs (SPXL, SPXS, BULZ,
 # BERZ, NVDL, TSLL) and replaced OTC slots with liquid alternatives.
 # Rotated through 14 buckets of ~25; full cycle every ~3.5 minutes
-_PREDICT_WATCHLIST = [
-    # ── Mega-cap tech ──────────────────────────────────────────────────────────
-    "AAPL","MSFT","NVDA","TSLA","AMZN","META","AMD","GOOGL","GOOG","AVGO",
-    "QCOM","INTC","MU","SMCI","ARM","AMAT","CRM","ORCL","ADBE","MRVL",
-    "LRCX","KLAC","TXN","ON","SWKS","MPWR","ENPH","FSLR","SEDG","CRDO",
-    # ── AI / quantum / next-gen ────────────────────────────────────────────────
-    "PLTR","SOUN","IONQ","RGTI","BBAI","AI","ARRY","NBIS","MCHP","NXPI",
-    "SMTC","FORM","ACLS","CAMT","ONTO","RMBS","AMBA","AXTI","SITM","POWI",
-    # ── Software / cloud / cybersecurity ──────────────────────────────────────
-    "CRWD","PANW","NET","SNOW","DDOG","TEAM","ZS","MNDY","APP","AXON",
-    "FTNT","OKTA","KVYO","MDB","GTLB","PATH","BILL","HUBS","WDAY","NOW",
-    "VEEV","DSGX","PCTY","CELH","S","ASAN","BOX","DOCN","BRZE","ESTC",
-    # ── Consumer internet / social / streaming ────────────────────────────────
-    "NFLX","ROKU","SPOT","TTD","PINS","SNAP","RDDT","RBLX","MTCH","IAC",
-    "UBER","LYFT","ABNB","DASH","EXPE","BKNG","TRIP","EBAY","ETSY","GRAB",
-    # ── High-beta / meme / Reddit favorites ───────────────────────────────────
-    "GME","AMC","HIMS","RKLB","ASTS","SOFI","HOOD","OPEN","UPST","AFRM",
-    "LMND","ROOT","CLOV","SPCE","CORZ","ACHR","JOBY","DJT","CHWY","RXRX",
-    # ── Crypto-adjacent / Bitcoin miners ──────────────────────────────────────
-    "COIN","MARA","RIOT","MSTR","CLSK","BTBT","CIFR","WULF","HUT",
-    "BTDR","IREN","BITI","BITO","GBTC","IBIT","MSTX","CONY","MSFO","BITX",
-    # ── Major ETFs — broad market + leveraged S&P/Nasdaq ─────────────────────
-    "SPY","QQQ","IWM","TQQQ","SQQQ","SPXL","SPXS","BULZ","BERZ","VXX",
-    "UVXY","ARKK","GLD","SLV","USO","XBI","XLF","XLE","XLK","SMH",
-    # ── Leveraged single-stock + sector ETFs ─────────────────────────────────
-    "SOXL","SOXS","NVDL","TSLL","LABU","LABD","FNGU","FNGD","TECL","TECS",
-    "TNA","TZA","IBB","NAIL","DPST","CURE","BOIL","KOLD","WEBL","WEBS",
-    # ── EV / clean energy ─────────────────────────────────────────────────────
-    "RIVN","LCID","NIO","LI","XPEV","CHPT","BLNK","EVGO",
-    "PLUG","FCEL","BE","BLDP","RUN","ARWR","CPNG","CSIQ","JKS","STEM",
-    # ── Financials / banks / fintech ──────────────────────────────────────────
-    "JPM","BAC","GS","MS","C","WFC","SCHW","V","MA","PYPL",
-    "AXP","COF","ALLY","RELY","NU","MELI","PAGS","STNE","XP","FLYW",
-    # ── Healthcare / biotech ──────────────────────────────────────────────────
-    "MRNA","BNTX","GILD","REGN","BIIB","ABBV","BMY","PFE","NVAX","CRSP",
-    "BEAM","EDIT","NTLA","FATE","VRTX","ALNY","RCUS","GH","KURA","ACMR",
-    # ── Energy / oil & gas ────────────────────────────────────────────────────
-    "XOM","CVX","COP","OXY","SLB","HAL","DVN","AR","FANG","RIG",
-    # ── Retail / consumer ─────────────────────────────────────────────────────
-    "WMT","TGT","COST","HD","LOW","SBUX","MCD","CMG","LULU","NKE",
-    "PTON","BIRK","ONON","CROX","UAA","UA","PVH","FIVE","URBN","ANF",
-    # ── International ADRs / large-cap growth ─────────────────────────────────
-    "BABA","JD","PDD","BIDU","TSM","ASML","SHOP","SE",
-    "INFY","WIT","ERIC","NOK","STM","NTES","GLOB","WOLF",
-]
+
+# ── Leveraged ETF Universe ────────────────────────────────────────────────────
+# Strategy: focus all scanning + execution on leveraged ETFs only.
+# The breadth engine already measures market direction — ETFs are the cleanest
+# expression of that direction with no single-stock risk, tight spreads, and
+# high liquidity. Regime gate (below) ensures we only trade the aligned side.
+#
+# Bull ETFs: go long when BULLISH regime confirmed
+_ETF_BULL_UNIVERSE = frozenset([
+    "TQQQ",   # 3× Nasdaq-100 — most liquid leveraged ETF
+    "SPXL",   # 3× S&P 500
+    "SOXL",   # 3× Semiconductors
+    "TNA",    # 3× Russell 2000 small caps
+    "TECL",   # 3× Tech sector
+    "FAS",    # 3× Financials
+    "LABU",   # 3× Biotech
+    "FNGU",   # 3× FANG+ mega tech
+    "NVDL",   # 2× NVDA
+    "TSLL",   # 2× TSLA
+    "UDOW",   # 3× Dow Jones
+])
+# Bear ETFs: go short when BEARISH regime confirmed
+_ETF_BEAR_UNIVERSE = frozenset([
+    "SQQQ",   # 3× inverse Nasdaq-100
+    "SPXS",   # 3× inverse S&P 500
+    "SOXS",   # 3× inverse Semiconductors
+    "TZA",    # 3× inverse Russell 2000
+    "TECS",   # 3× inverse Tech sector
+    "FAZ",    # 3× inverse Financials
+    "LABD",   # 3× inverse Biotech
+    "FNGD",   # 3× inverse FANG+
+    "UVXY",   # 1.5× VIX (spikes in selloffs)
+    "VXX",    # 1× VIX front-month futures
+    "SDOW",   # 3× inverse Dow Jones
+])
+
+_PREDICT_WATCHLIST = sorted(_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
 
 _predict_results  = {}      # { sym: result_dict }  — accumulated across all buckets
 _predict_lock     = threading.Lock()
@@ -4342,8 +4333,8 @@ _predict_bg_on    = False
 _predict_bg_lock  = threading.Lock()
 _predict_stats    = {"ts": 0, "model": "loading", "bucket": 0, "bucket_total": 0}
 _PREDICT_RESULT_TTL    = 900   # 15 min — covers 2+ full rotations; stale results auto-expire
-_PREDICT_BUCKET_SECS   = 15    # one bucket every 15s → full rotation ~3.5 min (was 30s / 7 min)
-_PREDICT_NUM_BUCKETS   = 14    # 350 tickers ÷ 14 = 25/bucket → full rotation ~3.5 min, ~10s per bucket with 6 workers
+_PREDICT_BUCKET_SECS   = 10    # one bucket every 10s → full rotation ~20s (ETF universe is only 22 tickers)
+_PREDICT_NUM_BUCKETS   = 2     # 22 ETFs ÷ 2 = 11/bucket → full rotation every 20s (was 3.5 min with 283 stocks)
 
 # ── Hot-ticker fast lane ──────────────────────────────────────────────────────
 # When a ticker reaches streak_count=1 (first confirmation) it is promoted to
@@ -6628,6 +6619,18 @@ def _alp_execute_signal(res: dict):
         breadth_score = _breadth_state.get("score", 50.0)
         breadth_regime = _breadth_state.get("regime", "NEUTRAL")
 
+    # ── Regime Direction Gate ─────────────────────────────────────────────────
+    # ETF-only universe: never trade against the confirmed regime.
+    # BULLISH tape → only bull ETFs allowed (skip bear ETFs)
+    # BEARISH tape → only bear ETFs allowed (skip bull ETFs)
+    # NEUTRAL      → allow both sides (conf gate still applies)
+    if breadth_score > 65 and sym in _ETF_BEAR_UNIVERSE:
+        print(f"[RegimeGate] {sym} — SKIPPED: BULLISH tape (breadth={breadth_score:.0f}), bear ETF not allowed")
+        return
+    if breadth_score < 35 and sym in _ETF_BULL_UNIVERSE:
+        print(f"[RegimeGate] {sym} — SKIPPED: BEARISH tape (breadth={breadth_score:.0f}), bull ETF not allowed")
+        return
+
     regime_etf_boost = 0
     if breadth_score > 65 and direction == "bull" and sym in _ETF_BULL_NAMES:
         regime_etf_boost = _ETF_REGIME_BOOST
@@ -7616,22 +7619,11 @@ _SCALP_UNIVERSE = [
 # ── Extended-hours universe (Finnhub-based, ~80 most active tickers) ──────────
 # Used 4 AM-9:29 AM and 4:01 PM-8 PM ET — Finnhub provides volume here, yfinance does not
 _EXT_UNIVERSE = [
-    # Mega-cap tech (always active extended)
-    "AAPL","MSFT","NVDA","TSLA","AMZN","META","AMD","GOOGL","AVGO","QCOM",
-    "INTC","MU","SMCI","ARM","AMAT","CRM","ORCL","NFLX","ADBE","MRVL",
-    # High-beta / meme / crypto-adjacent
-    "PLTR","SOFI","COIN","HOOD","MARA","RIOT","MSTR","CLSK","RGTI","IONQ",
-    "GME","AMC","SOUN","RBLX","SNAP","PINS","RDDT","HIMS","RKLB","ASTS",
-    # Major ETFs (pre-market gaps visible)
-    "SPY","QQQ","IWM","TQQQ","SQQQ","SOXL","SOXS","ARKK","VXX","UVXY",
-    "GLD","SLV","USO","XBI","XLF","XLE","XLK","IBB","SMH",
-    # Growth / momentum
-    "CRWD","PANW","NET","SNOW","DDOG","TEAM","ZS","MNDY","APP","AXON",
-    "CELH","ENPH","TSLA","UBER","LYFT","ABNB","DASH","SPOT","TTD","ROKU",
-    # Financials / banks (move on macro news)
-    "JPM","BAC","GS","MS","C","WFC","SCHW","V","MA","PYPL",
-    # Power / momentum names active in pre/after market
-    "VST","GEV","CORZ","NBIS","DJT","CAVA","CART",
+    # Leveraged ETFs with meaningful extended-hours volume
+    # Bull side
+    "TQQQ","SPXL","SOXL","TNA","TECL","FAS","LABU","FNGU","NVDL","TSLL","UDOW",
+    # Bear side
+    "SQQQ","SPXS","SOXS","TZA","TECS","FAZ","LABD","FNGD","UVXY","VXX","SDOW",
 ]
 
 # ── Finnhub 1-min candle fetch for extended hours ─────────────────────────────
