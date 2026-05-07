@@ -6107,15 +6107,34 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
             except Exception as _fq_err:
                 print(f"[Alpaca] {sym} Finnhub fallback also failed ({_fq_err}), using signal price")
 
-    # Stale-price guard: skip if price moved too far since signal.
-    # ETFs get 2% threshold — 3× products routinely move 1% in the time between
-    # scan and execution (FNGD +2.26%, TNA -3.60% observed blocking valid trades).
-    # Stocks keep the tighter 1% guard.
-    _stale_thresh = 0.02 if sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE) else 0.01
-    if signal_price > 0 and abs(price - signal_price) / signal_price > _stale_thresh:
-        print(f"[Alpaca] {sym} — SKIPPED: price moved {((price-signal_price)/signal_price*100):+.2f}% "
-              f"since signal (${signal_price:.2f} → ${price:.2f}), threshold={_stale_thresh*100:.0f}%")
-        return False
+    # Stale-price guard: directional awareness for ETFs.
+    # signal_price is from when the streak STARTED — streak=10 means the price
+    # reference can be 100+ seconds old for fast 3× ETFs.
+    #
+    # Key insight: if price moved in the SAME direction as our trade, that confirms
+    # the signal and we can tolerate more drift (we're entering with momentum).
+    # If price moved AGAINST our trade, the signal may have failed — be strict.
+    #
+    # ETF directional thresholds:
+    #   confirming move (price went our way): 4% — allow confident continuation entries
+    #   counter move   (price went against):  1.5% — hard stop, direction failed
+    # Stocks: symmetric 1%.
+    if signal_price > 0:
+        _pct_move = (price - signal_price) / signal_price  # + = price went up
+        _is_etf   = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
+        if _is_etf:
+            _confirming = (direction == "bull" and _pct_move > 0) or \
+                          (direction == "bear" and _pct_move < 0)
+            _stale_thresh = 0.04 if _confirming else 0.015
+            _tag = "confirming" if _confirming else "counter"
+        else:
+            _stale_thresh = 0.01
+            _tag = ""
+        if abs(_pct_move) > _stale_thresh:
+            print(f"[Alpaca] {sym} — SKIPPED: price moved {(_pct_move*100):+.2f}% "
+                  f"since signal (${signal_price:.2f} → ${price:.2f}), "
+                  f"threshold={_stale_thresh*100:.0f}%{' (' + _tag + ')' if _tag else ''}")
+            return False
 
     side         = "buy"  if direction == "bull" else "sell"
     close_side   = "sell" if direction == "bull" else "buy"
