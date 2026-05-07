@@ -6744,8 +6744,8 @@ def _alp_execute_signal(res: dict):
     # standalone confidence ≥ 85 (high-conviction single-model bypass).
     # This gate fires BEFORE the dedup write — blocked signals can retry freely.
     if sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE):
-        if ba != 1 and eff_conf < 85:
-            print(f"[ETFQuality] {sym} — SKIPPED: requires both_agree=1 or eff_conf≥85 "
+        if ba != 1 and eff_conf < 75:
+            print(f"[ETFQuality] {sym} — SKIPPED: requires both_agree=1 or eff_conf≥75 "
                   f"(both_agree={ba}, eff_conf={eff_conf:.1f}) — slot reserved for consensus signals")
             return
 
