@@ -5631,6 +5631,8 @@ _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5")
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
 _ALP_DEDUP_SECS       = 2700   # 45 min dedup — COP cycled 6x at 20-min intervals today because dedup expired exactly when time-exit fired; 45 min prevents re-entry churn
 _ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "20"))  # min wait after a losing exit before re-entering same symbol
+_ALP_MAX_BULL_POSITIONS = int(os.getenv("ALPACA_MAX_BULL_POSITIONS", "3"))  # max simultaneous bull/long positions (correlation risk cap)
+_ALP_MAX_BEAR_POSITIONS = int(os.getenv("ALPACA_MAX_BEAR_POSITIONS", "3"))  # max simultaneous bear/short positions (correlation risk cap)
 
 _alp_last_traded  = {}   # { sym: {"dir": str, "ts": float, "fill": float} }
 _alp_lock         = threading.Lock()
@@ -6823,6 +6825,31 @@ def _alp_execute_signal(res: dict):
         # (stop + target) per position, so counting open orders inflates exposure
         # 3x and blocks new entries.
         total_exposure = len(open_positions)
+
+        # ── Directional cap — max 3 bull + max 3 bear simultaneously ─────────
+        # Prevents correlated wipeout: 6 bull ETFs all moving together = single
+        # market bet.  Count directions from _alp_last_traded (the live registry
+        # of what we entered and in which direction).
+        with _alp_lock:
+            bull_count = sum(
+                1 for s, v in _alp_last_traded.items()
+                if s in open_positions and v.get("dir") == "bull"
+            )
+            bear_count = sum(
+                1 for s, v in _alp_last_traded.items()
+                if s in open_positions and v.get("dir") == "bear"
+            )
+        if direction == "bull" and bull_count >= _ALP_MAX_BULL_POSITIONS:
+            print(f"[DirCap] {sym} — SKIPPED: bull cap reached ({bull_count}/{_ALP_MAX_BULL_POSITIONS} bull positions)")
+            with _alp_lock:
+                _alp_last_traded.pop(sym, None)
+            return
+        if direction == "bear" and bear_count >= _ALP_MAX_BEAR_POSITIONS:
+            print(f"[DirCap] {sym} — SKIPPED: bear cap reached ({bear_count}/{_ALP_MAX_BEAR_POSITIONS} bear positions)")
+            with _alp_lock:
+                _alp_last_traded.pop(sym, None)
+            return
+
         if total_exposure >= _ALP_MAX_POSITIONS:
             # ── ELITE Preemption ──────────────────────────────────────────────
             # If this is an ELITE signal (both_agree=1, conf ≥ threshold) and
