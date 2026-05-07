@@ -7302,6 +7302,171 @@ def api_debug_signals():
     })
 
 
+@app.route("/api/alpaca/pnl")
+def api_alpaca_pnl():
+    """
+    Persistent P&L analytics pulled directly from Alpaca fill history.
+    Survives Railway redeploys — data lives on Alpaca's servers, not local disk.
+
+    Fetches FILL activities for the last 30 days, FIFO-matches buy→sell pairs
+    per symbol, and returns realized trade-level P&L + summary stats.
+    """
+    try:
+        days = int(request.args.get("days", 30))
+        after_dt = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00Z")
+
+        # ── Pull all fill activities from Alpaca ──────────────────────────────
+        fills = []
+        page_token = None
+        for _ in range(20):  # max 20 pages × 100 = 2000 fills
+            params = {
+                "activity_type": "FILL",
+                "after":         after_dt,
+                "direction":     "asc",
+                "page_size":     100,
+            }
+            if page_token:
+                params["page_token"] = page_token
+            resp = requests.get(
+                f"{_ALPACA_BASE_URL}/v2/account/activities/FILL",
+                headers=_alp_headers(),
+                params=params,
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                return jsonify({"error": f"Alpaca HTTP {resp.status_code}", "detail": resp.text}), 502
+            batch = resp.json()
+            if not batch:
+                break
+            fills.extend(batch)
+            if len(batch) < 100:
+                break
+            page_token = batch[-1].get("id")
+
+        # ── FIFO-match buys → sells per symbol ───────────────────────────────
+        # All our trades are long-only (ETFDir blocks short-selling), so every
+        # round trip is: BUY fill (entry) → SELL fill (exit via stop or target).
+        from collections import defaultdict, deque
+        buy_queues = defaultdict(deque)   # sym → deque of (qty, price, time)
+        trades = []
+
+        for f in fills:
+            sym   = f.get("symbol", "")
+            side  = f.get("side", "")
+            qty   = float(f.get("qty") or f.get("cum_qty") or 0)
+            price = float(f.get("price") or 0)
+            ts    = f.get("transaction_time", "")
+            if qty <= 0 or price <= 0:
+                continue
+
+            if side == "buy":
+                buy_queues[sym].append({"qty": qty, "price": price, "ts": ts})
+            elif side == "sell":
+                remaining = qty
+                while remaining > 0 and buy_queues[sym]:
+                    entry = buy_queues[sym][0]
+                    matched = min(remaining, entry["qty"])
+                    pnl = (price - entry["price"]) * matched
+                    pnl_pct = (price - entry["price"]) / entry["price"] * 100
+
+                    # Classify exit type by P&L magnitude
+                    if pnl_pct >= 2.5:
+                        exit_type = "target"
+                    elif pnl_pct <= -1.2:
+                        exit_type = "stop"
+                    else:
+                        exit_type = "time_exit"
+
+                    trades.append({
+                        "sym":       sym,
+                        "entry_px":  round(entry["price"], 4),
+                        "exit_px":   round(price, 4),
+                        "qty":       matched,
+                        "pnl":       round(pnl, 2),
+                        "pnl_pct":   round(pnl_pct, 3),
+                        "win":       pnl > 0,
+                        "exit_type": exit_type,
+                        "entry_ts":  entry["ts"],
+                        "exit_ts":   ts,
+                    })
+                    entry["qty"] -= matched
+                    remaining    -= matched
+                    if entry["qty"] <= 0:
+                        buy_queues[sym].popleft()
+
+        # ── Summary stats ─────────────────────────────────────────────────────
+        if trades:
+            wins      = [t for t in trades if t["win"]]
+            losses    = [t for t in trades if not t["win"]]
+            total_pnl = sum(t["pnl"] for t in trades)
+            win_rate  = len(wins) / len(trades) * 100
+            avg_win   = sum(t["pnl"] for t in wins)   / len(wins)   if wins   else 0
+            avg_loss  = sum(t["pnl"] for t in losses) / len(losses) if losses else 0
+            profit_factor = abs(sum(t["pnl"] for t in wins) / sum(t["pnl"] for t in losses)) if losses and sum(t["pnl"] for t in losses) != 0 else None
+
+            # Per-symbol breakdown
+            sym_stats = defaultdict(lambda: {"trades": 0, "wins": 0, "pnl": 0.0})
+            for t in trades:
+                sym_stats[t["sym"]]["trades"] += 1
+                sym_stats[t["sym"]]["wins"]   += int(t["win"])
+                sym_stats[t["sym"]]["pnl"]    += t["pnl"]
+            sym_breakdown = sorted([
+                {"sym": s, **v, "win_rate": round(v["wins"]/v["trades"]*100, 1)}
+                for s, v in sym_stats.items()
+            ], key=lambda x: x["pnl"], reverse=True)
+
+            # Exit type breakdown
+            exit_counts = defaultdict(int)
+            for t in trades:
+                exit_counts[t["exit_type"]] += 1
+        else:
+            wins = losses = []
+            total_pnl = win_rate = avg_win = avg_loss = profit_factor = 0
+            sym_breakdown = []
+            exit_counts = {}
+
+        # ── Portfolio equity history (daily) ──────────────────────────────────
+        ph_resp = requests.get(
+            f"{_ALPACA_BASE_URL}/v2/account/portfolio/history",
+            headers=_alp_headers(),
+            params={"period": f"{days}D", "timeframe": "1D", "extended_hours": False},
+            timeout=8,
+        )
+        equity_curve = []
+        if ph_resp.status_code == 200:
+            ph = ph_resp.json()
+            timestamps  = ph.get("timestamp", [])
+            equity_vals = ph.get("equity", [])
+            pnl_vals    = ph.get("profit_loss", [])
+            for i, ts in enumerate(timestamps):
+                equity_curve.append({
+                    "date":   datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d"),
+                    "equity": round(equity_vals[i], 2) if i < len(equity_vals) else None,
+                    "pnl":    round(pnl_vals[i], 2)    if i < len(pnl_vals)    else None,
+                })
+
+        return jsonify({
+            "summary": {
+                "total_trades":   len(trades),
+                "wins":           len(wins),
+                "losses":         len(losses),
+                "win_rate_pct":   round(win_rate, 1),
+                "total_pnl":      round(total_pnl, 2),
+                "avg_win":        round(avg_win, 2),
+                "avg_loss":       round(avg_loss, 2),
+                "profit_factor":  round(profit_factor, 2) if profit_factor else None,
+                "days_lookback":  days,
+            },
+            "by_symbol":    sym_breakdown,
+            "exit_types":   dict(exit_counts),
+            "trades":       sorted(trades, key=lambda x: x["exit_ts"], reverse=True)[:200],
+            "equity_curve": equity_curve,
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
 @app.route("/api/winrate")
 def api_winrate():
     """Aggregated win rate stats broken down by conviction, streak, and model agreement."""
