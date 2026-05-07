@@ -5799,7 +5799,7 @@ _alp_pending_lock = threading.Lock()
 # Winners (unrealized P&L >= 0) ride until WINNER_MAX_MINS to let momentum play out.
 # This directly improves R:R by allowing wins to grow while cutting losses short.
 _ALP_LOSER_EXIT_MINS  = int(os.getenv("ALPACA_LOSER_EXIT_MINS",  "20"))
-_ALP_WINNER_MAX_MINS  = int(os.getenv("ALPACA_WINNER_MAX_MINS",  "40"))
+_ALP_WINNER_MAX_MINS  = int(os.getenv("ALPACA_WINNER_MAX_MINS",  "60"))  # extended 40→60: ETFs need more runway to reach 3% target
 _ALP_MAX_HOLD_MINS    = _ALP_LOSER_EXIT_MINS   # kept for legacy log references
 
 
