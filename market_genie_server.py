@@ -7009,6 +7009,21 @@ def _alp_execute_signal(res: dict):
                     _alp_last_traded.pop(sym, None)  # clear dedup so retry works
                 return
 
+        # ── Refresh stale signal price with Alpaca snapshot (≤25s old) ──────────
+        # Signal price is frozen at streak-start; after streak=10 cycles (~100s)
+        # it can lag the live price by >4%, tripping the stale-price guard.
+        # Override with the freshest cached snapshot price before bracket placement.
+        with _alp_snap_lock:
+            _snap = _alp_snap_cache.get(sym, {})
+        _snap_price = float(_snap.get("c") or _snap.get("l") or 0)
+        if _snap_price > 0 and price > 0:
+            _drift_pct = abs(_snap_price - price) / price * 100
+            if _drift_pct > 0.1:
+                print(f"[Alpaca] {sym} — price refreshed: ${price:.2f} → ${_snap_price:.2f} "
+                      f"({_drift_pct:+.2f}% drift, snap age ≤25s)")
+            price = _snap_price
+        # ─────────────────────────────────────────────────────────────────────
+
         social_tag = f" social+{social_boost}" if social_boost > 0 else ""
         print(f"[Alpaca] {sym} — FIRING bracket: {direction.upper()} "
               f"conf={conf:.1f}→{eff_conf:.1f}{social_tag} "

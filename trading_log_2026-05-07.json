@@ -353,5 +353,453 @@
       "spy_chg": -0.112,
       "qqq_chg": 0.007
     }
+  },
+  {
+    "timestamp": "2026-05-07T17:08:44.081125+00:00",
+    "runs_at_local": "17:08 UTC",
+    "equity": 97498.98,
+    "day_pnl": -156.09,
+    "cash": 97394.55,
+    "open_positions": [
+      {
+        "sym": "FNGD",
+        "side": "long",
+        "qty": "250",
+        "entry_px": 39.89,
+        "current_px": 39.835,
+        "pnl": -13.75,
+        "pnl_pct": -0.138
+      },
+      {
+        "sym": "TECL",
+        "side": "short",
+        "qty": "-56",
+        "entry_px": 176.02,
+        "current_px": 175.97,
+        "pnl": 2.8,
+        "pnl_pct": 0.028
+      }
+    ],
+    "completed_trades": [
+      {
+        "sym": "NU",
+        "entry_px": 14.4,
+        "exit_px": 14.300534,
+        "qty": 693.0,
+        "pnl": -68.93,
+        "pct": -0.691,
+        "dur_s": 524,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-07T14:16"
+      },
+      {
+        "sym": "SOXL",
+        "entry_px": 161.08,
+        "exit_px": 159.8,
+        "qty": 62.0,
+        "pnl": -79.36,
+        "pct": -0.795,
+        "dur_s": 0,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-07T14:47"
+      },
+      {
+        "sym": "COP",
+        "entry_px": 114.593104,
+        "exit_px": 114.46,
+        "qty": 87.0,
+        "pnl": -11.58,
+        "pct": -0.116,
+        "dur_s": 0,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T14:35"
+      },
+      {
+        "sym": "GBTC",
+        "entry_px": 62.36,
+        "exit_px": 62.3,
+        "qty": 160.0,
+        "pnl": -9.6,
+        "pct": -0.096,
+        "dur_s": 1502,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T14:33"
+      },
+      {
+        "sym": "HOOD",
+        "entry_px": 77.78,
+        "exit_px": 77.130391,
+        "qty": 128.0,
+        "pnl": -83.15,
+        "pct": -0.835,
+        "dur_s": 770,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-07T15:14"
+      },
+      {
+        "sym": "JD",
+        "entry_px": 30.27,
+        "exit_px": 30.24,
+        "qty": 330.0,
+        "pnl": -9.9,
+        "pct": -0.099,
+        "dur_s": 2305,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T14:49"
+      },
+      {
+        "sym": "CHWY",
+        "entry_px": 23.63,
+        "exit_px": 23.57,
+        "qty": 423.0,
+        "pnl": -25.38,
+        "pct": -0.254,
+        "dur_s": 1346,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T15:27"
+      },
+      {
+        "sym": "JPM",
+        "entry_px": 310.76,
+        "exit_px": 310.57,
+        "qty": 32.0,
+        "pnl": -6.08,
+        "pct": -0.061,
+        "dur_s": 1263,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T15:28"
+      },
+      {
+        "sym": "TECS",
+        "entry_px": 9.43,
+        "exit_px": 9.71,
+        "qty": 1060.0,
+        "pnl": 296.8,
+        "pct": 2.969,
+        "dur_s": 1531,
+        "exit_type": "TARGET",
+        "entry_ts": "2026-05-07T15:49"
+      },
+      {
+        "sym": "IWM",
+        "entry_px": 284.953143,
+        "exit_px": 284.07,
+        "qty": 35.0,
+        "pnl": -30.91,
+        "pct": -0.31,
+        "dur_s": 1269,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T15:41"
+      },
+      {
+        "sym": "LABU",
+        "entry_px": 186.103585,
+        "exit_px": 184.05,
+        "qty": 53.0,
+        "pnl": -108.84,
+        "pct": -1.103,
+        "dur_s": 1295,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-07T16:03"
+      },
+      {
+        "sym": "WMT",
+        "entry_px": 129.31,
+        "exit_px": 129.508312,
+        "qty": 77.0,
+        "pnl": 15.27,
+        "pct": 0.153,
+        "dur_s": 2509,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T15:43"
+      },
+      {
+        "sym": "TECL",
+        "entry_px": 177.57,
+        "exit_px": 176.02,
+        "qty": 55.0,
+        "pnl": -85.25,
+        "pct": -0.873,
+        "dur_s": 2058,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-07T16:33"
+      }
+    ],
+    "trade_stats": {
+      "total": 13,
+      "wins": 2,
+      "losses": 11,
+      "win_rate": 15.4,
+      "total_pnl": -206.91,
+      "avg_win": 156.03,
+      "avg_loss": -47.18,
+      "stops": 5,
+      "targets": 1,
+      "time_exits": 7,
+      "instant_stops_under_2min": 1
+    },
+    "breadth": {
+      "score": 50.0,
+      "regime": "NEUTRAL",
+      "bull_conf": 65,
+      "bear_conf": 65,
+      "spy_chg": -0.249,
+      "qqq_chg": -0.106
+    }
+  },
+  {
+    "timestamp": "2026-05-07T18:08:36.290472+00:00",
+    "runs_at_local": "18:08 UTC",
+    "equity": 97534.55,
+    "day_pnl": -120.52,
+    "cash": 77578.46,
+    "open_positions": [
+      {
+        "sym": "FNGD",
+        "side": "long",
+        "qty": "249",
+        "entry_px": 40.11,
+        "current_px": 39.92,
+        "pnl": -47.31,
+        "pnl_pct": -0.474
+      },
+      {
+        "sym": "LABD",
+        "side": "long",
+        "qty": "718",
+        "entry_px": 13.92,
+        "current_px": 13.9,
+        "pnl": -14.36,
+        "pnl_pct": -0.144
+      },
+      {
+        "sym": "TECL",
+        "side": "short",
+        "qty": "-57",
+        "entry_px": 174.1,
+        "current_px": 176.1231,
+        "pnl": -115.3167,
+        "pnl_pct": -1.162
+      },
+      {
+        "sym": "TSLL",
+        "side": "long",
+        "qty": "710",
+        "entry_px": 14.07,
+        "current_px": 14.1899,
+        "pnl": 85.129,
+        "pnl_pct": 0.852
+      }
+    ],
+    "completed_trades": [
+      {
+        "sym": "NU",
+        "entry_px": 14.4,
+        "exit_px": 14.300534,
+        "qty": 693.0,
+        "pnl": -68.93,
+        "pct": -0.691,
+        "dur_s": 524,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-07T14:16"
+      },
+      {
+        "sym": "SOXL",
+        "entry_px": 161.08,
+        "exit_px": 159.8,
+        "qty": 62.0,
+        "pnl": -79.36,
+        "pct": -0.795,
+        "dur_s": 0,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-07T14:47"
+      },
+      {
+        "sym": "COP",
+        "entry_px": 114.593104,
+        "exit_px": 114.46,
+        "qty": 87.0,
+        "pnl": -11.58,
+        "pct": -0.116,
+        "dur_s": 0,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T14:35"
+      },
+      {
+        "sym": "GBTC",
+        "entry_px": 62.36,
+        "exit_px": 62.3,
+        "qty": 160.0,
+        "pnl": -9.6,
+        "pct": -0.096,
+        "dur_s": 1502,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T14:33"
+      },
+      {
+        "sym": "HOOD",
+        "entry_px": 77.78,
+        "exit_px": 77.130391,
+        "qty": 128.0,
+        "pnl": -83.15,
+        "pct": -0.835,
+        "dur_s": 770,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-07T15:14"
+      },
+      {
+        "sym": "JD",
+        "entry_px": 30.27,
+        "exit_px": 30.24,
+        "qty": 330.0,
+        "pnl": -9.9,
+        "pct": -0.099,
+        "dur_s": 2305,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T14:49"
+      },
+      {
+        "sym": "CHWY",
+        "entry_px": 23.63,
+        "exit_px": 23.57,
+        "qty": 423.0,
+        "pnl": -25.38,
+        "pct": -0.254,
+        "dur_s": 1346,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T15:27"
+      },
+      {
+        "sym": "JPM",
+        "entry_px": 310.76,
+        "exit_px": 310.57,
+        "qty": 32.0,
+        "pnl": -6.08,
+        "pct": -0.061,
+        "dur_s": 1263,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T15:28"
+      },
+      {
+        "sym": "TECS",
+        "entry_px": 9.43,
+        "exit_px": 9.71,
+        "qty": 1060.0,
+        "pnl": 296.8,
+        "pct": 2.969,
+        "dur_s": 1531,
+        "exit_type": "TARGET",
+        "entry_ts": "2026-05-07T15:49"
+      },
+      {
+        "sym": "IWM",
+        "entry_px": 284.953143,
+        "exit_px": 284.07,
+        "qty": 35.0,
+        "pnl": -30.91,
+        "pct": -0.31,
+        "dur_s": 1269,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T15:41"
+      },
+      {
+        "sym": "LABU",
+        "entry_px": 186.103585,
+        "exit_px": 184.05,
+        "qty": 53.0,
+        "pnl": -108.84,
+        "pct": -1.103,
+        "dur_s": 1295,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-07T16:03"
+      },
+      {
+        "sym": "WMT",
+        "entry_px": 129.31,
+        "exit_px": 129.508312,
+        "qty": 77.0,
+        "pnl": 15.27,
+        "pct": 0.153,
+        "dur_s": 2509,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T15:43"
+      },
+      {
+        "sym": "TECL",
+        "entry_px": 177.57,
+        "exit_px": 176.02,
+        "qty": 55.0,
+        "pnl": -85.25,
+        "pct": -0.873,
+        "dur_s": 2058,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-07T16:33"
+      },
+      {
+        "sym": "FNGD",
+        "entry_px": 39.89,
+        "exit_px": 40.23,
+        "qty": 250.0,
+        "pnl": 85.0,
+        "pct": 0.852,
+        "dur_s": 0,
+        "exit_type": "TARGET",
+        "entry_ts": "2026-05-07T17:06"
+      },
+      {
+        "sym": "TECL",
+        "entry_px": 174.45,
+        "exit_px": 174.1,
+        "qty": 56.0,
+        "pnl": -19.6,
+        "pct": -0.201,
+        "dur_s": 135,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T17:48"
+      },
+      {
+        "sym": "SQQQ",
+        "entry_px": 45.950092,
+        "exit_px": 45.69,
+        "qty": 217.0,
+        "pnl": -56.44,
+        "pct": -0.566,
+        "dur_s": 1673,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-07T17:32"
+      },
+      {
+        "sym": "ERX",
+        "entry_px": 84.65,
+        "exit_px": 84.65,
+        "qty": 118.0,
+        "pnl": 0.0,
+        "pct": 0.0,
+        "dur_s": 0,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T17:23"
+      }
+    ],
+    "trade_stats": {
+      "total": 17,
+      "wins": 3,
+      "losses": 14,
+      "win_rate": 17.6,
+      "total_pnl": -197.95,
+      "avg_win": 132.36,
+      "avg_loss": -42.5,
+      "stops": 6,
+      "targets": 2,
+      "time_exits": 9,
+      "instant_stops_under_2min": 1
+    },
+    "breadth": {
+      "score": 42.0,
+      "regime": "NEUTRAL",
+      "bull_conf": 65,
+      "bear_conf": 65,
+      "spy_chg": -0.288,
+      "qqq_chg": -0.057
+    }
   }
 ]
