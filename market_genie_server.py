@@ -6086,14 +6086,27 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
                 # 0.21%+ spread because the minimum $0.01 tick IS the full spread.
                 # That's actually a GOOD quote — don't penalise tight markets on
                 # cheap instruments.  Allow if dollar spread ≤ $0.02.
+                # ── Tiered spread cap by price tier ─────────────────────────
+                # Higher-priced leveraged ETFs (DUST $47, NUGT $190) have wider
+                # absolute spreads that reflect tick size, not poor liquidity.
+                # Scale the cap rather than blocking legitimate signals.
+                _is_etf_sym = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
+                if _is_etf_sym and price >= 30:
+                    _spread_cap = 0.45   # $30+ ETFs: $0.18 on $47 is normal
+                elif _is_etf_sym and price >= 10:
+                    _spread_cap = 0.30   # $10-30 ETFs: slightly looser
+                else:
+                    _spread_cap = _ALP_MAX_SPREAD_PCT  # default 0.2%
                 _spread_dollar = ask_px - bid_px
-                _spread_ok = (spread_pct <= _ALP_MAX_SPREAD_PCT) or (_spread_dollar <= 0.02)
+                _spread_ok = (spread_pct <= _spread_cap) or (_spread_dollar <= 0.02)
                 if ask_px > 0 and bid_px > 0 and not _spread_ok:
                     print(f"[Alpaca] {sym} — SKIPPED: spread {spread_pct:.3f}% "
-                          f"> {_ALP_MAX_SPREAD_PCT}% max (${_spread_dollar:.3f} wide)")
+                          f"> {_spread_cap}% max (${_spread_dollar:.3f} wide)")
                     return False
-                if _spread_dollar <= 0.02 and spread_pct > _ALP_MAX_SPREAD_PCT:
+                if _spread_dollar <= 0.02 and spread_pct > _spread_cap:
                     print(f"[Alpaca] {sym} — spread {spread_pct:.3f}% bypassed: min-tick spread ${_spread_dollar:.2f} ✓")
+                if _is_etf_sym and _spread_cap > _ALP_MAX_SPREAD_PCT and spread_pct > _ALP_MAX_SPREAD_PCT and _spread_ok:
+                    print(f"[Alpaca] {sym} — spread {spread_pct:.3f}% passed: tiered cap {_spread_cap}% for ${price:.0f} ETF ✓")
             else:
                 # Fallback to Finnhub if Alpaca quote is empty
                 raise ValueError("empty ask/bid from Alpaca")
@@ -6836,10 +6849,20 @@ def _alp_execute_signal(res: dict):
             et_hour = _get_et_now().hour
             threshold = _ALP_MIN_DAY_RANGE_EARLY_PCT if et_hour < 12 else _ALP_MIN_DAY_RANGE_PCT
             if range_from_open < threshold:
-                print(f"[Alpaca] {sym} — SKIPPED: only moved {range_from_open:.2f}% from open "
-                      f"(${day_open:.2f} → ${price:.2f}), min {threshold}% required "
-                      f"({'pre-noon' if et_hour < 12 else 'post-noon'})")
-                return
+                # Bypass for extreme Kronos momentum + both models agree.
+                # ERX kronos=11.25, both_agree=1 — the model is confident a big
+                # move is coming even if the stock has been flat all day.
+                # Only bypass when Kronos magnitude ≥ 5% AND both_agree=1.
+                _ba_val = res.get("both_agree", 0) if res else 0
+                _kron_abs = abs(float(res.get("kronos_pct", 0) or 0)) if res else 0
+                if _ba_val == 1 and _kron_abs >= 5.0:
+                    print(f"[Alpaca] {sym} — day range {range_from_open:.2f}% bypassed: "
+                          f"both_agree=1 + |kronos|={_kron_abs:.1f}% extreme momentum ✓")
+                else:
+                    print(f"[Alpaca] {sym} — SKIPPED: only moved {range_from_open:.2f}% from open "
+                          f"(${day_open:.2f} → ${price:.2f}), min {threshold}% required "
+                          f"({'pre-noon' if et_hour < 12 else 'post-noon'})")
+                    return
             else:
                 print(f"[Alpaca] {sym} — day range {range_from_open:.2f}% from open ✓")
 
