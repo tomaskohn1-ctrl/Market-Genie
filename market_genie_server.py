@@ -4300,14 +4300,14 @@ _PREDICT_WATCHLIST = [
     "SMTC","FORM","ACLS","CAMT","ONTO","RMBS","AMBA","AXTI","SITM","POWI",
     # ── Software / cloud / cybersecurity ──────────────────────────────────────
     "CRWD","PANW","NET","SNOW","DDOG","TEAM","ZS","MNDY","APP","AXON",
-    "FTNT","OKTA","CFLT","MDB","GTLB","PATH","BILL","HUBS","WDAY","NOW",
+    "FTNT","OKTA","KVYO","MDB","GTLB","PATH","BILL","HUBS","WDAY","NOW",
     "VEEV","DSGX","PCTY","CELH","S","ASAN","BOX","DOCN","BRZE","ESTC",
     # ── Consumer internet / social / streaming ────────────────────────────────
     "NFLX","ROKU","SPOT","TTD","PINS","SNAP","RDDT","RBLX","MTCH","IAC",
     "UBER","LYFT","ABNB","DASH","EXPE","BKNG","TRIP","EBAY","ETSY","GRAB",
     # ── High-beta / meme / Reddit favorites ───────────────────────────────────
     "GME","AMC","HIMS","RKLB","ASTS","SOFI","HOOD","OPEN","UPST","AFRM",
-    "LMND","ROOT","CLOV","SPCE","CORZ","ACHR","JOBY","DJT","CHWY","NKLA",
+    "LMND","ROOT","CLOV","SPCE","CORZ","ACHR","JOBY","DJT","CHWY","RXRX",
     # ── Crypto-adjacent / Bitcoin miners ──────────────────────────────────────
     "COIN","MARA","RIOT","MSTR","CLSK","BTBT","CIFR","WULF","HUT",
     "BTDR","IREN","BITI","BITO","GBTC","IBIT","MSTX","CONY","MSFO","BITX",
@@ -4319,21 +4319,21 @@ _PREDICT_WATCHLIST = [
     "TNA","TZA","IBB","NAIL","DPST","CURE","BOIL","KOLD","WEBL","WEBS",
     # ── EV / clean energy ─────────────────────────────────────────────────────
     "RIVN","LCID","NIO","LI","XPEV","CHPT","BLNK","EVGO",
-    "PLUG","FCEL","BE","BLDP","RUN","NOVA","MAXN","CSIQ","JKS","STEM",
+    "PLUG","FCEL","BE","BLDP","RUN","ARWR","CPNG","CSIQ","JKS","STEM",
     # ── Financials / banks / fintech ──────────────────────────────────────────
     "JPM","BAC","GS","MS","C","WFC","SCHW","V","MA","PYPL",
-    "AXP","COF","DFS","SQ","NU","MELI","PAGS","STNE","XP","FLYW",
+    "AXP","COF","ALLY","RELY","NU","MELI","PAGS","STNE","XP","FLYW",
     # ── Healthcare / biotech ──────────────────────────────────────────────────
     "MRNA","BNTX","GILD","REGN","BIIB","ABBV","BMY","PFE","NVAX","CRSP",
-    "BEAM","EDIT","NTLA","FATE","SGEN","FOLD","RCUS","MRTX","KURA","ACMR",
+    "BEAM","EDIT","NTLA","FATE","VRTX","ALNY","RCUS","GH","KURA","ACMR",
     # ── Energy / oil & gas ────────────────────────────────────────────────────
-    "XOM","CVX","COP","OXY","SLB","HAL","DVN","MRO","HES","FANG",
+    "XOM","CVX","COP","OXY","SLB","HAL","DVN","AR","FANG","RIG",
     # ── Retail / consumer ─────────────────────────────────────────────────────
     "WMT","TGT","COST","HD","LOW","SBUX","MCD","CMG","LULU","NKE",
-    "PTON","BIRK","ONON","SKX","UAA","UA","PVH","GPS","URBN","ANF",
+    "PTON","BIRK","ONON","CROX","UAA","UA","PVH","FIVE","URBN","ANF",
     # ── International ADRs / large-cap growth ─────────────────────────────────
     "BABA","JD","PDD","BIDU","TSM","ASML","SHOP","SE",
-    "INFY","WIT","ERIC","NOK","STM","NTES","GLOB","DESP",
+    "INFY","WIT","ERIC","NOK","STM","NTES","GLOB","WOLF",
 ]
 
 _predict_results  = {}      # { sym: result_dict }  — accumulated across all buckets
