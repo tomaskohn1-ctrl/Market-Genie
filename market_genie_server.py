@@ -4309,6 +4309,12 @@ _ETF_BULL_UNIVERSE = frozenset([
     "NVDL",   # 2× NVDA
     "TSLL",   # 2× TSLA
     "UDOW",   # 3× Dow Jones
+    # ── New sectors (added for coverage expansion) ──────────────────────────
+    "ERX",    # 3× Energy — active on oil/gas moves
+    "NUGT",   # 3× Gold Miners — spikes with metals momentum
+    "HIBL",   # 3× S&P 500 High Beta — amplifies risk-on rotations
+    "CURE",   # 3× Healthcare — defensive/offensive sector plays
+    "NAIL",   # 3× Homebuilders — rates-sensitive momentum plays
 ])
 # Bear ETFs: go short when BEARISH regime confirmed
 _ETF_BEAR_UNIVERSE = frozenset([
@@ -4323,6 +4329,12 @@ _ETF_BEAR_UNIVERSE = frozenset([
     "UVXY",   # 1.5× VIX (spikes in selloffs)
     "VXX",    # 1× VIX front-month futures
     "SDOW",   # 3× inverse Dow Jones
+    # ── New sectors (matched pairs for expansion above) ─────────────────────
+    "ERY",    # 3× inverse Energy
+    "DUST",   # 3× inverse Gold Miners
+    "HIBS",   # 3× inverse S&P 500 High Beta
+    "RXD",    # 2× inverse Healthcare
+    "DRV",    # 3× inverse Real Estate / Homebuilders proxy
 ])
 
 _PREDICT_WATCHLIST = sorted(_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
@@ -4342,6 +4354,12 @@ _ETF_PAIRS: dict = {
     "LABU": "LABD",  "LABD": "LABU",   # Biotech
     "FNGU": "FNGD",  "FNGD": "FNGU",   # FANG+
     "UDOW": "SDOW",  "SDOW": "UDOW",   # Dow Jones
+    # ── New sector pairs ───────────────────────────────────────────────────
+    "ERX":  "ERY",   "ERY":  "ERX",    # Energy
+    "NUGT": "DUST",  "DUST": "NUGT",   # Gold Miners
+    "HIBL": "HIBS",  "HIBS": "HIBL",   # S&P 500 High Beta
+    "CURE": "RXD",   "RXD":  "CURE",   # Healthcare
+    "NAIL": "DRV",   "DRV":  "NAIL",   # Homebuilders / Real Estate
 }
 
 _predict_results  = {}      # { sym: result_dict }  — accumulated across all buckets
@@ -6089,10 +6107,14 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
             except Exception as _fq_err:
                 print(f"[Alpaca] {sym} Finnhub fallback also failed ({_fq_err}), using signal price")
 
-    # Stale-price guard: skip if price moved >1% since signal
-    if signal_price > 0 and abs(price - signal_price) / signal_price > 0.01:
+    # Stale-price guard: skip if price moved too far since signal.
+    # ETFs get 2% threshold — 3× products routinely move 1% in the time between
+    # scan and execution (FNGD +2.26%, TNA -3.60% observed blocking valid trades).
+    # Stocks keep the tighter 1% guard.
+    _stale_thresh = 0.02 if sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE) else 0.01
+    if signal_price > 0 and abs(price - signal_price) / signal_price > _stale_thresh:
         print(f"[Alpaca] {sym} — SKIPPED: price moved {((price-signal_price)/signal_price*100):+.2f}% "
-              f"since signal (${signal_price:.2f} → ${price:.2f})")
+              f"since signal (${signal_price:.2f} → ${price:.2f}), threshold={_stale_thresh*100:.0f}%")
         return False
 
     side         = "buy"  if direction == "bull" else "sell"
@@ -6809,12 +6831,15 @@ def _alp_execute_signal(res: dict):
             return
 
         # Volume surge hard gate — no conviction without volume
-        # Exception: very high confidence signals (≥85) bypass the vol gate —
-        # at that conviction level the multi-model agreement outweighs volume noise.
-        # PANW hit 100+ conf with 0.34× vol and was a clear miss without this.
+        # Exception 1: very high confidence signals (≥85) bypass — multi-model agreement
+        #              outweighs volume noise (e.g. PANW 100+ conf with 0.34× vol).
+        # Exception 2: both_agree=1 AND eff_conf≥75 bypass — leveraged ETFs like LABD/TZA
+        #              have near-zero midday volume structurally but strong model consensus.
         if _VOL_SURGE_MIN > 0 and vol_ratio < _VOL_SURGE_MIN:
             if eff_conf >= 85:
                 print(f"[TechGate] {sym} — HIGH CONF bypass: conf={eff_conf:.1f} overrides vol_ratio {vol_ratio:.2f}×")
+            elif ba == 1 and eff_conf >= 75:
+                print(f"[TechGate] {sym} — BOTH_AGREE bypass: both_agree=1 + conf={eff_conf:.1f} overrides vol_ratio {vol_ratio:.2f}×")
             else:
                 print(f"[TechGate] {sym} — SKIPPED: vol_ratio {vol_ratio:.2f}× < {_VOL_SURGE_MIN}× required")
                 return
