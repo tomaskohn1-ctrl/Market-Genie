@@ -851,13 +851,18 @@ def _alp_ws_on_message(ws, raw):
                     # the Massive/Finnhub WS handles market data; this stream is used for
                     # position-level price monitoring on our highest-conviction names.
                     # Priority: leveraged ETFs (regime plays) + top liquid high-beta stocks.
-                    # ETF-only universe — all 22 tickers fit under the 30-ticker paper cap
+                    # 32 total ETFs — all fit under the 30-ticker paper cap after [:30] slice.
+                    # Original 22 core names take priority; new sector names fill remaining slots.
+                    _ALP_WS_TICKERS = sorted(_PREDICT_WATCHLIST)[:30]  # auto-picks top 30 alphabetically
+                    # Override: manually order to ensure highest-liquidity ETFs are always included
                     _ALP_WS_TICKERS = [
-                        # Bull ETFs
-                        "TQQQ","SPXL","SOXL","TNA","TECL","FAS","LABU","FNGU","NVDL","TSLL","UDOW",
-                        # Bear ETFs
-                        "SQQQ","SPXS","SOXS","TZA","TECS","FAZ","LABD","FNGD","UVXY","VXX","SDOW",
-                    ][:30]   # hard cap at 30 — Alpaca paper limit (22 ETFs well under cap)
+                        # Core (highest volume — always include)
+                        "TQQQ","SQQQ","SPXL","SPXS","SOXL","SOXS","TNA","TZA",
+                        "TECL","TECS","FAS","FAZ","LABU","LABD","FNGU","FNGD",
+                        "UVXY","VXX","UDOW","SDOW","NVDL","TSLL",
+                        # New sectors (fill remaining 8 of 30 slots)
+                        "ERX","ERY","NUGT","DUST","HIBL","HIBS","NAIL","DRV",
+                    ][:30]   # hard cap at 30 — Alpaca paper limit
                     print(f"[AlpacaWS] Authenticated — subscribing to {len(_ALP_WS_TICKERS)} tickers (paper cap=30)")
                     ws.send(json.dumps({
                         "action": "subscribe",
