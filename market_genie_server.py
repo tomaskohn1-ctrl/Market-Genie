@@ -5628,7 +5628,7 @@ _ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.market
 # Execution settings (override via Railway Variables)
 _ALP_ENABLED          = os.getenv("ALPACA_EXEC_ENABLED", "true").lower() == "true"
 _ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "10000"))  # $10K per trade → 5 positions = $50K deployed
-_ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "5"))         # max open at once
+_ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "6"))         # max open at once — raised 5→6 to avoid missing high-conf signals when full
 _ALP_STOP_PCT         = float(os.getenv("ALPACA_STOP_PCT", "0.0075"))       # 0.75% stop loss — wider room for intraday noise (was 0.5%, too tight for $50-150 stocks)
 _ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.015"))      # 1.5% target — maintains 2:1 R:R with wider stop
 _ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.030"))# 3.0% for STRONG (was 2.0%)
@@ -6756,9 +6756,15 @@ def _alp_execute_signal(res: dict):
             return
 
         # Volume surge hard gate — no conviction without volume
+        # Exception: very high confidence signals (≥85) bypass the vol gate —
+        # at that conviction level the multi-model agreement outweighs volume noise.
+        # PANW hit 100+ conf with 0.34× vol and was a clear miss without this.
         if _VOL_SURGE_MIN > 0 and vol_ratio < _VOL_SURGE_MIN:
-            print(f"[TechGate] {sym} — SKIPPED: vol_ratio {vol_ratio:.2f}× < {_VOL_SURGE_MIN}× required")
-            return
+            if eff_conf >= 85:
+                print(f"[TechGate] {sym} — HIGH CONF bypass: conf={eff_conf:.1f} overrides vol_ratio {vol_ratio:.2f}×")
+            else:
+                print(f"[TechGate] {sym} — SKIPPED: vol_ratio {vol_ratio:.2f}× < {_VOL_SURGE_MIN}× required")
+                return
 
     # ── Tape Alignment Filter ──────────────────────────────────────────────────
     # If 72%+ of signals this hour are running in one direction, don't fight the tape.
