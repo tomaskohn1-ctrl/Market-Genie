@@ -6720,7 +6720,10 @@ def _alp_execute_signal(res: dict):
     # Low-priced stocks (<$15) have wide bid-ask spreads relative to the 0.5% stop.
     # In practice they stop out in seconds before the move develops.
     # Examples today: CLOV $2.61 (stop hit in 13s), BLDP $3.95, ARRY $8.15.
-    if _ALP_MIN_PRICE > 0 and price < _ALP_MIN_PRICE:
+    # ETFs are EXEMPT: TZA ($4), TECS ($9), SOXS ($10) are known leveraged ETFs
+    # with penny spreads — the spread gate handles their bid-ask quality check.
+    _is_etf = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
+    if _ALP_MIN_PRICE > 0 and price < _ALP_MIN_PRICE and not _is_etf:
         print(f"[Alpaca] {sym} — SKIPPED: price ${price:.2f} below min ${_ALP_MIN_PRICE:.2f}")
         return
 
