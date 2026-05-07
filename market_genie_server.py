@@ -6735,6 +6735,20 @@ def _alp_execute_signal(res: dict):
     ba = res.get("both_agree", 0)
     print(f"[Alpaca] {sym} — both_agree={ba} (informational only, not gating)")
 
+    # ── ETF Signal Quality Gate ───────────────────────────────────────────────
+    # Leveraged ETFs compete for limited slots. A single-model signal with
+    # moderate confidence (e.g. LABU both_agree=0 conf=76) should NOT steal a
+    # slot from a consensus signal (FNGD both_agree=1 conf=104) that's waiting
+    # for the cap to clear.
+    # Rule: ETF signals require EITHER both models agree (both_agree=1) OR
+    # standalone confidence ≥ 85 (high-conviction single-model bypass).
+    # This gate fires BEFORE the dedup write — blocked signals can retry freely.
+    if sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE):
+        if ba != 1 and eff_conf < 85:
+            print(f"[ETFQuality] {sym} — SKIPPED: requires both_agree=1 or eff_conf≥85 "
+                  f"(both_agree={ba}, eff_conf={eff_conf:.1f}) — slot reserved for consensus signals")
+            return
+
     # ── Kronos Strength Gate — DISABLED ──────────────────────────────────────
     # Originally required |kronos_pct| >= 0.3%. Removed: no live data showed
     # this threshold improved WR, and it blocked signals with no measurable benefit.
