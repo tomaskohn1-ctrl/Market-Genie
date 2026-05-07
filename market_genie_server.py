@@ -4956,15 +4956,15 @@ def _us_market_open() -> bool:
 
 
 def _safe_to_enter() -> bool:
-    """Return True only during the core tradeable window (Mon-Fri 09:45-15:30 ET).
+    """Return True only during the core tradeable window (Mon-Fri 09:45-15:50 ET).
     - First 15 min (9:30-9:45) excluded: opening volatility, wide spreads, and
       erratic order flow before price discovery settles.
-    - Last 25 min excluded: hard entry cutoff at 15:50 (separate check in
-      _alp_execute_signal) + EOD flattener at 15:55 — not enough runway."""
+    - Hard entry cutoff at 15:50 (separate check in _alp_execute_signal) +
+      EOD flattener at 15:55 — 5 min runway minimum before forced close."""
     et_now = _get_et_now()
     if et_now.weekday() > 4:
         return False
-    return dtime(9, 45) <= et_now.time() < dtime(15, 30)
+    return dtime(9, 45) <= et_now.time() < dtime(15, 50)
 
 
 def _wr_edge_score(res):
@@ -6653,12 +6653,12 @@ def _alp_execute_signal(res: dict):
         print(f"[Alpaca] {sym} — SKIPPED: outside safe entry window "
               f"(current ET={et_now_chk.strftime('%H:%M')}, window=09:45-15:30)")
         return
-    # Hard entry cutoff at 15:50 ET — EOD flattener fires at 15:55, so any entry
-    # after 15:50 could survive overnight if the flattener already ran for today.
-    # _us_market_open() allows until 16:00 which created an uncovered 5-min window.
+    # Hard entry cutoff at 15:53 ET — EOD flattener fires at 15:55, so entries
+    # after 15:53 leave less than 2 min before forced close (not worth the risk).
+    # _safe_to_enter() allows until 15:50; this is a backstop for race conditions.
     et_now_chk = _get_et_now()
-    if et_now_chk.time() >= dtime(15, 50):
-        print(f"[Alpaca] {sym} — SKIPPED: past 15:50 ET entry cutoff (EOD safety buffer)")
+    if et_now_chk.time() >= dtime(15, 53):
+        print(f"[Alpaca] {sym} — SKIPPED: past 15:53 ET entry cutoff (EOD safety buffer)")
         return
 
     # ── Per-symbol loss cooldown ──────────────────────────────────────────────
