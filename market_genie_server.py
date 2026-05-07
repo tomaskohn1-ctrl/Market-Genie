@@ -6092,7 +6092,7 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
                 # Scale the cap rather than blocking legitimate signals.
                 _is_etf_sym = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
                 if _is_etf_sym and price >= 30:
-                    _spread_cap = 0.45   # $30+ ETFs: $0.18 on $47 is normal
+                    _spread_cap = 0.65   # $30+ ETFs: DUST/NUGT can show $0.30 spreads on $47
                 elif _is_etf_sym and price >= 10:
                     _spread_cap = 0.30   # $10-30 ETFs: slightly looser
                 else:
@@ -6674,6 +6674,21 @@ def _alp_execute_signal(res: dict):
     streak    = res.get("streak_count", 1)
     kpct_raw  = res.get("kronos_pct")
     is_strong = abs(kpct_raw) >= 1.0 if kpct_raw is not None else False
+
+    # ── ETF Direction Guard ───────────────────────────────────────────────────
+    # Bull ETFs (TQQQ, TNA, FAS…) can only be BOUGHT — shorting them triggers
+    # Alpaca HTTP 422 "cannot be sold short". A bear view on a bull ETF sector
+    # should come from the paired bear ETF (TZA, FAZ…) getting a BULL signal,
+    # not from shorting the bull ETF directly.
+    # Same logic applies to bear ETFs: direction=bear would mean shorting them,
+    # which is redundant and also often rejected.
+    # Rule: for all ETFs in our universe, only allow direction=bull (buy orders).
+    _is_universe_etf = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
+    if _is_universe_etf and direction == "bear":
+        _pair = _ETF_PAIRS.get(sym, "its inverse")
+        print(f"[ETFDir] {sym} — SKIPPED: ETF universe only allows long entries "
+              f"(direction=bear would short {sym}; use {_pair} for bear exposure)")
+        return
     price     = res.get("last_price") or res.get("price") or 0.0
 
     if not sym or direction not in ("bull", "bear"):
@@ -6849,15 +6864,17 @@ def _alp_execute_signal(res: dict):
             et_hour = _get_et_now().hour
             threshold = _ALP_MIN_DAY_RANGE_EARLY_PCT if et_hour < 12 else _ALP_MIN_DAY_RANGE_PCT
             if range_from_open < threshold:
-                # Bypass for extreme Kronos momentum + both models agree.
-                # ERX kronos=11.25, both_agree=1 — the model is confident a big
-                # move is coming even if the stock has been flat all day.
-                # Only bypass when Kronos magnitude ≥ 5% AND both_agree=1.
+                # Bypass for high-conviction consensus signals.
+                # NVDL eff_conf=94.4, both_agree=1 was blocked by 0.39% day range.
+                # If both models agree AND confidence is ≥85, the signal strength
+                # overrides the "hasn't moved today" filter — the move may just be
+                # about to start. Kronos threshold alone was too narrow (missed NVDL).
                 _ba_val = res.get("both_agree", 0) if res else 0
                 _kron_abs = abs(float(res.get("kronos_pct", 0) or 0)) if res else 0
-                if _ba_val == 1 and _kron_abs >= 5.0:
+                _eff_conf_val = eff_conf  # already computed above
+                if _ba_val == 1 and (_eff_conf_val >= 85 or _kron_abs >= 5.0):
                     print(f"[Alpaca] {sym} — day range {range_from_open:.2f}% bypassed: "
-                          f"both_agree=1 + |kronos|={_kron_abs:.1f}% extreme momentum ✓")
+                          f"both_agree=1 + eff_conf={_eff_conf_val:.1f} (≥85 or |kronos|={_kron_abs:.1f}% ≥5) ✓")
                 else:
                     print(f"[Alpaca] {sym} — SKIPPED: only moved {range_from_open:.2f}% from open "
                           f"(${day_open:.2f} → ${price:.2f}), min {threshold}% required "
