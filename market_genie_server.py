@@ -860,8 +860,8 @@ def _alp_ws_on_message(ws, raw):
                         "TQQQ","SQQQ","SPXL","SPXS","SOXL","SOXS","TNA","TZA",
                         "TECL","TECS","FAS","FAZ","LABU","LABD","FNGU","FNGD",
                         "UVXY","VXX","UDOW","SDOW","NVDL","TSLL",
-                        # New sectors (fill remaining 8 of 30 slots)
-                        "ERX","ERY","NUGT","DUST","HIBL","HIBS","NAIL","DRV",
+                        # New sectors (fill remaining slots — liquid pairs only)
+                        "ERX","ERY","NUGT","DUST",
                     ][:30]   # hard cap at 30 — Alpaca paper limit
                     print(f"[AlpacaWS] Authenticated — subscribing to {len(_ALP_WS_TICKERS)} tickers (paper cap=30)")
                     ws.send(json.dumps({
@@ -4314,12 +4314,9 @@ _ETF_BULL_UNIVERSE = frozenset([
     "NVDL",   # 2× NVDA
     "TSLL",   # 2× TSLA
     "UDOW",   # 3× Dow Jones
-    # ── New sectors (added for coverage expansion) ──────────────────────────
+    # ── New sectors (liquid enough to pass spread gate avg_vol≥200K) ────────
     "ERX",    # 3× Energy — active on oil/gas moves
     "NUGT",   # 3× Gold Miners — spikes with metals momentum
-    "HIBL",   # 3× S&P 500 High Beta — amplifies risk-on rotations
-    "CURE",   # 3× Healthcare — defensive/offensive sector plays
-    "NAIL",   # 3× Homebuilders — rates-sensitive momentum plays
 ])
 # Bear ETFs: go short when BEARISH regime confirmed
 _ETF_BEAR_UNIVERSE = frozenset([
@@ -4337,9 +4334,9 @@ _ETF_BEAR_UNIVERSE = frozenset([
     # ── New sectors (matched pairs for expansion above) ─────────────────────
     "ERY",    # 3× inverse Energy
     "DUST",   # 3× inverse Gold Miners
-    "HIBS",   # 3× inverse S&P 500 High Beta
-    "RXD",    # 2× inverse Healthcare
-    "DRV",    # 3× inverse Real Estate / Homebuilders proxy
+    # HIBS/HIBL removed — HIBL avg_vol 85K fails spread gate
+    # RXD/CURE removed — CURE avg_vol 47K fails spread gate
+    # DRV/NAIL removed — DRV avg_vol 174K fails spread gate
 ])
 
 _PREDICT_WATCHLIST = sorted(_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
@@ -4360,11 +4357,9 @@ _ETF_PAIRS: dict = {
     "FNGU": "FNGD",  "FNGD": "FNGU",   # FANG+
     "UDOW": "SDOW",  "SDOW": "UDOW",   # Dow Jones
     # ── New sector pairs ───────────────────────────────────────────────────
-    "ERX":  "ERY",   "ERY":  "ERX",    # Energy
-    "NUGT": "DUST",  "DUST": "NUGT",   # Gold Miners
-    "HIBL": "HIBS",  "HIBS": "HIBL",   # S&P 500 High Beta
-    "CURE": "RXD",   "RXD":  "CURE",   # Healthcare
-    "NAIL": "DRV",   "DRV":  "NAIL",   # Homebuilders / Real Estate
+    "ERX":  "ERY",   "ERY":  "ERX",    # Energy (both legs liquid ✅)
+    "NUGT": "DUST",  "DUST": "NUGT",   # Gold Miners (both legs liquid ✅)
+    # HIBL/HIBS, CURE/RXD, NAIL/DRV removed — one or both legs fail avg_vol≥200K
 }
 
 _predict_results  = {}      # { sym: result_dict }  — accumulated across all buckets
