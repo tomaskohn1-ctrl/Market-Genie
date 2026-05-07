@@ -6080,11 +6080,20 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
                 # ── Spread gate — skip if spread eats too much of the stop ──────
                 # On FSLR: ask=$219.56, bid=$219.20, spread=0.16%. With a 0.75%
                 # stop that's 22% of stop buffer gone instantly on entry. Cap at
-                # 0.10% — beyond that the spread-to-stop ratio destroys R:R.
-                if ask_px > 0 and bid_px > 0 and spread_pct > _ALP_MAX_SPREAD_PCT:
+                # 0.20% — beyond that the spread-to-stop ratio destroys R:R.
+                #
+                # Minimum-tick bypass: cheap ETFs (e.g. TZA ~$4.72) always show
+                # 0.21%+ spread because the minimum $0.01 tick IS the full spread.
+                # That's actually a GOOD quote — don't penalise tight markets on
+                # cheap instruments.  Allow if dollar spread ≤ $0.02.
+                _spread_dollar = ask_px - bid_px
+                _spread_ok = (spread_pct <= _ALP_MAX_SPREAD_PCT) or (_spread_dollar <= 0.02)
+                if ask_px > 0 and bid_px > 0 and not _spread_ok:
                     print(f"[Alpaca] {sym} — SKIPPED: spread {spread_pct:.3f}% "
-                          f"> {_ALP_MAX_SPREAD_PCT}% max (${ask_px-bid_px:.3f} wide)")
+                          f"> {_ALP_MAX_SPREAD_PCT}% max (${_spread_dollar:.3f} wide)")
                     return False
+                if _spread_dollar <= 0.02 and spread_pct > _ALP_MAX_SPREAD_PCT:
+                    print(f"[Alpaca] {sym} — spread {spread_pct:.3f}% bypassed: min-tick spread ${_spread_dollar:.2f} ✓")
             else:
                 # Fallback to Finnhub if Alpaca quote is empty
                 raise ValueError("empty ask/bid from Alpaca")
