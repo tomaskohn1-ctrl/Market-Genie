@@ -5635,7 +5635,7 @@ _ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.030"))# 3
 _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "65"))             # min confidence
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
 _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "15.0"))        # min stock price — CLOV $2.62 (3 losses -$114), DJT $9.23, AI $9.25, SNAP $6.18 all under $10 and all losers today; $15 floor eliminates the worst noise
-_ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.15"))   # max bid-ask spread % — FSLR had 0.16% (blocked); 0.15% passes large/mid caps, blocks thin stocks
+_ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.20"))   # max bid-ask spread % — raised 0.15→0.20 to capture near-miss large caps like AVGO ($0.82 wide at 0.19%); still blocks thin/bad-quote spreads
 _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
 _ALP_DEDUP_SECS       = 2700   # 45 min dedup — COP cycled 6x at 20-min intervals today because dedup expired exactly when time-exit fired; 45 min prevents re-entry churn
