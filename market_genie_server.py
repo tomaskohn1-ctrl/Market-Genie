@@ -5639,11 +5639,13 @@ _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.15"))   # ma
 _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
 _ALP_DEDUP_SECS       = 2700   # 45 min dedup — COP cycled 6x at 20-min intervals today because dedup expired exactly when time-exit fired; 45 min prevents re-entry churn
+_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "20"))  # min wait after a losing exit before re-entering same symbol
 
 _alp_last_traded  = {}   # { sym: {"dir": str, "ts": float, "fill": float} }
 _alp_lock         = threading.Lock()
 _alp_order_lock   = threading.Lock()   # serializes position-check → place to prevent over-filling
 _alp_breakeven_set = set()   # syms whose stop has been moved to breakeven — prevents double-moves
+_alp_loss_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last losing exit per symbol
 
 # ── Alpaca Data API — real-time batch quote cache ─────────────────────────────
 # Uses the same API keys already in _ALPACA_KEY / _ALPACA_SECRET.
@@ -6510,6 +6512,8 @@ def _alp_time_exit_loop():
                     with _alp_lock:
                         _alp_last_traded.pop(sym, None)
                         _alp_breakeven_set.discard(sym)
+                        _alp_loss_cooldown[sym] = time.time()
+                    print(f"[Cooldown] ❄️  {sym} — loss cooldown started ({_ALP_LOSS_COOLDOWN_MINS}m block)")
                 # Case 2: Winner past 20 min — log that we're letting it ride
                 elif is_winner and age_mins >= _ALP_LOSER_EXIT_MINS and age_mins < _ALP_WINNER_MAX_MINS:
                     remaining = _ALP_WINNER_MAX_MINS - age_mins
@@ -6526,6 +6530,9 @@ def _alp_time_exit_loop():
                     with _alp_lock:
                         _alp_last_traded.pop(sym, None)
                         _alp_breakeven_set.discard(sym)
+                        if not is_winner:
+                            _alp_loss_cooldown[sym] = time.time()
+                            print(f"[Cooldown] ❄️  {sym} — loss cooldown started at hard max ({_ALP_LOSS_COOLDOWN_MINS}m block)")
         except Exception as e:
             print(f"[TimeExit] Loop error: {e}")
 
@@ -6559,6 +6566,21 @@ def _alp_execute_signal(res: dict):
     if et_now_chk.time() >= dtime(15, 50):
         print(f"[Alpaca] {sym} — SKIPPED: past 15:50 ET entry cutoff (EOD safety buffer)")
         return
+
+    # ── Per-symbol loss cooldown ──────────────────────────────────────────────
+    # After a losing exit, block re-entry on the same symbol for
+    # _ALP_LOSS_COOLDOWN_MINS (default 20 min). Prevents churn like the COP
+    # situation on May 6 (6 entries, 4 losses) where a loser closed and the
+    # next scanner pass immediately re-entered the same ticker.
+    with _alp_lock:
+        loss_ts = _alp_loss_cooldown.get(sym, 0)
+    if loss_ts:
+        secs_elapsed = time.time() - loss_ts
+        cooldown_secs = _ALP_LOSS_COOLDOWN_MINS * 60
+        if secs_elapsed < cooldown_secs:
+            mins_left = int((cooldown_secs - secs_elapsed) / 60) + 1
+            print(f"[Alpaca] {sym} — SKIPPED: loss cooldown active ({mins_left}m remaining)")
+            return
 
     direction = (res.get("consensus_dir") or res.get("direction") or "").lower()
     conf      = res.get("confidence") or res.get("conf") or 0
