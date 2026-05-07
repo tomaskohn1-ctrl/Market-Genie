@@ -6543,6 +6543,15 @@ def _alp_execute_signal(res: dict):
     if not _us_market_open():
         print(f"[Alpaca] {sym} — SKIPPED: market closed")
         return
+    # Opening window gate — no entries before 9:45 AM ET.
+    # _us_market_open() allows from 9:30 but the first 15 min have wide spreads,
+    # erratic order flow, and price discovery noise. _safe_to_enter() enforces
+    # the 9:45 floor. Previously this function existed but was never called here.
+    if not _safe_to_enter():
+        et_now_chk = _get_et_now()
+        print(f"[Alpaca] {sym} — SKIPPED: outside safe entry window "
+              f"(current ET={et_now_chk.strftime('%H:%M')}, window=09:45-15:30)")
+        return
     # Hard entry cutoff at 15:50 ET — EOD flattener fires at 15:55, so any entry
     # after 15:50 could survive overnight if the flattener already ran for today.
     # _us_market_open() allows until 16:00 which created an uncovered 5-min window.
