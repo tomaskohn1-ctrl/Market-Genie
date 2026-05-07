@@ -1,0 +1,69 @@
+[
+  {
+    "timestamp": "2026-05-07T14:09:45.588552+00:00",
+    "runs_at_local": "14:09 UTC",
+    "equity": 97727.82,
+    "day_pnl": 72.75,
+    "cash": 137569.9,
+    "open_positions": [
+      {
+        "sym": "ARKK",
+        "side": "short",
+        "qty": "-125",
+        "entry_px": 79.46472,
+        "current_px": 79.17,
+        "pnl": 36.84,
+        "pnl_pct": 0.371
+      },
+      {
+        "sym": "DVN",
+        "side": "short",
+        "qty": "-224",
+        "entry_px": 44.640089,
+        "current_px": 44.76,
+        "pnl": -26.860064,
+        "pnl_pct": -0.269
+      },
+      {
+        "sym": "LI",
+        "side": "short",
+        "qty": "-561",
+        "entry_px": 17.8,
+        "current_px": 17.77,
+        "pnl": 16.83,
+        "pnl_pct": 0.169
+      },
+      {
+        "sym": "NKE",
+        "side": "short",
+        "qty": "-225",
+        "entry_px": 44.41,
+        "current_px": 44.225,
+        "pnl": 41.625,
+        "pnl_pct": 0.417
+      }
+    ],
+    "completed_trades": [],
+    "trade_stats": {
+      "total": 0,
+      "wins": 0,
+      "losses": 0,
+      "win_rate": 0,
+      "total_pnl": 0,
+      "avg_win": 0,
+      "avg_loss": 0,
+      "stops": 0,
+      "targets": 0,
+      "time_exits": 0,
+      "instant_stops_under_2min": 0
+    },
+    "breadth": {
+      "score": 47.0,
+      "regime": "NEUTRAL",
+      "bull_conf": 65,
+      "bear_conf": 65,
+      "spy_chg": 0.079,
+      "qqq_chg": 0.319
+    }
+  }
+]
