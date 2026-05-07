@@ -65,5 +65,126 @@
       "spy_chg": 0.079,
       "qqq_chg": 0.319
     }
+  },
+  {
+    "timestamp": "2026-05-07T15:09:23.169963+00:00",
+    "runs_at_local": "15:09 UTC",
+    "equity": 97377.1,
+    "day_pnl": -277.97,
+    "cash": 127235.47,
+    "open_positions": [
+      {
+        "sym": "HUBS",
+        "side": "short",
+        "qty": "-40",
+        "entry_px": 248.17,
+        "current_px": 247.76,
+        "pnl": 16.4,
+        "pnl_pct": 0.165
+      },
+      {
+        "sym": "JD",
+        "side": "long",
+        "qty": "330",
+        "entry_px": 30.27,
+        "current_px": 30.295,
+        "pnl": 8.25,
+        "pnl_pct": 0.083
+      },
+      {
+        "sym": "NU",
+        "side": "short",
+        "qty": "-693",
+        "entry_px": 14.42,
+        "current_px": 14.4201,
+        "pnl": -0.0693,
+        "pnl_pct": -0.001
+      },
+      {
+        "sym": "TEAM",
+        "side": "short",
+        "qty": "-106",
+        "entry_px": 93.680377,
+        "current_px": 93.95,
+        "pnl": -28.580038,
+        "pnl_pct": -0.288
+      },
+      {
+        "sym": "WEBL",
+        "side": "short",
+        "qty": "-391",
+        "entry_px": 25.56977,
+        "current_px": 25.5588,
+        "pnl": 4.28927,
+        "pnl_pct": 0.043
+      }
+    ],
+    "completed_trades": [
+      {
+        "sym": "NU",
+        "entry_px": 14.4,
+        "exit_px": 14.300534,
+        "qty": 693.0,
+        "pnl": -68.93,
+        "pct": -0.691,
+        "dur_s": 524,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-07T14:16"
+      },
+      {
+        "sym": "SOXL",
+        "entry_px": 161.08,
+        "exit_px": 159.8,
+        "qty": 62.0,
+        "pnl": -79.36,
+        "pct": -0.795,
+        "dur_s": 0,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-07T14:47"
+      },
+      {
+        "sym": "COP",
+        "entry_px": 114.593104,
+        "exit_px": 114.46,
+        "qty": 87.0,
+        "pnl": -11.58,
+        "pct": -0.116,
+        "dur_s": 0,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T14:35"
+      },
+      {
+        "sym": "GBTC",
+        "entry_px": 62.36,
+        "exit_px": 62.3,
+        "qty": 160.0,
+        "pnl": -9.6,
+        "pct": -0.096,
+        "dur_s": 1502,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-07T14:33"
+      }
+    ],
+    "trade_stats": {
+      "total": 4,
+      "wins": 0,
+      "losses": 4,
+      "win_rate": 0.0,
+      "total_pnl": -169.47,
+      "avg_win": 0,
+      "avg_loss": -42.37,
+      "stops": 2,
+      "targets": 0,
+      "time_exits": 2,
+      "instant_stops_under_2min": 1
+    },
+    "breadth": {
+      "score": 51.0,
+      "regime": "NEUTRAL",
+      "bull_conf": 65,
+      "bear_conf": 65,
+      "spy_chg": 0.207,
+      "qqq_chg": 0.484
+    }
   }
 ]
