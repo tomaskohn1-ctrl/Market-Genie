@@ -4883,6 +4883,13 @@ def _wr_check_spread(sym: str, avg_vol: float = 0) -> bool:
     Massive/yfinance bid-ask data is often stale/bad for large-caps, so we
     skip the spread check entirely and trust the edge (both_agree + streak).
     """
+    # ETFs in our leveraged universe have their own tiered live bid/ask spread
+    # gate inside _alp_place_bracket (uses real-time Alpaca quote, not yfinance).
+    # Skip the cached yfinance check here to avoid double-gating with stale data.
+    # NUGT/DUST can show 0.4%+ on yfinance but pass the live tiered check fine.
+    if sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE):
+        return True
+
     # Fast-reject: skip micro-caps (wide spreads guaranteed)
     if avg_vol > 0 and avg_vol < _WR_MIN_AVG_VOL:
         print(f"[Spread] {sym} rejected — avg_vol {avg_vol:,.0f} < {_WR_MIN_AVG_VOL:,}")
@@ -6971,21 +6978,33 @@ def _alp_execute_signal(res: dict):
         # Prevents correlated wipeout: 6 bull ETFs all moving together = single
         # market bet.  Count directions from _alp_last_traded (the live registry
         # of what we entered and in which direction).
+        # ── Economic direction helper ─────────────────────────────────────────
+        # Buying a bear ETF (FNGD, LABD, SQQQ…) = economically BEAR exposure
+        # even though the order direction is "bull" (we're buying it long).
+        # With ETFDir guard blocking all short entries, every ETF trade is
+        # direction=bull — so without this correction DirCap counts everything
+        # as bull and starves the bear cap slots.
+        def _econ_dir(s: str, sig_dir: str) -> str:
+            if s in _ETF_BEAR_UNIVERSE and sig_dir == "bull":
+                return "bear"
+            return sig_dir
+
         with _alp_lock:
             bull_count = sum(
                 1 for s, v in _alp_last_traded.items()
-                if s in open_positions and v.get("dir") == "bull"
+                if s in open_positions and _econ_dir(s, v.get("dir", "")) == "bull"
             )
             bear_count = sum(
                 1 for s, v in _alp_last_traded.items()
-                if s in open_positions and v.get("dir") == "bear"
+                if s in open_positions and _econ_dir(s, v.get("dir", "")) == "bear"
             )
-        if direction == "bull" and bull_count >= _ALP_MAX_BULL_POSITIONS:
+        _incoming_econ = _econ_dir(sym, direction)
+        if _incoming_econ == "bull" and bull_count >= _ALP_MAX_BULL_POSITIONS:
             print(f"[DirCap] {sym} — SKIPPED: bull cap reached ({bull_count}/{_ALP_MAX_BULL_POSITIONS} bull positions)")
             with _alp_lock:
                 _alp_last_traded.pop(sym, None)
             return
-        if direction == "bear" and bear_count >= _ALP_MAX_BEAR_POSITIONS:
+        if _incoming_econ == "bear" and bear_count >= _ALP_MAX_BEAR_POSITIONS:
             print(f"[DirCap] {sym} — SKIPPED: bear cap reached ({bear_count}/{_ALP_MAX_BEAR_POSITIONS} bear positions)")
             with _alp_lock:
                 _alp_last_traded.pop(sym, None)
