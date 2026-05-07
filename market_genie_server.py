@@ -5623,6 +5623,11 @@ _ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "6"))         # ma
 _ALP_STOP_PCT         = float(os.getenv("ALPACA_STOP_PCT", "0.0075"))       # 0.75% stop loss — wider room for intraday noise (was 0.5%, too tight for $50-150 stocks)
 _ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.015"))      # 1.5% target — maintains 2:1 R:R with wider stop
 _ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.030"))# 3.0% for STRONG (was 2.0%)
+# Leveraged ETF overrides — 3× products move 3× faster, 0.75% stop is ~0.25% in the underlying
+# and gets clipped by normal intraday noise before the real move develops.
+# 1.5% stop / 3.0% target maintains the same 2:1 R:R at a scale that fits ETF volatility.
+_ALP_ETF_STOP_PCT     = float(os.getenv("ALPACA_ETF_STOP_PCT",   "0.015"))  # 1.5% stop for leveraged ETFs
+_ALP_ETF_TARGET_PCT   = float(os.getenv("ALPACA_ETF_TARGET_PCT", "0.030"))  # 3.0% target for leveraged ETFs (2:1 R:R)
 _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "65"))             # min confidence
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
 _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "15.0"))        # min stock price — CLOV $2.62 (3 losses -$114), DJT $9.23, AI $9.25, SNAP $6.18 all under $10 and all losers today; $15 floor eliminates the worst noise
@@ -6076,7 +6081,16 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
     side         = "buy"  if direction == "bull" else "sell"
     close_side   = "sell" if direction == "bull" else "buy"
     qty          = max(1, int(_ALP_POSITION_SIZE_USD / price)) if price > 0 else 1
-    target_pct   = _ALP_STRONG_TARGET_PCT if is_strong else _ALP_TARGET_PCT
+
+    # Leveraged ETFs get wider stop/target — 3× products hit 0.75% on noise;
+    # 1.5% stop / 3.0% target keeps the same 2:1 R:R at the right scale.
+    _is_lev_etf  = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
+    stop_pct     = _ALP_ETF_STOP_PCT   if _is_lev_etf else _ALP_STOP_PCT
+    if _is_lev_etf:
+        target_pct = _ALP_ETF_TARGET_PCT
+        print(f"[Bracket] {sym} ETF bracket — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}%")
+    else:
+        target_pct = _ALP_STRONG_TARGET_PCT if is_strong else _ALP_TARGET_PCT
 
     # ── Phase 1: Submit market entry (no bracket yet) ─────────────────────────
     entry_order = {
@@ -6140,12 +6154,12 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
 
     # ── Phase 3: Attach OCO stop/target anchored to ACTUAL fill price ──────────
     if direction == "bull":
-        stop_px        = round(fill_price * (1 - _ALP_STOP_PCT), 2)
+        stop_px        = round(fill_price * (1 - stop_pct), 2)
         # Fix 2: stop-limit not stop-market — 0.2% below trigger avoids gap fills
         stop_limit_px  = round(stop_px * 0.998, 2)
         target_px      = round(fill_price * (1 + target_pct), 2)
     else:
-        stop_px        = round(fill_price * (1 + _ALP_STOP_PCT), 2)
+        stop_px        = round(fill_price * (1 + stop_pct), 2)
         # Fix 2: stop-limit for shorts — 0.2% above trigger
         stop_limit_px  = round(stop_px * 1.002, 2)
         target_px      = round(fill_price * (1 - target_pct), 2)
