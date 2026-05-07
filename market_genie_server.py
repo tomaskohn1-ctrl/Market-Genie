@@ -5653,7 +5653,7 @@ _ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.market
 
 # Execution settings (override via Railway Variables)
 _ALP_ENABLED          = os.getenv("ALPACA_EXEC_ENABLED", "true").lower() == "true"
-_ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "10000"))  # $10K per trade → 5 positions = $50K deployed
+_ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "15000"))  # $15K per trade → 6 positions = $90K deployed
 _ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "6"))         # max open at once — raised 5→6 to avoid missing high-conf signals when full
 _ALP_STOP_PCT         = float(os.getenv("ALPACA_STOP_PCT", "0.0075"))       # 0.75% stop loss — wider room for intraday noise (was 0.5%, too tight for $50-150 stocks)
 _ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.015"))      # 1.5% target — maintains 2:1 R:R with wider stop
