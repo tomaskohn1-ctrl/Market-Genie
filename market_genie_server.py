@@ -5541,7 +5541,7 @@ def _breadth_advance_decline() -> float:
 def _compute_breadth_score() -> None:
     """
     Recalculate breadth score and update _breadth_state.
-    Called every 5 minutes by _breadth_loop().
+    Called every 90s by _breadth_loop().
 
     4 components:
       1. SPY intraday % change (-25 to +25)
@@ -5550,7 +5550,8 @@ def _compute_breadth_score() -> None:
       4. Real-time Advance/Decline ratio from Alpaca snap cache (-10 to +10)
 
     Max range: 0–100 (baseline 50). Score <35 = BEARISH, >65 = BULLISH.
-    This 4-component model catches divergences like "SPY up but 80% of stocks declining."
+    NOTE: 200 DMA intentionally excluded — we hold 20-60 min max so volatility
+    decay doesn't accumulate; intraday components are more relevant than macro SMA.
     """
     spy_chg    = _breadth_fetch_intraday_chg("SPY")
     qqq_chg    = _breadth_fetch_intraday_chg("QQQ")
@@ -5593,27 +5594,31 @@ def _compute_breadth_score() -> None:
     elif ad_ratio >= 0.35: ad_pts = 5
     else:                  ad_pts = 10
 
-    score = max(0.0, min(100.0, 50.0 + spy_pts + qqq_pts + sig_pts + ad_pts))
+    score = max(0.0, min(100.0, 50.0 + spy_pts + qqq_pts + sig_pts + ad_pts + dma_pts))
 
     # Determine regime + dynamic conf floors (scale with trend strength)
     regime, bull_conf, bear_conf = _dynamic_conf_floors(score)
 
     with _breadth_lock:
         _breadth_state.update({
-            "score":      round(score, 1),
-            "regime":     regime,
-            "spy_chg":    spy_chg,
-            "qqq_chg":    qqq_chg,
-            "bear_ratio": bear_ratio,
-            "ad_ratio":   ad_ratio,
-            "bull_conf":  bull_conf,
-            "bear_conf":  bear_conf,
-            "updated_at": int(time.time()),
+            "score":        round(score, 1),
+            "regime":       regime,
+            "spy_chg":      spy_chg,
+            "qqq_chg":      qqq_chg,
+            "bear_ratio":   bear_ratio,
+            "ad_ratio":     ad_ratio,
+            "bull_conf":    bull_conf,
+            "bear_conf":    bear_conf,
+            "spy_above_200": spy_above,
+            "qqq_above_200": qqq_above,
+            "dma_pts":      dma_pts,
+            "updated_at":   int(time.time()),
         })
 
     print(f"[Breadth] Score={score:.1f} Regime={regime} "
           f"SPY={spy_chg:+.2f}% QQQ={qqq_chg:+.2f}% "
-          f"BearSignals={bear_ratio:.0%} A/D={ad_ratio:.0%} → "
+          f"BearSignals={bear_ratio:.0%} A/D={ad_ratio:.0%} "
+          f"200DMA={dma_pts:+d}pts → "
           f"bull_conf≥{bull_conf} bear_conf≥{bear_conf}")
 
 
