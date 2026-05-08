@@ -91,6 +91,8 @@ ALERT_GAP_PCT      = float(os.getenv("ALERT_GAP_PCT",    "2.5"))
 ALERT_KRONOS_SCORE = float(os.getenv("ALERT_KRONOS_SCORE","70"))
 ALERT_VOLUME_MULT  = float(os.getenv("ALERT_VOLUME_MULT", "3.0"))
 
+NEWS_API_KEY  = os.getenv("NEWS_API_KEY", "")   # newsapi.org key
+
 FINNHUB_BASE = "https://finnhub.io/api/v1"
 QUIVER_BASE  = "https://api.quiverquant.com/beta"
 MASSIVE_BASE = "https://api.massive.com"
@@ -9748,6 +9750,165 @@ print("[CacheJanitor] Started — evicting stale cache entries every 10 min")
 _alert_thread = threading.Thread(target=_alert_scheduler_loop, daemon=True, name="AlertScheduler")
 _alert_thread.start()
 print("[AlertScheduler] Started — checking every 5 min during market hours")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OIL NEWS MONITOR — NewsAPI geopolitical trigger for GUSH / DRIP
+# Polls NewsAPI every 5 min for Iran / Hormuz / OPEC / crude oil headlines.
+# Scores each article bull (supply disruption) or bear (deal / de-escalation).
+# Fires ntfy push alert + updates dashboard card via /api/oil/news endpoint.
+# Set NEWS_API_KEY in Railway Variables to enable.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_oil_news_lock  = threading.Lock()
+_oil_news_state = {
+    "headlines":   [],      # list of {title, url, published, direction, score, source}
+    "direction":   "NEUTRAL",  # overall: GUSH | DRIP | NEUTRAL
+    "score":       0,
+    "updated_at":  0,
+    "alert_count": 0,
+}
+_oil_seen_ids = set()   # dedup — don't re-alert same article
+
+_OIL_BULL_KW = [
+    "attack", "strike", "war", "conflict", "blockade", "sanction", "sanctions",
+    "tension", "tensions", "escalat", "missile", "drone", "threat", "threaten",
+    "disruption", "closure", "close", "shut", "seize", "seized", "cut",
+    "retaliation", "retaliatory", "hostil", "crisis",
+]
+_OIL_BEAR_KW = [
+    "deal", "agreement", "accord", "ceasefire", "peace", "talks", "negotiat",
+    "open", "lift", "lifted", "ease", "eased", "resolve", "resolved",
+    "diplomacy", "diplomatic", "release", "increase", "production boost",
+    "spr", "strategic reserve", "supply increase", "surplus",
+]
+
+def _score_oil_headline(text: str) -> int:
+    """Return sentiment score: positive = bull oil (GUSH), negative = bear oil (DRIP)."""
+    tl = text.lower()
+    bull = sum(1 for kw in _OIL_BULL_KW if kw in tl)
+    bear = sum(1 for kw in _OIL_BEAR_KW if kw in tl)
+    return bull - bear
+
+def _oil_news_loop():
+    """Background thread: poll NewsAPI every 5 min for oil geopolitical news."""
+    global _oil_seen_ids
+    time.sleep(15)   # let server finish booting
+    while True:
+        try:
+            api_key = os.getenv("NEWS_API_KEY", NEWS_API_KEY).strip()
+            if not api_key:
+                time.sleep(300)
+                continue
+
+            query = (
+                "Iran oil OR Strait Hormuz OR OPEC crude OR "
+                "oil sanctions OR oil supply disruption OR "
+                "Iran nuclear deal OR oil war"
+            )
+            resp = requests.get(
+                "https://newsapi.org/v2/everything",
+                params={
+                    "q":          query,
+                    "sortBy":     "publishedAt",
+                    "pageSize":   10,
+                    "language":   "en",
+                    "apiKey":     api_key,
+                },
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                print(f"[OilNews] NewsAPI error {resp.status_code}: {resp.text[:200]}")
+                time.sleep(300)
+                continue
+
+            articles = resp.json().get("articles", [])
+            new_alerts = []
+            parsed = []
+
+            for art in articles:
+                uid   = art.get("url", "") or art.get("title", "")
+                title = (art.get("title") or "").strip()
+                desc  = (art.get("description") or "").strip()
+                url   = art.get("url", "")
+                pub   = art.get("publishedAt", "")
+                src   = (art.get("source") or {}).get("name", "")
+
+                if not title or uid in _oil_seen_ids:
+                    continue
+
+                score = _score_oil_headline(title + " " + desc)
+                if score > 0:
+                    direction = "GUSH"
+                elif score < 0:
+                    direction = "DRIP"
+                else:
+                    direction = "NEUTRAL"
+
+                entry = {
+                    "title":     title,
+                    "url":       url,
+                    "published": pub,
+                    "direction": direction,
+                    "score":     score,
+                    "source":    src,
+                }
+                parsed.append(entry)
+
+                # Only alert on clear signals (score >= 2 or <= -2)
+                if abs(score) >= 2 and uid not in _oil_seen_ids:
+                    new_alerts.append(entry)
+                    _oil_seen_ids.add(uid)
+
+            if parsed:
+                # Overall direction = weighted sum of all scored articles
+                total = sum(e["score"] for e in parsed)
+                if total >= 2:
+                    overall = "GUSH"
+                elif total <= -2:
+                    overall = "DRIP"
+                else:
+                    overall = "NEUTRAL"
+
+                with _oil_news_lock:
+                    _oil_news_state["headlines"]   = parsed[:8]
+                    _oil_news_state["direction"]   = overall
+                    _oil_news_state["score"]       = total
+                    _oil_news_state["updated_at"]  = int(time.time())
+
+                # Fire push for new high-conviction articles
+                for art in new_alerts[:2]:   # max 2 pushes per cycle
+                    etf   = art["direction"]
+                    emoji = "🛢️📈" if etf == "GUSH" else ("🛢️📉" if etf == "DRIP" else "🛢️")
+                    broadcast_push(
+                        title=f"{emoji} Oil Alert — {etf}",
+                        body=art["title"],
+                        url=art["url"] or "/",
+                        tag="oil,warning",
+                    )
+                    with _oil_news_lock:
+                        _oil_news_state["alert_count"] += 1
+                    print(f"[OilNews] Alert fired → {etf}: {art['title'][:80]}")
+
+                print(f"[OilNews] {len(parsed)} articles · overall={overall} score={total:+d} · "
+                      f"{len(new_alerts)} new alerts")
+
+        except Exception as e:
+            print(f"[OilNews] Loop error: {e}")
+
+        time.sleep(300)   # poll every 5 min
+
+_oil_news_thread = threading.Thread(target=_oil_news_loop, daemon=True, name="OilNews")
+_oil_news_thread.start()
+print("[OilNews] Monitor started — polling NewsAPI every 5 min for GUSH/DRIP signals")
+
+
+@app.route("/api/oil/news")
+def api_oil_news():
+    """Oil news monitor state — direction, score, recent headlines."""
+    with _oil_news_lock:
+        return jsonify(dict(_oil_news_state))
+
+
 @app.route("/api/chart/<ticker>/<tf>")
 def api_chart_tf(ticker, tf):
     """
