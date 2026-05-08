@@ -295,21 +295,30 @@ def fh_get(path, params=None):
 # ── Massive helpers ────────────────────────────────────────────────────────────
 # Auth: apiKey as query param (NOT Bearer header). API version: v2.
 def massive_get(path, params=None):
-    """Call Massive.com REST API v2. Returns parsed JSON or None."""
+    """Call Massive.com REST API v2. Returns parsed JSON or None.
+    Retries once on read timeout (ERY/ERX occasionally time out at 8s)."""
     if not MASSIVE_KEY:
         return None
     p = params or {}
     p["apiKey"] = MASSIVE_KEY          # correct auth method
-    try:
-        r = requests.get(f"{MASSIVE_BASE}{path}", params=p, timeout=8)
-        if r.status_code == 403:
-            print(f"[Massive] 403 on {path} — endpoint not in current plan")
+    for attempt in range(2):           # 2 attempts total (1 retry on timeout)
+        try:
+            r = requests.get(f"{MASSIVE_BASE}{path}", params=p, timeout=8)
+            if r.status_code == 403:
+                print(f"[Massive] 403 on {path} — endpoint not in current plan")
+                return None
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.ReadTimeout:
+            if attempt == 0:
+                print(f"[Massive] {path} read timeout — retrying in 3s")
+                time.sleep(3)
+            else:
+                print(f"[Massive] {path} read timeout after retry — giving up")
+                return None
+        except Exception as e:
+            print(f"[Massive] {path} error: {e}")
             return None
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print(f"[Massive] {path} error: {e}")
-        return None
 
 
 def massive_snapshot(ticker):
@@ -6876,16 +6885,16 @@ def _alp_execute_signal(res: dict):
             threshold = _ALP_MIN_DAY_RANGE_EARLY_PCT if et_hour < 12 else _ALP_MIN_DAY_RANGE_PCT
             if range_from_open < threshold:
                 # Bypass for high-conviction consensus signals.
-                # NVDL eff_conf=94.4, both_agree=1 was blocked by 0.39% day range.
-                # If both models agree AND confidence is ≥85, the signal strength
-                # overrides the "hasn't moved today" filter — the move may just be
-                # about to start. Kronos threshold alone was too narrow (missed NVDL).
+                # NVDL eff_conf=80.1, both_agree=1 was blocked at 0.09% day range —
+                # NVDA moved +2.22% but NVDL opened gap-priced and barely moved from
+                # its own open. Lowered from ≥85 → ≥78 to catch these (80.1 < 85).
+                # Kronos threshold kept at 5.0 as a secondary bypass.
                 _ba_val = res.get("both_agree", 0) if res else 0
                 _kron_abs = abs(float(res.get("kronos_pct", 0) or 0)) if res else 0
                 _eff_conf_val = eff_conf  # already computed above
-                if _ba_val == 1 and (_eff_conf_val >= 85 or _kron_abs >= 5.0):
+                if _ba_val == 1 and (_eff_conf_val >= 78 or _kron_abs >= 5.0):
                     print(f"[Alpaca] {sym} — day range {range_from_open:.2f}% bypassed: "
-                          f"both_agree=1 + eff_conf={_eff_conf_val:.1f} (≥85 or |kronos|={_kron_abs:.1f}% ≥5) ✓")
+                          f"both_agree=1 + eff_conf={_eff_conf_val:.1f} (≥78 or |kronos|={_kron_abs:.1f}% ≥5) ✓")
                 else:
                     print(f"[Alpaca] {sym} — SKIPPED: only moved {range_from_open:.2f}% from open "
                           f"(${day_open:.2f} → ${price:.2f}), min {threshold}% required "
@@ -6912,12 +6921,14 @@ def _alp_execute_signal(res: dict):
         # Volume surge hard gate — no conviction without volume
         # Exception 1: very high confidence signals (≥85) bypass — multi-model agreement
         #              outweighs volume noise (e.g. PANW 100+ conf with 0.34× vol).
-        # Exception 2: both_agree=1 AND eff_conf≥75 bypass — leveraged ETFs like LABD/TZA
-        #              have near-zero midday volume structurally but strong model consensus.
+        # Exception 2: both_agree=1 AND eff_conf≥68 bypass — leveraged ETFs like NUGT/LABD/TZA
+        #              have structurally low midday vol (~0.42×) but strong model consensus.
+        #              Lowered from 75→68: NUGT had conf 71.8/72.8 + both_agree=1 and was
+        #              skipped repeatedly until it hit 90.8, then dedup blocked it entirely.
         if _VOL_SURGE_MIN > 0 and vol_ratio < _VOL_SURGE_MIN:
             if eff_conf >= 85:
                 print(f"[TechGate] {sym} — HIGH CONF bypass: conf={eff_conf:.1f} overrides vol_ratio {vol_ratio:.2f}×")
-            elif ba == 1 and eff_conf >= 75:
+            elif ba == 1 and eff_conf >= 68:
                 print(f"[TechGate] {sym} — BOTH_AGREE bypass: both_agree=1 + conf={eff_conf:.1f} overrides vol_ratio {vol_ratio:.2f}×")
             else:
                 print(f"[TechGate] {sym} — SKIPPED: vol_ratio {vol_ratio:.2f}× < {_VOL_SURGE_MIN}× required")
@@ -6944,15 +6955,26 @@ def _alp_execute_signal(res: dict):
     now = time.time()
     with _alp_lock:
         last = _alp_last_traded.get(sym, {})
-        # Block ANY re-entry on same symbol for 30 min, regardless of direction.
+        # Block ANY re-entry on same symbol for 45 min, regardless of direction.
         # Previously only blocked same-direction, which allowed BULL→BEAR→BULL churn
         # on choppy stocks (FNGD 5x, WDAY 4x, BITI 4x today). Directional flip on a
         # ranging stock is noise, not a new opportunity.
+        # ELITE BYPASS: if eff_conf≥90 AND no open position, allow re-entry even within
+        # dedup window. Fixes NUGT: hit 90.8 conf after vol_ratio bypass, then dedup
+        # blocked it because a previous trade was 20 min ago (prev trade had already exited).
         if last and (now - last.get("ts", 0)) < _ALP_DEDUP_SECS:
             age_min = int((now - last.get("ts", 0)) / 60)
             last_dir = last.get("dir", "?")
-            print(f"[Alpaca] {sym} — SKIPPED: dedup ({age_min}m ago, last dir={last_dir}, new dir={direction})")
-            return
+            # Check for elite re-entry: very high conf + no open position
+            _open_pos_check = _alp_get_open_positions()  # light API call
+            _in_position = sym in _open_pos_check
+            if eff_conf >= 90 and not _in_position:
+                print(f"[Alpaca] {sym} — ELITE DEDUP BYPASS: conf={eff_conf:.1f}≥90 + no open position "
+                      f"(was {age_min}m ago, last dir={last_dir}) — allowing re-entry")
+                # Fall through — don't return, update dedup below
+            else:
+                print(f"[Alpaca] {sym} — SKIPPED: dedup ({age_min}m ago, last dir={last_dir}, new dir={direction})")
+                return
         # NOTE: dedup entry is written AFTER successful order (see _alp_place_bracket)
         # Storing tentative here to prevent race, will clear on failure
         _alp_last_traded[sym] = {"dir": direction, "ts": now}
