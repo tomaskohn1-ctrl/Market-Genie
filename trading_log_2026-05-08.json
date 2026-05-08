@@ -1,0 +1,72 @@
+[
+  {
+    "timestamp": "2026-05-08T14:09:00.279011+00:00",
+    "runs_at_local": "14:09 UTC",
+    "equity": 97695.24,
+    "day_pnl": 150.04,
+    "cash": 52774.71,
+    "open_positions": [
+      {
+        "sym": "ERX",
+        "side": "long",
+        "qty": "177",
+        "entry_px": 84.24,
+        "current_px": 84.39,
+        "pnl": 26.55,
+        "pnl_pct": 0.178
+      },
+      {
+        "sym": "SOXL",
+        "side": "long",
+        "qty": "89",
+        "entry_px": 166.915056,
+        "current_px": 168.47,
+        "pnl": 138.390016,
+        "pnl_pct": 0.932
+      },
+      {
+        "sym": "UDOW",
+        "side": "long",
+        "qty": "246",
+        "entry_px": 60.946342,
+        "current_px": 60.9499,
+        "pnl": 0.875268,
+        "pnl_pct": 0.006
+      }
+    ],
+    "completed_trades": [
+      {
+        "sym": "NVDL",
+        "entry_px": 109.36,
+        "exit_px": 109.274088,
+        "qty": 137.0,
+        "pnl": -11.77,
+        "pct": -0.079,
+        "dur_s": 0,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T13:45"
+      }
+    ],
+    "trade_stats": {
+      "total": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -11.77,
+      "avg_win": 0,
+      "avg_loss": -11.77,
+      "stops": 0,
+      "targets": 0,
+      "time_exits": 1,
+      "instant_stops_under_2min": 0
+    },
+    "breadth": {
+      "score": 66.0,
+      "regime": "BULLISH",
+      "bull_conf": 65,
+      "bear_conf": 80,
+      "spy_chg": 0.682,
+      "qqq_chg": 1.461
+    }
+  }
+]
