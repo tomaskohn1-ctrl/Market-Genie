@@ -859,7 +859,7 @@ def _alp_ws_on_message(ws, raw):
                         # Core (highest volume — always include)
                         "TQQQ","SQQQ","SPXL","SPXS","SOXL","TNA","TZA",
                         "TECL","TECS","FAS","FAZ","LABU","LABD","FNGU","FNGD",
-                        "UVXY","VXX","UDOW","SDOW","NVDL","TSLL",
+                        "UVXY","VXX","UDOW","SDOW","NVDL",
                         # New sectors (fill remaining slots — liquid pairs only)
                         "ERX","ERY","NUGT","DUST",
                     ][:30]   # hard cap at 30 — Alpaca paper limit
@@ -4312,7 +4312,7 @@ _ETF_BULL_UNIVERSE = frozenset([
     "LABU",   # 3× Biotech
     "FNGU",   # 3× FANG+ mega tech
     "NVDL",   # 2× NVDA
-    "TSLL",   # 2× TSLA
+    # TSLL removed — yfinance possibly delisted (reverse split history broken)
     "UDOW",   # 3× Dow Jones
     # ── New sectors (liquid enough to pass spread gate avg_vol≥200K) ────────
     "ERX",    # 3× Energy — active on oil/gas moves
@@ -6728,7 +6728,7 @@ def _alp_execute_signal(res: dict):
     # Neutral (35-65): no boost — regular single-stock signals take over
     _ETF_BULL_NAMES = frozenset(["TQQQ","SPXL","BULZ","SOXL","FNGU","TECL",
                                   "LABU","DPST","NAIL","CURE","BOIL","TNA",
-                                  "WEBL","NVDL","TSLL","UDOW","URPO"])
+                                  "WEBL","NVDL","UDOW","URPO"])
     _ETF_BEAR_NAMES = frozenset(["SQQQ","SPXS","BERZ","FNGD","TECS",
                                   "LABD","TZA","WEBS","KOLD","UVXY","VXX",
                                   "BITI","SDSOX"])
@@ -8002,7 +8002,7 @@ _SCALP_UNIVERSE = [
 _EXT_UNIVERSE = [
     # Leveraged ETFs with meaningful extended-hours volume
     # Bull side
-    "TQQQ","SPXL","SOXL","TNA","TECL","FAS","LABU","FNGU","NVDL","TSLL","UDOW",
+    "TQQQ","SPXL","SOXL","TNA","TECL","FAS","LABU","FNGU","NVDL","UDOW",
     # Bear side
     "SQQQ","SPXS","TZA","TECS","FAZ","LABD","FNGD","UVXY","VXX","SDOW",
 ]
