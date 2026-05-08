@@ -5757,8 +5757,20 @@ _ALP_MAX_BEAR_POSITIONS = int(os.getenv("ALPACA_MAX_BEAR_POSITIONS", "3"))  # ma
 _alp_last_traded  = {}   # { sym: {"dir": str, "ts": float, "fill": float} }
 _alp_lock         = threading.Lock()
 _alp_order_lock   = threading.Lock()   # serializes position-check → place to prevent over-filling
-_alp_breakeven_set = set()   # syms whose stop has been moved to breakeven — prevents double-moves
+_alp_breakeven_set = set()   # syms whose stop has been moved to trailing stop — prevents double-moves
 _alp_loss_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last losing exit per symbol
+
+# ── Portfolio High-Water Mark Profit Guard ────────────────────────────────────
+# If session P&L peaks above $200 and then drops more than $300 from that peak,
+# close all positions and pause new entries for 30 min.
+# Prevents "gave back all gains" days: had $400+ profit, ended -$608.
+_alp_session_start_equity = None   # equity at session start (first loop run)
+_alp_session_peak_pnl     = 0.0    # highest session P&L seen today
+_alp_profit_guard_fired   = False  # True after guard fires (one-shot per session)
+_alp_profit_guard_until   = 0.0    # timestamp: block new entries until this time
+_ALP_PROFIT_GUARD_PEAK    = float(os.getenv("ALPACA_PROFIT_GUARD_PEAK",  "200"))  # min peak before guard activates
+_ALP_PROFIT_GUARD_DROP    = float(os.getenv("ALPACA_PROFIT_GUARD_DROP",  "300"))  # $ drawdown from peak that triggers close-all
+_ALP_PROFIT_GUARD_PAUSE   = int(os.getenv("ALPACA_PROFIT_GUARD_PAUSE",    "30"))  # minutes to pause new entries after guard fires
 
 # ── Alpaca Data API — real-time batch quote cache ─────────────────────────────
 # Uses the same API keys already in _ALPACA_KEY / _ALPACA_SECRET.
@@ -5872,7 +5884,7 @@ _alp_pending_lock = threading.Lock()
 # Winners (unrealized P&L >= 0) ride until WINNER_MAX_MINS to let momentum play out.
 # This directly improves R:R by allowing wins to grow while cutting losses short.
 _ALP_LOSER_EXIT_MINS  = int(os.getenv("ALPACA_LOSER_EXIT_MINS",  "20"))
-_ALP_WINNER_MAX_MINS  = int(os.getenv("ALPACA_WINNER_MAX_MINS",  "60"))  # extended 40→60: ETFs need more runway to reach 3% target
+_ALP_WINNER_MAX_MINS  = int(os.getenv("ALPACA_WINNER_MAX_MINS",  "40"))  # reverted 60→40: ETFs reverse too hard over 60 min; trailing stop now protects gains
 _ALP_MAX_HOLD_MINS    = _ALP_LOSER_EXIT_MINS   # kept for legacy log references
 
 
@@ -6575,6 +6587,48 @@ def _alp_time_exit_loop():
                 continue
             positions = r.json()
             now_ts = time.time()
+
+            # ── Portfolio High-Water Mark Profit Guard ──────────────────────
+            # Track session equity so we can detect "gave back all gains" days.
+            # On first loop run, snapshot the starting equity as baseline.
+            global _alp_session_start_equity, _alp_session_peak_pnl, \
+                   _alp_profit_guard_fired, _alp_profit_guard_until
+            try:
+                acc_r = requests.get(f"{_ALPACA_BASE_URL}/v2/account",
+                                     headers=_alp_headers(), timeout=6)
+                if acc_r.status_code == 200:
+                    cur_equity = float(acc_r.json().get("equity", 0))
+                    if cur_equity > 0:
+                        if _alp_session_start_equity is None:
+                            _alp_session_start_equity = cur_equity
+                            print(f"[ProfitGuard] Session baseline equity: ${cur_equity:,.2f}")
+                        cur_pnl = cur_equity - _alp_session_start_equity
+                        if cur_pnl > _alp_session_peak_pnl:
+                            _alp_session_peak_pnl = cur_pnl
+                            if cur_pnl >= _ALP_PROFIT_GUARD_PEAK:
+                                print(f"[ProfitGuard] 📈 New session peak: ${cur_pnl:+.2f}")
+                        # Fire guard if peak was meaningful and we've drawn down too much
+                        if (not _alp_profit_guard_fired
+                                and _alp_session_peak_pnl >= _ALP_PROFIT_GUARD_PEAK
+                                and cur_pnl < _alp_session_peak_pnl - _ALP_PROFIT_GUARD_DROP
+                                and positions):
+                            print(f"[ProfitGuard] 🛑 PROFIT GUARD FIRED — "
+                                  f"peak=${_alp_session_peak_pnl:+.2f} → now=${cur_pnl:+.2f} "
+                                  f"(gave back ${_alp_session_peak_pnl - cur_pnl:.0f}) "
+                                  f"— closing all {len(positions)} position(s), "
+                                  f"pausing entries {_ALP_PROFIT_GUARD_PAUSE}m")
+                            for _gp in positions:
+                                _alp_close_position(_gp["symbol"], _gp.get("side", "long"))
+                                with _alp_lock:
+                                    _alp_last_traded.pop(_gp["symbol"], None)
+                                    _alp_breakeven_set.discard(_gp["symbol"])
+                            _alp_profit_guard_fired = True
+                            _alp_profit_guard_until = now_ts + _ALP_PROFIT_GUARD_PAUSE * 60
+                            # No more position processing this cycle
+                            positions = []
+            except Exception as _pg_err:
+                pass   # guard errors are non-fatal — don't block normal exit logic
+
             for pos in positions:
                 sym        = pos["symbol"]
                 side       = pos.get("side", "long")
@@ -6622,11 +6676,13 @@ def _alp_time_exit_loop():
                 is_winner      = unrealized_pct >= 0
                 fill_price     = entry_info.get("fill", 0.0)
 
-                # ── BREAKEVEN STOP ────────────────────────────────────────────
+                # ── TRAILING STOP (replaces old breakeven stop) ───────────────
                 # Once a position reaches +0.4% gain, cancel the OCO bracket
-                # and replace the stop with a stop-limit AT entry price.
-                # This locks in scratch (no loss) and lets winners run freely
-                # until the 40-min hard max. Only fires once per trade.
+                # and replace it with an Alpaca trailing_stop that trails 0.5%
+                # below the highest price since the order is placed.
+                # Old approach: stop at entry price (scratch at best).
+                # New approach: if price goes to +2%, floor is +1.5% — real gains.
+                # Only fires once per trade (breakeven_set flag).
                 if (unrealized_pct >= 0.4
                         and fill_price > 0
                         and sym not in _alp_breakeven_set):
@@ -6636,7 +6692,7 @@ def _alp_time_exit_loop():
                         fill_qty   = abs(int(float(pos.get("qty", 1))))
 
                         # Cancel all open orders for this symbol (clears the OCO)
-                        cancel_r = requests.delete(
+                        requests.delete(
                             f"{_ALPACA_BASE_URL}/v2/orders",
                             headers=_alp_headers(),
                             params={"symbol": sym},
@@ -6644,32 +6700,29 @@ def _alp_time_exit_loop():
                         )
                         time.sleep(0.5)   # allow cancels to settle
 
-                        # Breakeven stop: stop at fill_price, limit 0.15% below
-                        be_stop  = round(fill_price, 2)
-                        be_limit = round(fill_price * (0.9985 if pos_side == "long" else 1.0015), 2)
-                        stop_order = {
+                        # Trailing stop: Alpaca trails 0.5% below highest price
+                        # seen since the order is placed. As price rises, floor rises.
+                        trail_order = {
                             "symbol":        sym,
                             "qty":           str(fill_qty),
                             "side":          close_side,
-                            "type":          "stop_limit",
+                            "type":          "trailing_stop",
                             "time_in_force": "day",
-                            "stop_price":    str(be_stop),
-                            "limit_price":   str(be_limit),
+                            "trail_percent": "0.5",   # trail 0.5% from high
                         }
                         be_r = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
                                              headers=_alp_headers(),
-                                             json=stop_order, timeout=8)
+                                             json=trail_order, timeout=8)
                         if be_r.status_code in (200, 201):
                             with _alp_lock:
                                 _alp_breakeven_set.add(sym)
-                            print(f"[TimeExit] 🔒 {sym} BREAKEVEN STOP — {unrealized_pct:+.2f}% gain, "
-                                  f"stop moved to fill ${fill_price:.2f} "
-                                  f"(stop={be_stop}, lim={be_limit})")
+                            print(f"[TimeExit] 🔒 {sym} TRAILING STOP — {unrealized_pct:+.2f}% gain, "
+                                  f"trailing 0.5% below high (entry=${fill_price:.2f})")
                         else:
-                            print(f"[TimeExit] ⚠️  {sym} breakeven stop order failed "
+                            print(f"[TimeExit] ⚠️  {sym} trailing stop order failed "
                                   f"HTTP {be_r.status_code}: {be_r.text[:200]}")
                     except Exception as _be_err:
-                        print(f"[TimeExit] ⚠️  {sym} breakeven stop exception: {_be_err}")
+                        print(f"[TimeExit] ⚠️  {sym} trailing stop exception: {_be_err}")
 
                 # ── ASYMMETRIC EXIT LOGIC ─────────────────────────────────────
                 # Case 1: Loser at/past 20-min mark → cut immediately
@@ -6736,6 +6789,12 @@ def _alp_execute_signal(res: dict):
         return
 
     # ── Per-symbol loss cooldown ──────────────────────────────────────────────
+    # ── Profit Guard pause — no new entries while guard is active ────────────
+    if _alp_profit_guard_until and time.time() < _alp_profit_guard_until:
+        mins_left = int((_alp_profit_guard_until - time.time()) / 60) + 1
+        print(f"[ProfitGuard] {sym} — SKIPPED: profit protection active ({mins_left}m remaining)")
+        return
+
     # After a losing exit, block re-entry on the same symbol for
     # _ALP_LOSS_COOLDOWN_MINS (default 20 min). Prevents churn like the COP
     # situation on May 6 (6 entries, 4 losses) where a loser closed and the
