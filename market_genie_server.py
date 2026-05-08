@@ -5594,7 +5594,7 @@ def _compute_breadth_score() -> None:
     elif ad_ratio >= 0.35: ad_pts = 5
     else:                  ad_pts = 10
 
-    score = max(0.0, min(100.0, 50.0 + spy_pts + qqq_pts + sig_pts + ad_pts + dma_pts))
+    score = max(0.0, min(100.0, 50.0 + spy_pts + qqq_pts + sig_pts + ad_pts))
 
     # Determine regime + dynamic conf floors (scale with trend strength)
     regime, bull_conf, bear_conf = _dynamic_conf_floors(score)
@@ -5609,16 +5609,12 @@ def _compute_breadth_score() -> None:
             "ad_ratio":     ad_ratio,
             "bull_conf":    bull_conf,
             "bear_conf":    bear_conf,
-            "spy_above_200": spy_above,
-            "qqq_above_200": qqq_above,
-            "dma_pts":      dma_pts,
             "updated_at":   int(time.time()),
         })
 
     print(f"[Breadth] Score={score:.1f} Regime={regime} "
           f"SPY={spy_chg:+.2f}% QQQ={qqq_chg:+.2f}% "
-          f"BearSignals={bear_ratio:.0%} A/D={ad_ratio:.0%} "
-          f"200DMA={dma_pts:+d}pts → "
+          f"BearSignals={bear_ratio:.0%} A/D={ad_ratio:.0%} → "
           f"bull_conf≥{bull_conf} bear_conf≥{bear_conf}")
 
 
