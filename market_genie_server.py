@@ -995,6 +995,29 @@ def _alp_ws_runner():
         print("[AlpacaWS] fcntl not available — proceeding without WS lock")
 
     import websocket as _wslib
+    import atexit
+
+    # ── Graceful shutdown hook ─────────────────────────────────────────────────
+    # When Gunicorn sends SIGTERM (rolling deploy or manual restart), the old pod
+    # must close the WebSocket BEFORE exiting so Alpaca frees the connection slot.
+    # Without this, the new pod's first connect attempt hits 406 "connection limit"
+    # and has to wait 10 seconds to reconnect — a needless startup gap.
+    # atexit is the right hook here: it fires during Gunicorn's graceful shutdown
+    # (after SIGTERM) without interfering with Gunicorn's own signal handling.
+    _ws_shutdown_ref = [None]   # mutable box — atexit closure captures it
+
+    def _ws_close_on_exit():
+        ws_to_close = _ws_shutdown_ref[0]
+        if ws_to_close:
+            try:
+                print("[AlpacaWS] Shutdown — closing WebSocket to free Alpaca connection slot")
+                ws_to_close.close()
+                time.sleep(0.8)   # brief pause so close frame propagates before process exits
+            except Exception:
+                pass
+
+    atexit.register(_ws_close_on_exit)
+
     while True:
         try:
             ws = _wslib.WebSocketApp(
@@ -1004,9 +1027,11 @@ def _alp_ws_runner():
                 on_error=_alp_ws_on_error,
                 on_close=_alp_ws_on_close,
             )
+            _ws_shutdown_ref[0] = ws   # expose to atexit hook above
             ws.run_forever(ping_interval=20, ping_timeout=8)
         except Exception as e:
             print(f"[AlpacaWS] runner error: {e}")
+        _ws_shutdown_ref[0] = None
         time.sleep(10)   # brief pause before reconnect
 
 
