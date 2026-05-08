@@ -6181,10 +6181,14 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
                 # ── Tiered spread cap by price tier ─────────────────────────
                 # Higher-priced leveraged ETFs (DUST $47, NUGT $190) have wider
                 # absolute spreads that reflect tick size, not poor liquidity.
-                # Scale the cap rather than blocking legitimate signals.
+                # Scale the cap rather than blocking low-liquidity signals.
+                # Cap tightened 0.65→0.35 for $30+ ETFs: the old 0.65% allowed
+                # $1.25 spreads on a $190 ETF — that's 44% of the 1.5% stop
+                # consumed on entry alone. 0.35% = max $0.67 on $190, which real
+                # midday NUGT/LABU spreads clear easily.
                 _is_etf_sym = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
                 if _is_etf_sym and price >= 30:
-                    _spread_cap = 0.65   # $30+ ETFs: DUST/NUGT can show $0.30 spreads on $47
+                    _spread_cap = 0.35   # tightened 0.65→0.35: max $0.67 on $190 ETF
                 elif _is_etf_sym and price >= 10:
                     _spread_cap = 0.30   # $10-30 ETFs: slightly looser
                 else:
@@ -6199,6 +6203,22 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
                     print(f"[Alpaca] {sym} — spread {spread_pct:.3f}% bypassed: min-tick spread ${_spread_dollar:.2f} ✓")
                 if _is_etf_sym and _spread_cap > _ALP_MAX_SPREAD_PCT and spread_pct > _ALP_MAX_SPREAD_PCT and _spread_ok:
                     print(f"[Alpaca] {sym} — spread {spread_pct:.3f}% passed: tiered cap {_spread_cap}% for ${price:.0f} ETF ✓")
+
+                # ── Spread-to-Stop Ratio Gate ─────────────────────────────
+                # Even when spread passes the cap, check that it doesn't eat
+                # too much of the stop distance. If the spread alone costs >25%
+                # of the stop, the trade needs a 125%+ move just to break even.
+                # E.g. NUGT: spread $0.67 / stop $2.85 (1.5% of $190) = 23.5% ✓
+                #            spread $1.00 / stop $2.85                 = 35.1% ✗
+                if _spread_ok and ask_px > 0 and bid_px > 0 and price > 0:
+                    _stop_pct_here = _ALP_ETF_STOP_PCT if _is_etf_sym else _ALP_STOP_PCT
+                    _stop_dollar   = price * _stop_pct_here
+                    _spread_ratio  = _spread_dollar / _stop_dollar if _stop_dollar > 0 else 0
+                    if _spread_ratio > 0.25:
+                        print(f"[Alpaca] {sym} — SKIPPED: spread ${_spread_dollar:.3f} "
+                              f"= {_spread_ratio:.0%} of stop ${_stop_dollar:.2f} "
+                              f"(>{25}% threshold — spread eats too much edge)")
+                        return False
             else:
                 # Fallback to Finnhub if Alpaca quote is empty
                 raise ValueError("empty ask/bid from Alpaca")
