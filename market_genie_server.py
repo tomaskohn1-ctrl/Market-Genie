@@ -97,6 +97,13 @@ FINNHUB_BASE = "https://finnhub.io/api/v1"
 QUIVER_BASE  = "https://api.quiverquant.com/beta"
 MASSIVE_BASE = "https://api.massive.com"
 
+# Concurrency limiter for Massive API — cap simultaneous requests at 4.
+# At startup, the seed thread + prediction engine + scalp scanner can all fire
+# Massive bar requests simultaneously (20+ concurrent), which causes timeout
+# bursts (ERX, DUST, FNGD, SOXL all failing in the same second). A semaphore
+# limits active connections so requests queue orderly rather than pile up.
+_MASSIVE_SEMAPHORE = threading.Semaphore(4)
+
 def broadcast_push(title: str, body: str, url: str = "/", tag: str = "alert") -> int:
     """
     Send a push notification via ntfy.sh.
@@ -296,29 +303,31 @@ def fh_get(path, params=None):
 # Auth: apiKey as query param (NOT Bearer header). API version: v2.
 def massive_get(path, params=None):
     """Call Massive.com REST API v2. Returns parsed JSON or None.
-    Retries once on read timeout (ERY/ERX occasionally time out at 8s)."""
+    Retries once on read timeout. Semaphore caps concurrent requests at 4
+    to prevent timeout bursts when seed + prediction + scanner all fire at once."""
     if not MASSIVE_KEY:
         return None
     p = params or {}
     p["apiKey"] = MASSIVE_KEY          # correct auth method
-    for attempt in range(2):           # 2 attempts total (1 retry on timeout)
-        try:
-            r = requests.get(f"{MASSIVE_BASE}{path}", params=p, timeout=8)
-            if r.status_code == 403:
-                print(f"[Massive] 403 on {path} — endpoint not in current plan")
+    with _MASSIVE_SEMAPHORE:           # blocks if 4 requests already in-flight
+        for attempt in range(2):       # 2 attempts total (1 retry on timeout)
+            try:
+                r = requests.get(f"{MASSIVE_BASE}{path}", params=p, timeout=8)
+                if r.status_code == 403:
+                    print(f"[Massive] 403 on {path} — endpoint not in current plan")
+                    return None
+                r.raise_for_status()
+                return r.json()
+            except requests.exceptions.ReadTimeout:
+                if attempt == 0:
+                    print(f"[Massive] {path} read timeout — retrying in 3s")
+                    time.sleep(3)
+                else:
+                    print(f"[Massive] {path} read timeout after retry — giving up")
+                    return None
+            except Exception as e:
+                print(f"[Massive] {path} error: {e}")
                 return None
-            r.raise_for_status()
-            return r.json()
-        except requests.exceptions.ReadTimeout:
-            if attempt == 0:
-                print(f"[Massive] {path} read timeout — retrying in 3s")
-                time.sleep(3)
-            else:
-                print(f"[Massive] {path} read timeout after retry — giving up")
-                return None
-        except Exception as e:
-            print(f"[Massive] {path} error: {e}")
-            return None
 
 
 def massive_snapshot(ticker):
@@ -949,7 +958,15 @@ def _alp_ws_on_close(ws, code, msg):
 
 
 def _alp_ws_runner():
-    """Auto-reconnecting Alpaca Data WebSocket runner."""
+    """Auto-reconnecting Alpaca Data WebSocket runner.
+
+    FILE LOCK: Alpaca paper accounts allow only 1 simultaneous WebSocket
+    connection. Gunicorn spawns 2 workers; both start this thread, causing a
+    406 'connection limit exceeded' on the second worker. We use an exclusive
+    non-blocking flock so only the first worker to win the lock runs the stream.
+    The losing worker exits quietly — it still gets real-time prices via the
+    REST-based _alp_snapshot_refresh thread which polls every 15s.
+    """
     # Keys are defined later in the module (line ~5598).  The thread starts at
     # import time (line ~935) so _ALPACA_KEY may not exist yet — read from env
     # directly instead of the module-level constant to avoid NameError on startup.
@@ -958,6 +975,25 @@ def _alp_ws_runner():
     if not _key or not _secret:
         print("[AlpacaWS] No Alpaca keys — stream disabled")
         return
+
+    # Try to acquire exclusive lock (non-blocking) — only one worker wins
+    import tempfile
+    _lock_path = os.path.join(tempfile.gettempdir(), "market_genie_alpaca_ws.lock")
+    try:
+        import fcntl
+        _lock_fh = open(_lock_path, "w")
+        fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Write our PID so it's visible in debug
+        _lock_fh.write(str(os.getpid()))
+        _lock_fh.flush()
+        print(f"[AlpacaWS] WS lock acquired (pid={os.getpid()}) — this worker owns the stream")
+    except (IOError, OSError):
+        print(f"[AlpacaWS] WS lock held by another worker — skipping stream (REST snapshots active)")
+        return
+    except ImportError:
+        # fcntl not available (Windows dev environment) — proceed without lock
+        print("[AlpacaWS] fcntl not available — proceeding without WS lock")
+
     import websocket as _wslib
     while True:
         try:
