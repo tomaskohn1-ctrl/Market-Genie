@@ -166,7 +166,7 @@ SCANNER_UNIVERSE = [
     "XLF","XLE","XLK","XLV","XLI","XLY","XLP","XLRE","XLB",
     "ARKK","GDX","GDXJ","ITB","IBB",
     # ── Leveraged / Inverse ETFs ────────────────────────────────────────────
-    "SOXL","SOXS","TQQQ","SQQQ","SPXL","SPXS","TNA","TZA",
+    "SOXL","TQQQ","SQQQ","SPXL","SPXS","TNA","TZA",
     "LABU","LABD","FNGU","FNGD","BULZ","BERZ",
     # ── Commodities & Bonds ─────────────────────────────────────────────────
     "GLD","SLV","USO","UNG","TLT","HYG","PDBC",
@@ -857,7 +857,7 @@ def _alp_ws_on_message(ws, raw):
                     # Override: manually order to ensure highest-liquidity ETFs are always included
                     _ALP_WS_TICKERS = [
                         # Core (highest volume — always include)
-                        "TQQQ","SQQQ","SPXL","SPXS","SOXL","SOXS","TNA","TZA",
+                        "TQQQ","SQQQ","SPXL","SPXS","SOXL","TNA","TZA",
                         "TECL","TECS","FAS","FAZ","LABU","LABD","FNGU","FNGD",
                         "UVXY","VXX","UDOW","SDOW","NVDL","TSLL",
                         # New sectors (fill remaining slots — liquid pairs only)
@@ -4322,7 +4322,7 @@ _ETF_BULL_UNIVERSE = frozenset([
 _ETF_BEAR_UNIVERSE = frozenset([
     "SQQQ",   # 3× inverse Nasdaq-100
     "SPXS",   # 3× inverse S&P 500
-    "SOXS",   # 3× inverse Semiconductors
+    # SOXS removed — yfinance reports possibly delisted (reverse split history broken)
     "TZA",    # 3× inverse Russell 2000
     "TECS",   # 3× inverse Tech sector
     "FAZ",    # 3× inverse Financials
@@ -4349,7 +4349,7 @@ _PREDICT_WATCHLIST = sorted(_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
 _ETF_PAIRS: dict = {
     "TQQQ": "SQQQ",  "SQQQ": "TQQQ",   # Nasdaq-100
     "SPXL": "SPXS",  "SPXS": "SPXL",   # S&P 500
-    "SOXL": "SOXS",  "SOXS": "SOXL",   # Semiconductors
+    "SOXL": "TECS",                       # Semiconductors → Tech inverse (SOXS delisted/broken)
     "TNA":  "TZA",   "TZA":  "TNA",    # Russell 2000
     "TECL": "TECS",  "TECS": "TECL",   # Tech sector
     "FAS":  "FAZ",   "FAZ":  "FAS",    # Financials
@@ -6729,7 +6729,7 @@ def _alp_execute_signal(res: dict):
     _ETF_BULL_NAMES = frozenset(["TQQQ","SPXL","BULZ","SOXL","FNGU","TECL",
                                   "LABU","DPST","NAIL","CURE","BOIL","TNA",
                                   "WEBL","NVDL","TSLL","UDOW","URPO"])
-    _ETF_BEAR_NAMES = frozenset(["SQQQ","SPXS","BERZ","SOXS","FNGD","TECS",
+    _ETF_BEAR_NAMES = frozenset(["SQQQ","SPXS","BERZ","FNGD","TECS",
                                   "LABD","TZA","WEBS","KOLD","UVXY","VXX",
                                   "BITI","SDSOX"])
     _ETF_REGIME_BOOST = 10   # pts — meaningful enough to push borderline ETF signals through
@@ -6851,7 +6851,7 @@ def _alp_execute_signal(res: dict):
     # Low-priced stocks (<$15) have wide bid-ask spreads relative to the 0.5% stop.
     # In practice they stop out in seconds before the move develops.
     # Examples today: CLOV $2.61 (stop hit in 13s), BLDP $3.95, ARRY $8.15.
-    # ETFs are EXEMPT: TZA ($4), TECS ($9), SOXS ($10) are known leveraged ETFs
+    # ETFs are EXEMPT: TZA ($4), TECS ($9) are known leveraged ETFs
     # with penny spreads — the spread gate handles their bid-ask quality check.
     _is_etf = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
     if _ALP_MIN_PRICE > 0 and price < _ALP_MIN_PRICE and not _is_etf:
@@ -7930,7 +7930,7 @@ _SCALP_UNIVERSE = [
     "BLNK","CHPT","EVGO","CLOV","CORZ","IREN","CIFR","DJT","NBIS",
     # ── ETFs — leveraged, sector, volatility ─────────────────────────────
     "SPY","QQQ","IWM","TQQQ","SQQQ","SPXL","SPXS","LABU","LABD",
-    "UVXY","VXX","ARKK","ARKG","SOXL","SOXS","TNA","TZA","FAS","FAZ",
+    "UVXY","VXX","ARKK","ARKG","SOXL","TNA","TZA","FAS","FAZ",
     "TECL","TECS","NAIL","HIBL","HIBS","UDOW","SDOW","URTY","SRTY",
     "ERX","ERY","GUSH","DRIP","BOIL","KOLD","UCO","SCO",
     "XLF","XLE","XLK","XBI","XLV","XLP","XLU","XLB","XLI","XLC","XLRE",
@@ -8004,7 +8004,7 @@ _EXT_UNIVERSE = [
     # Bull side
     "TQQQ","SPXL","SOXL","TNA","TECL","FAS","LABU","FNGU","NVDL","TSLL","UDOW",
     # Bear side
-    "SQQQ","SPXS","SOXS","TZA","TECS","FAZ","LABD","FNGD","UVXY","VXX","SDOW",
+    "SQQQ","SPXS","TZA","TECS","FAZ","LABD","FNGD","UVXY","VXX","SDOW",
 ]
 
 # ── Finnhub 1-min candle fetch for extended hours ─────────────────────────────
