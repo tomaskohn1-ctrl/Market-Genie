@@ -6148,7 +6148,8 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
     # If price moved AGAINST our trade, the signal may have failed — be strict.
     #
     # ETF directional thresholds:
-    #   confirming move (price went our way): 4% — allow confident continuation entries
+    #   confirming move (price went our way): 2% — tightened from 4% to prevent
+    #     chasing moves when DirCap held a signal while price ran (e.g. LABU $186→$190)
     #   counter move   (price went against):  1.5% — hard stop, direction failed
     # Stocks: symmetric 1%.
     if signal_price > 0:
@@ -6157,7 +6158,7 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
         if _is_etf:
             _confirming = (direction == "bull" and _pct_move > 0) or \
                           (direction == "bear" and _pct_move < 0)
-            _stale_thresh = 0.04 if _confirming else 0.015
+            _stale_thresh = 0.02 if _confirming else 0.015
             _tag = "confirming" if _confirming else "counter"
         else:
             _stale_thresh = 0.01
