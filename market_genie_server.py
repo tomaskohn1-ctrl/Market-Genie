@@ -7337,6 +7337,17 @@ def _alp_execute_signal(res: dict):
     _is_universe_etf = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
     if _is_universe_etf and direction == "bear":
         _pair = _ETF_PAIRS.get(sym, "its inverse")
+        # ── Inverse cross-pair translation ────────────────────────────────────
+        # TQQQ-bear and SQQQ-bull are economically identical — both predict Nasdaq
+        # will fall. Translate this blocked signal into a cross-pair hint so SQQQ
+        # can use TQQQ's bear conviction as confirmation when it fires shortly after.
+        # Same for SPXL-bear → SPXS-bull.
+        _inv_mirror = {"TQQQ": "SQQQ", "SPXL": "SPXS"}.get(sym)
+        if _inv_mirror:
+            _now_inv = time.time()
+            with _cross_pair_lock:
+                _cross_pair_signals[sym] = {"dir": "bull", "conf": conf, "at": _now_inv, "inv": True}
+            print(f"[ETFDir] {sym} — bear translated → cross-pair hint for {_inv_mirror} (eff_conf={conf:.1f})")
         print(f"[ETFDir] {sym} — SKIPPED: ETF universe only allows long entries "
               f"(direction=bear would short {sym}; use {_pair} for bear exposure)")
         return
@@ -7457,7 +7468,10 @@ def _alp_execute_signal(res: dict):
     # We record every signal regardless (so the first one becomes the "anchor"),
     # then check whether the partner already fired in the same direction recently.
     _cp_partner = _CROSS_PAIR_MAP.get(sym)
-    if _cp_partner:
+    # Inverse mirror: SQQQ also checks TQQQ (its bull-side partner whose bear signal
+    # = equivalent conviction). Stored as dir="bull" when ETFDir translates it above.
+    _cp_mirror  = {"SQQQ": "TQQQ", "SPXS": "SPXL"}.get(sym)
+    if _cp_partner or _cp_mirror:
         _now_cp = time.time()
         with _cross_pair_lock:
             # Record this signal
@@ -7466,15 +7480,24 @@ def _alp_execute_signal(res: dict):
             for _stale in [k for k, v in _cross_pair_signals.items()
                            if _now_cp - v["at"] > _CROSS_PAIR_WINDOW]:
                 del _cross_pair_signals[_stale]
-            # Check if partner fired recently in same direction
-            _cp_sig = _cross_pair_signals.get(_cp_partner)
-        if (_cp_sig and
-                _cp_sig["dir"] == direction and
+            # Check same-direction partner (SQQQ ↔ SPXS)
+            _cp_sig  = _cross_pair_signals.get(_cp_partner) if _cp_partner else None
+            # Check inverse mirror partner (TQQQ-bear stored as dir="bull" for SQQQ)
+            _cp_msig = _cross_pair_signals.get(_cp_mirror)  if _cp_mirror  else None
+        # Same-direction partner boost
+        if (_cp_sig and _cp_sig["dir"] == direction and
                 _now_cp - _cp_sig["at"] <= _CROSS_PAIR_WINDOW):
             _cp_lag = int(_now_cp - _cp_sig["at"])
             eff_conf += _CROSS_PAIR_BOOST
             print(f"[CrossPair] ✅ {sym}+{_cp_partner} both {direction.upper()} "
                   f"({_cp_lag}s apart) → eff_conf +{_CROSS_PAIR_BOOST} → {eff_conf:.1f}")
+        # Inverse mirror boost (TQQQ-bear = SQQQ-bull — models agree across both sides)
+        if (_cp_msig and _cp_msig.get("inv") and _cp_msig["dir"] == direction and
+                _now_cp - _cp_msig["at"] <= _CROSS_PAIR_WINDOW):
+            _cp_lag2 = int(_now_cp - _cp_msig["at"])
+            eff_conf += _CROSS_PAIR_BOOST
+            print(f"[CrossPair] ✅ {sym}+{_cp_mirror} inverse-pair confirms {direction.upper()} "
+                  f"({_cp_lag2}s apart) → eff_conf +{_CROSS_PAIR_BOOST} → {eff_conf:.1f}")
 
     # ── Regime ETF Boost ──────────────────────────────────────────────────────
     # Leveraged ETFs aligned with the current breadth regime get a confidence
