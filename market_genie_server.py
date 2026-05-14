@@ -5467,6 +5467,173 @@ def _vix_poll_loop():
 threading.Thread(target=_vix_poll_loop, daemon=True, name="vix-feed").start()
 print("[VIX] Live feed thread started (^VIX polled every 3 min)")
 
+
+# ── NQ / ES Futures Bias Engine ───────────────────────────────────────────────
+# Nasdaq futures (^NQ=F) and S&P futures (^ES=F) trade nearly 24/7.
+# By the time the market opens at 9:30 AM, futures have already been running
+# for 15+ hours and reflect overnight news, Asia/Europe sessions, and pre-market
+# earnings. This is the single best pre-market directional signal for TQQQ/SPXL.
+#
+# How it feeds into signals:
+#   NQ > +0.5%  AND  signal is BULL TQQQ/SPXL → +6 conf (futures confirm)
+#   NQ > +1.0%  AND  signal is BULL            → +8 conf (strong futures)
+#   NQ < -0.5%  AND  signal is BEAR SQQQ/SPXS → +6 conf (bearish confirmed)
+#   NQ < -1.0%  AND  signal is BEAR            → +8 conf
+#   Counter-direction (NQ up but signal BEAR, or NQ down but signal BULL) → -6
+_futures_state = {
+    "nq_chg":     0.0,    # NQ futures % chg from prior close (positive = bullish)
+    "es_chg":     0.0,    # ES futures % chg from prior close
+    "nq_trend":   "flat", # "rising" | "falling" | "flat" (5-min momentum)
+    "es_trend":   "flat",
+    "updated_at": 0,
+}
+_futures_lock = threading.Lock()
+
+
+def _futures_poll_loop():
+    """Poll ^NQ=F and ^ES=F every 3 minutes via yfinance fast_info."""
+    import yfinance as yf
+    while True:
+        try:
+            updates = {}
+            for sym, key in [("^NQ=F", "nq"), ("^ES=F", "es")]:
+                try:
+                    fi   = yf.Ticker(sym).fast_info
+                    cur  = float(fi.get("last_price") or fi.get("lastPrice") or 0)
+                    prev = float(fi.get("previous_close") or fi.get("previousClose") or 0)
+                    if cur > 0 and prev > 0:
+                        chg = (cur - prev) / prev * 100
+                        # 5-min trend from recent history
+                        hist = yf.Ticker(sym).history(period="1d", interval="5m")
+                        trend = "flat"
+                        if len(hist) >= 3:
+                            recent = float(hist["Close"].iloc[-1])
+                            older  = float(hist["Close"].iloc[-3])
+                            if recent > older * 1.001:  trend = "rising"
+                            elif recent < older * 0.999: trend = "falling"
+                        updates[f"{key}_chg"]   = round(chg, 3)
+                        updates[f"{key}_trend"]  = trend
+                except Exception as _fe:
+                    print(f"[Futures] {sym} fetch error: {_fe}")
+            if updates:
+                updates["updated_at"] = time.time()
+                with _futures_lock:
+                    _futures_state.update(updates)
+                nq = updates.get("nq_chg", _futures_state["nq_chg"])
+                es = updates.get("es_chg", _futures_state["es_chg"])
+                nt = updates.get("nq_trend", "?")
+                et = updates.get("es_trend", "?")
+                bull_icon = "📈" if nq > 0.3 else "📉" if nq < -0.3 else "➡"
+                print(f"[Futures] NQ={nq:+.2f}%({nt}) ES={es:+.2f}%({et}) {bull_icon}")
+        except Exception as e:
+            print(f"[Futures] Loop error: {e}")
+        time.sleep(180)
+
+
+threading.Thread(target=_futures_poll_loop, daemon=True, name="futures-feed").start()
+print("[Futures] NQ/ES futures bias thread started (polled every 3 min)")
+
+
+# ── Mega-Cap Momentum Engine ──────────────────────────────────────────────────
+# The top 5 QQQ holdings represent ~35% of QQQ's weight. When these 5 stocks
+# are all moving up together, TQQQ is almost guaranteed to follow — this is a
+# fundamental lead indicator that precedes the technical models.
+#
+# Weights (approximate, QQQ as of 2026):
+#   NVDA ~8.5%  AAPL ~8.0%  MSFT ~7.8%  AMZN ~5.5%  META ~4.8%
+#
+# Also tracks QQQ vs SPY intraday performance to determine pair preference:
+#   QQQ outperforms SPY → tech-driven day → TQQQ is the better vehicle
+#   SPY outperforms QQQ → value/cyclicals leading → SPXL is the better vehicle
+_MEGACAP_WEIGHTS = {
+    "NVDA": 0.085,   # #1 or #2 weight in QQQ; single biggest TQQQ driver
+    "AAPL": 0.080,   # largest market cap; SPX + QQQ heavyweight
+    "MSFT": 0.078,   # Azure/AI growth; tracks closely with NVDA on AI days
+    "AMZN": 0.055,   # AWS + retail; also in SPX top 5
+    "META": 0.048,   # ad revenue + AI; high beta on sentiment days
+}
+
+_megacap_state = {
+    "score":      0.0,   # weighted avg % change from today's open (positive = bullish)
+    "components": {},    # { sym: {"chg": float, "weight": float} }
+    "qqq_chg":   0.0,   # QQQ intraday % change from open
+    "spy_chg":   0.0,   # SPY intraday % change from open
+    "qqq_leads": False, # True if QQQ outperforming SPY by > 0.25%
+    "spy_leads": False, # True if SPY outperforming QQQ by > 0.25%
+    "updated_at": 0,
+}
+_megacap_lock = threading.Lock()
+
+
+def _megacap_poll_loop():
+    """
+    Poll top 5 QQQ constituents + QQQ + SPY every 2 minutes.
+    Computes weighted momentum score and QQQ/SPY relative strength.
+    Uses yfinance fast_info for speed — no full history download needed.
+    """
+    import yfinance as yf
+    _all_syms = list(_MEGACAP_WEIGHTS.keys()) + ["QQQ", "SPY"]
+    while True:
+        try:
+            components  = {}
+            score_num   = 0.0
+            score_den   = 0.0
+            qqq_chg     = 0.0
+            spy_chg     = 0.0
+
+            for sym in _all_syms:
+                try:
+                    fi      = yf.Ticker(sym).fast_info
+                    cur     = float(fi.get("last_price") or fi.get("lastPrice") or 0)
+                    day_open= float(fi.get("open") or fi.get("dayOpen") or 0)
+                    if cur > 0 and day_open > 0:
+                        chg = (cur - day_open) / day_open * 100
+                    else:
+                        chg = 0.0
+                    if sym in _MEGACAP_WEIGHTS:
+                        w = _MEGACAP_WEIGHTS[sym]
+                        components[sym] = {"chg": round(chg, 3), "weight": w}
+                        score_num += chg * w
+                        score_den += w
+                    elif sym == "QQQ":
+                        qqq_chg = round(chg, 3)
+                    elif sym == "SPY":
+                        spy_chg = round(chg, 3)
+                except Exception as _me:
+                    pass   # stale data fine — better than crashing
+
+            weighted_score = round(score_num / score_den, 3) if score_den > 0 else 0.0
+            spread = qqq_chg - spy_chg
+            qqq_leads = spread > 0.25    # QQQ outperforming SPY meaningfully
+            spy_leads = spread < -0.25   # SPY outperforming QQQ meaningfully
+
+            with _megacap_lock:
+                _megacap_state["score"]      = weighted_score
+                _megacap_state["components"] = components
+                _megacap_state["qqq_chg"]   = qqq_chg
+                _megacap_state["spy_chg"]   = spy_chg
+                _megacap_state["qqq_leads"] = qqq_leads
+                _megacap_state["spy_leads"] = spy_leads
+                _megacap_state["updated_at"] = time.time()
+
+            # Log with color hint
+            sc_icon = "🟢" if weighted_score > 0.3 else "🔴" if weighted_score < -0.3 else "⚪"
+            ldr = "QQQ leads" if qqq_leads else "SPY leads" if spy_leads else "neutral"
+            top_mover = max(components.items(), key=lambda x: abs(x[1]["chg"]),
+                            default=(None, {"chg": 0}))
+            print(f"[MegaCap] {sc_icon} Score={weighted_score:+.2f}% | "
+                  f"QQQ={qqq_chg:+.2f}% SPY={spy_chg:+.2f}% ({ldr}) | "
+                  f"Top: {top_mover[0]}={top_mover[1]['chg']:+.2f}%" if top_mover[0] else
+                  f"[MegaCap] {sc_icon} Score={weighted_score:+.2f}%")
+        except Exception as e:
+            print(f"[MegaCap] Loop error: {e}")
+        time.sleep(120)   # every 2 minutes
+
+
+threading.Thread(target=_megacap_poll_loop, daemon=True, name="megacap-feed").start()
+print("[MegaCap] Mega-cap momentum thread started (NVDA/AAPL/MSFT/AMZN/META polled every 2 min)")
+
+
 # ── Dynamic Confidence Floors ─────────────────────────────────────────────────
 # With-trend floor scales automatically with breadth score strength:
 #   Neutral edge (score=35 or 65): easy-direction floor = BREADTH_EASY_CONF_NEUTRAL (65)
@@ -7201,6 +7368,80 @@ def _alp_execute_signal(res: dict):
             eff_conf -= 2
             print(f"[VIX] {sym} — mildly elevated VIX={_vix_adj:.1f} → eff_conf -2 → {eff_conf:.1f}")
 
+    # ── Futures Alignment (TQQQ/SQQQ/SPXL/SPXS only) ────────────────────────
+    # NQ futures drive TQQQ/SQQQ; ES futures drive SPXL/SPXS.
+    # When pre-market futures confirm the signal direction → boost eff_conf.
+    # When futures oppose the signal → penalise — counter-trend trades on 3×
+    # leveraged ETFs are the most common route to quick losses.
+    # Cap the combined futures+megacap adjustment at +10 / -10 to prevent
+    # a single data source from overriding the model quality gate.
+    _fut_adj_total = 0
+    if sym in ("TQQQ", "SQQQ", "SPXL", "SPXS"):
+        with _futures_lock:
+            _nq = _futures_state.get("nq_chg", 0.0)
+            _es = _futures_state.get("es_chg", 0.0)
+            _fut_updated = _futures_state.get("updated_at", 0)
+        # Only apply if data is fresh (updated within last 10 min)
+        if time.time() - _fut_updated < 600:
+            _fut_ref = _nq if sym in ("TQQQ", "SQQQ") else _es
+            _fut_label = "NQ" if sym in ("TQQQ", "SQQQ") else "ES"
+            if _fut_ref > 1.0 and direction == "bull":
+                _fut_adj_total += 8
+            elif _fut_ref > 0.5 and direction == "bull":
+                _fut_adj_total += 6
+            elif _fut_ref < -1.0 and direction == "bear":
+                _fut_adj_total += 8
+            elif _fut_ref < -0.5 and direction == "bear":
+                _fut_adj_total += 6
+            elif _fut_ref < -0.5 and direction == "bull":
+                _fut_adj_total -= 6
+            elif _fut_ref > 0.5 and direction == "bear":
+                _fut_adj_total -= 6
+            if _fut_adj_total != 0:
+                eff_conf += _fut_adj_total
+                print(f"[Futures] {sym} — {_fut_label}={_fut_ref:+.2f}% dir={direction} "
+                      f"→ eff_conf {_fut_adj_total:+d} → {eff_conf:.1f}")
+
+    # ── Mega-Cap Momentum (TQQQ/SQQQ primary, SPXL/SPXS secondary) ───────────
+    # Mega-cap score = weighted % change of NVDA/AAPL/MSFT/AMZN/META (≈35% of QQQ).
+    # Strong positive score + BULL TQQQ signal = institutional tape is green.
+    # QQQ outperforming SPY → favour TQQQ over SPXL; SPY leading → favour SPXL.
+    # All adjustments are capped via the shared _fut_adj_total limit logic.
+    _mc_adj_total = 0
+    with _megacap_lock:
+        _mc_score  = _megacap_state.get("score", 0.0)
+        _qqq_leads = _megacap_state.get("qqq_leads", False)
+        _spy_leads = _megacap_state.get("spy_leads", False)
+        _mc_updated = _megacap_state.get("updated_at", 0)
+    if time.time() - _mc_updated < 600:
+        if sym in ("TQQQ", "SQQQ"):
+            if _mc_score > 1.0 and direction == "bull":
+                _mc_adj_total += 8
+            elif _mc_score > 0.5 and direction == "bull":
+                _mc_adj_total += 5
+            elif _mc_score < -1.0 and direction == "bear":
+                _mc_adj_total += 8
+            elif _mc_score < -0.5 and direction == "bear":
+                _mc_adj_total += 5
+        elif sym in ("SPXL", "SPXS"):
+            if _mc_score > 0.5 and direction == "bull":
+                _mc_adj_total += 3
+            elif _mc_score < -0.5 and direction == "bear":
+                _mc_adj_total += 3
+        # QQQ/SPY relative-strength pair preference
+        if _qqq_leads and sym == "TQQQ":
+            _mc_adj_total += 3
+        elif _qqq_leads and sym == "SPXL":
+            _mc_adj_total -= 2
+        elif _spy_leads and sym == "SPXL":
+            _mc_adj_total += 3
+        elif _spy_leads and sym == "TQQQ":
+            _mc_adj_total -= 2
+        if _mc_adj_total != 0:
+            eff_conf += _mc_adj_total
+            print(f"[MegaCap] {sym} — score={_mc_score:+.2f}% qqq_leads={_qqq_leads} spy_leads={_spy_leads} "
+                  f"dir={direction} → eff_conf {_mc_adj_total:+d} → {eff_conf:.1f}")
+
     # ── Regime ETF Boost ──────────────────────────────────────────────────────
     # Leveraged ETFs aligned with the current breadth regime get a confidence
     # bonus — they move with the whole tape, have no single-stock risk, and
@@ -7888,6 +8129,22 @@ def api_debug_signals():
             "level":      round(_vix_state.get("level", 18.0), 1),
             "trend":      _vix_state.get("trend", "stable"),
             "updated_at": _vix_state.get("updated_at", 0),
+        },
+        "futures": {
+            "nq_chg":    round(_futures_state.get("nq_chg", 0.0), 3),
+            "es_chg":    round(_futures_state.get("es_chg", 0.0), 3),
+            "nq_trend":  _futures_state.get("nq_trend", "flat"),
+            "es_trend":  _futures_state.get("es_trend", "flat"),
+            "updated_at": _futures_state.get("updated_at", 0),
+        },
+        "megacap": {
+            "score":      round(_megacap_state.get("score", 0.0), 3),
+            "qqq_chg":   round(_megacap_state.get("qqq_chg", 0.0), 3),
+            "spy_chg":   round(_megacap_state.get("spy_chg", 0.0), 3),
+            "qqq_leads": _megacap_state.get("qqq_leads", False),
+            "spy_leads": _megacap_state.get("spy_leads", False),
+            "components": _megacap_state.get("components", {}),
+            "updated_at": _megacap_state.get("updated_at", 0),
         },
         "open_positions":      len(_alp_get_open_positions()),
         "top_candidates": [{
