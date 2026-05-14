@@ -5028,15 +5028,15 @@ def _us_market_open() -> bool:
 
 
 def _safe_to_enter() -> bool:
-    """Return True only during the core tradeable window (Mon-Fri 09:45-15:50 ET).
-    - First 15 min (9:30-9:45) excluded: opening volatility, wide spreads, and
-      erratic order flow before price discovery settles.
-    - Hard entry cutoff at 15:50 (separate check in _alp_execute_signal) +
-      EOD flattener at 15:55 — 5 min runway minimum before forced close."""
+    """Return True only during the core tradeable window (Mon-Fri 09:45-15:30 ET).
+    - First 15 min (9:30-9:45) excluded: opening volatility, wide spreads.
+    - Entry cutoff 15:30 ET: ensures the 20-min time exit completes by 15:50,
+      and EOD flattener at 15:45 has a full 15-min buffer. Previously 15:50
+      allowed entries that would try to time-exit at 16:10 (after-hours)."""
     et_now = _get_et_now()
     if et_now.weekday() > 4:
         return False
-    return dtime(9, 45) <= et_now.time() < dtime(15, 50)
+    return dtime(9, 45) <= et_now.time() < dtime(15, 30)
 
 
 def _wr_edge_score(res):
@@ -6584,29 +6584,57 @@ def _alp_flatten_all():
 
 def _alp_eod_loop():
     """
-    EOD flattener: runs every 60s, triggers close-all at 15:55 ET.
+    EOD flattener: runs every 30s, triggers close-all at 15:45 ET.
     Ensures Market Genie never holds a scalp position overnight.
-    15:55 gives 5-min buffer before 16:00 close for market orders to fill.
+
+    Timeline:
+      15:30 — last allowed entry (_safe_to_enter cutoff)
+      15:45 — PRIMARY flatten: cancel orders + close all positions
+      15:59 — NUCLEAR backstop: second flatten in case primary missed anything
+      16:00 — market close
+
+    Previously fired at 15:55, but _safe_to_enter allowed entries until 15:50.
+    A 15:49 entry with a 20-min time exit would not close until 16:09 (after-hours).
+    Moving to 15:45 gives a full 15-min buffer after the 15:30 entry cutoff.
     """
-    _flattened_today = set()   # track which dates we've already flattened
+    _flattened_primary = set()    # dates where primary (15:45) has fired
+    _flattened_nuclear = set()    # dates where nuclear (15:59) has fired
     while True:
         try:
-            et_now = _get_et_now()
+            et_now   = _get_et_now()
             date_key = et_now.strftime("%Y-%m-%d")
-            # Trigger flatten window: 15:55–15:59 ET, once per trading day
-            if (et_now.weekday() <= 4
-                    and dtime(15, 55) <= et_now.time() < dtime(16, 0)
-                    and date_key not in _flattened_today
+            t        = et_now.time()
+            is_weekday = et_now.weekday() <= 4
+
+            # PRIMARY: 15:45–15:58 ET — fire once per day
+            if (is_weekday
+                    and dtime(15, 45) <= t < dtime(15, 59)
+                    and date_key not in _flattened_primary
                     and _ALP_ENABLED):
-                print(f"[EOD] {et_now.strftime('%H:%M')} ET — flattening all positions before close")
+                print(f"[EOD] {et_now.strftime('%H:%M')} ET — PRIMARY flatten: cancelling orders + closing all positions")
                 _alp_flatten_all()
-                _flattened_today.add(date_key)
-                # Keep set small — only keep last 5 dates
-                if len(_flattened_today) > 5:
-                    _flattened_today.pop()
+                _flattened_primary.add(date_key)
+                # Prune old dates (keep only last 7) — use discard on oldest, NOT pop()
+                # (set.pop() removes a random element and can accidentally prune today)
+                if len(_flattened_primary) > 7:
+                    oldest = min(_flattened_primary)
+                    _flattened_primary.discard(oldest)
+
+            # NUCLEAR BACKSTOP: 15:59–16:02 ET — catches anything primary missed
+            if (is_weekday
+                    and dtime(15, 59) <= t < dtime(16, 3)
+                    and date_key not in _flattened_nuclear
+                    and _ALP_ENABLED):
+                print(f"[EOD] {et_now.strftime('%H:%M')} ET — NUCLEAR flatten: ensuring flat before close")
+                _alp_flatten_all()
+                _flattened_nuclear.add(date_key)
+                if len(_flattened_nuclear) > 7:
+                    oldest = min(_flattened_nuclear)
+                    _flattened_nuclear.discard(oldest)
+
         except Exception as e:
             print(f"[EOD] Loop error: {e}")
-        time.sleep(60)
+        time.sleep(30)   # check every 30s (was 60s — tighter timing needed at close)
 
 
 def _alp_close_position(sym: str, side: str):
@@ -6971,12 +6999,12 @@ def _alp_execute_signal(res: dict):
         print(f"[Alpaca] {sym} — SKIPPED: outside safe entry window "
               f"(current ET={et_now_chk.strftime('%H:%M')}, window=09:45-15:30)")
         return
-    # Hard entry cutoff at 15:53 ET — EOD flattener fires at 15:55, so entries
-    # after 15:53 leave less than 2 min before forced close (not worth the risk).
-    # _safe_to_enter() allows until 15:50; this is a backstop for race conditions.
+    # Hard entry cutoff at 15:32 ET — backstop in case _safe_to_enter() race.
+    # _safe_to_enter() already blocks after 15:30; this catches any edge case
+    # where the signal fires within the same second as the cutoff.
     et_now_chk = _get_et_now()
-    if et_now_chk.time() >= dtime(15, 53):
-        print(f"[Alpaca] {sym} — SKIPPED: past 15:53 ET entry cutoff (EOD safety buffer)")
+    if et_now_chk.time() >= dtime(15, 32):
+        print(f"[Alpaca] {sym} — SKIPPED: past 15:32 ET entry cutoff (EOD safety buffer)")
         return
 
     # ── Per-symbol loss cooldown ──────────────────────────────────────────────
