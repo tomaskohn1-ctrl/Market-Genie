@@ -4810,7 +4810,143 @@ def _hot_lane_loop():
         except Exception as e:
             print(f"[HotLane] Error: {e}")
 
+        # Tape-follow check (throttled to 60s internally — safe to call every cycle)
+        try:
+            _check_tape_follow_entries()
+        except Exception as _tfe:
+            print(f"[HotLane] TapeFollow error: {_tfe}")
+
         time.sleep(_HOT_RESCAN_SECS)
+
+
+_tape_follow_last_check = 0.0  # epoch of last tape-follow probe (throttle to 60s)
+_TAPE_FOLLOW_INTERVAL   = 60   # seconds between tape-follow probes
+
+def _check_tape_follow_entries():
+    """
+    On a strongly BULLISH tape (breadth score ≥ 80), probe TQQQ and SPXL for
+    with-the-tape bull entries using technical confirmation:
+      • price (EMA5) > VWAP              — price above today's avg cost
+      • EMA5 > EMA13                     — short-term momentum positive
+      • RSI between 40-75               — not overbought, room to run
+      • vol_ratio ≥ 1.1                  — above-average participation
+
+    This is the only entry path that bypasses the Kronos/TFM model requirement.
+    The "model" here is the regime itself — broad BULLISH tape IS the signal for
+    long-bias leveraged ETFs.  All other execution gates (dedup, VIX, opening window,
+    daily cap, spread, etc.) still apply inside _alp_execute_signal.
+
+    Called from the hot-lane loop once per _TAPE_FOLLOW_INTERVAL seconds.
+    """
+    global _tape_follow_last_check
+
+    if not _ALP_ENABLED or not _us_market_open() or not _safe_to_enter():
+        return
+
+    now = time.time()
+    if now - _tape_follow_last_check < _TAPE_FOLLOW_INTERVAL:
+        return
+    _tape_follow_last_check = now
+
+    # Require strongly BULLISH regime (score ≥ 80, not just > 65)
+    with _breadth_lock:
+        bs = _breadth_state["score"]
+        br = _breadth_state["regime"]
+    if bs < 80:
+        return   # tape not strong enough — don't force entries
+
+    for sym in ("TQQQ", "SPXL"):
+        try:
+            # Skip if already in dedup window (trade fired recently)
+            with _alp_lock:
+                last_t = _alp_last_traded.get(sym, {})
+            if last_t and (now - last_t.get("ts", 0)) < _ALP_DEDUP_SECS:
+                continue
+
+            # Skip if a position is already open
+            open_pos = _alp_get_open_positions()
+            if sym in open_pos:
+                continue
+
+            # Get technical snapshot (5-min cached — no extra API cost)
+            snap = _get_tech_snapshot(sym)
+            if not snap:
+                continue
+
+            ema5      = snap.get("ema5",      0.0)
+            ema13     = snap.get("ema13",     0.0)
+            vwap      = snap.get("vwap",      0.0)
+            rsi       = snap.get("rsi",       50.0)
+            vol_ratio = snap.get("vol_ratio", 1.0)
+
+            # Use cached live price if available (updated every 12s by snap loop)
+            with _alp_snap_lock:
+                cached = _alp_snap_cache.get(sym, {})
+            price = float(cached.get("c") or ema5 or 0)
+
+            if not price or not vwap or not ema5 or not ema13:
+                print(f"[TapeFollow] {sym} — SKIP: insufficient tech data "
+                      f"(price={price:.2f} vwap={vwap:.2f} ema5={ema5:.2f})")
+                continue
+
+            # ── Technical gates ──────────────────────────────────────────────
+            # All must pass — tape-follow entries require clean alignment
+            if price <= vwap:
+                print(f"[TapeFollow] {sym} — SKIP: price ${price:.2f} ≤ VWAP ${vwap:.2f} "
+                      f"(below average cost → trend not confirmed)")
+                continue
+            if ema5 <= ema13:
+                print(f"[TapeFollow] {sym} — SKIP: EMA5 {ema5:.2f} ≤ EMA13 {ema13:.2f} "
+                      f"(short-term momentum not up)")
+                continue
+            if not (40 <= rsi <= 75):
+                print(f"[TapeFollow] {sym} — SKIP: RSI {rsi:.1f} outside 40-75 "
+                      f"({'overbought' if rsi > 75 else 'oversold'})")
+                continue
+            if vol_ratio < 1.1:
+                print(f"[TapeFollow] {sym} — SKIP: vol_ratio {vol_ratio:.2f} < 1.1 "
+                      f"(below-average participation)")
+                continue
+
+            # ── Confidence formula ───────────────────────────────────────────
+            # Base: 76 (above min gate, below base trade threshold)
+            # +breadth premium: each point above 80 adds 0.4 (max +8 at 100)
+            # +volume premium: vol_ratio above 1.0 adds up to 4 pts
+            # Cap at 88 — tape-follow entries are not as high-conviction as
+            # full model+cross-pair agreement signals
+            conf = min(88.0,
+                       76.0
+                       + (bs - 80) * 0.4          # breadth premium
+                       + min(4.0, (vol_ratio - 1.0) * 8)  # volume premium
+                       )
+
+            print(f"[TapeFollow] ✅ {sym} BULL — breadth={bs:.0f} regime={br} "
+                  f"price=${price:.2f} VWAP=${vwap:.2f} "
+                  f"EMA5={ema5:.2f}>EMA13={ema13:.2f} RSI={rsi:.1f} "
+                  f"vol_ratio={vol_ratio:.2f} → conf={conf:.1f}")
+
+            # Build synthetic signal — treated as streak=2, both_agree=1
+            # so it passes the both_agree hard gate and enters the execution path.
+            res = {
+                "sym":           sym,
+                "direction":     "bull",
+                "confidence":    conf,
+                "conviction":    "HIGH" if conf >= 82 else "MEDIUM",
+                "streak_count":  2,          # satisfies streak gate
+                "both_agree":    1,           # tape + tech = two-source agreement
+                "kronos_dir":    "bull",      # allows execute_signal gates to pass
+                "tfm_dir":       "bull",
+                "last_price":    price,
+                "price":         price,
+                "_tape_follow":  True,        # tag for analytics
+            }
+            try:
+                _alp_execute_signal(res)
+            except Exception as _tfe:
+                print(f"[TapeFollow] Execute error {sym}: {_tfe}")
+
+        except Exception as _tfl:
+            print(f"[TapeFollow] {sym} outer error: {_tfl}")
 
 
 def _start_predict_bg():
@@ -5969,22 +6105,26 @@ _ALP_ETF_TARGET_PCT   = float(os.getenv("ALPACA_ETF_TARGET_PCT", "0.020"))  # 2.
 # SPXL/SPXS track SPX, which is less volatile — standard 1.5% stop is fine.
 _TQQQ_PAIR_STOP_PCT = float(os.getenv("TQQQ_PAIR_STOP_PCT", "0.017"))  # 1.7% — wider for Nasdaq volatility
 _SPXL_PAIR_STOP_PCT = float(os.getenv("SPXL_PAIR_STOP_PCT", "0.015"))  # 1.5% — standard for S&P 500
-_PAIR_TARGET_PCT    = float(os.getenv("PAIR_TARGET_PCT",    "0.020"))  # 2.0% target for both pairs
+_PAIR_TARGET_PCT      = float(os.getenv("PAIR_TARGET_PCT",      "0.020"))  # 2.0% base target for both pairs
+_PAIR_TARGET_HIGH_PCT = float(os.getenv("PAIR_TARGET_HIGH_PCT", "0.025"))  # 2.5% elevated target for high-conviction signals (eff_conf ≥ 90)
 # Target lowered 3.0% → 2.0% after 92-trade post-mortem: only 6/92 trades hit
 # the 3% target (6.5% hit rate). Typical ETF move in a 20-40 min window is 0.5-1.5%
 # (≈0.17-0.5% in the underlying), making 3% almost unreachable. At 2.0% target the
 # underlying needs only 0.67% — achievable on a confirmed directional signal.
-# R:R drops from 2:1 to 1.33:1; break-even WR = 43% (vs 33% before).
+# Dynamic target: at eff_conf ≥ 90 the model + cross-pair + social all agree — the
+# move is more likely to extend. Use 2.5% target to capture more of that move.
+# R:R at 2.0%: 1.18:1 (TQQQ stop 1.7%), break-even WR = 46%.
+# R:R at 2.5%: 1.47:1 (TQQQ stop 1.7%), break-even WR = 40% — meaningfully better.
 # With new gates (both_agree, dead zones, blacklist, NEUTRAL block) win rate
-# should comfortably exceed 45%, making 1.33:1 R:R profitable.
+# should comfortably exceed 45%, making both tiers profitable.
 _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "72"))             # min confidence floor — data shows 28% win rate at 65, breakeven needs 42%; 72 filters noise
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
 _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "15.0"))        # min stock price — CLOV $2.62 (3 losses -$114), DJT $9.23, AI $9.25, SNAP $6.18 all under $10 and all losers today; $15 floor eliminates the worst noise
 _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.20"))   # max bid-ask spread % — raised 0.15→0.20 to capture near-miss large caps like AVGO ($0.82 wide at 0.19%); still blocks thin/bad-quote spreads
 _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
-_ALP_DEDUP_SECS       = 2700   # 45 min dedup — COP cycled 6x at 20-min intervals today because dedup expired exactly when time-exit fired; 45 min prevents re-entry churn
-_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "60"))  # min wait after a losing exit — reduced 90→60 min: cascade-stop problem now solved by bracket-stop detection + daily trade cap; 60 min still prevents same-hour re-entry churn
+_ALP_DEDUP_SECS       = 1500   # 25 min dedup — reduced 45→25 min: holds are 20-40 min so 45 min was blocking valid re-entries after position exited; 25 min matches typical hold duration, prevents immediate re-entry churn while allowing a second setup in the same hour
+_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "30"))  # min wait after a losing exit — reduced 60→30 min: daily cap (3/sym) now limits churn; 30 min still prevents same-move re-entry after a stop without blocking the next legitimate setup
 _ALP_MAX_BULL_POSITIONS = int(os.getenv("ALPACA_MAX_BULL_POSITIONS", "5"))  # max simultaneous bull/long positions (up to 5 of 6 slots)
 _ALP_MAX_BEAR_POSITIONS = int(os.getenv("ALPACA_MAX_BEAR_POSITIONS", "5"))  # max simultaneous bear/short positions (up to 5 of 6 slots)
 
@@ -5994,7 +6134,7 @@ _alp_order_lock   = threading.Lock()   # serializes position-check → place to 
 _alp_breakeven_set = set()   # syms whose stop has been moved to trailing stop — prevents double-moves
 _alp_loss_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last losing exit per symbol
 _alp_daily_trade_count = {}  # { sym: [date_str, count] } — prevent same-ticker churn (TECS 5x on May 12)
-_ALP_MAX_TRADES_PER_SYM_DAY = int(os.getenv("ALPACA_MAX_TRADES_PER_SYM_DAY", "2"))  # max entries same sym/day
+_ALP_MAX_TRADES_PER_SYM_DAY = int(os.getenv("ALPACA_MAX_TRADES_PER_SYM_DAY", "3"))  # max entries same sym/day — raised 2→3: focused 4-ticker universe means only 1-2 symbols fire per day; 2 cap was cutting profitable continuation setups when first trade exited early
 _alp_time_exit_prev_positions = {}  # { sym: {pnl_pct: float} } — previous cycle snapshot for bracket-stop detection
 
 # ── State Persistence (survives SIGKILL worker restarts) ──────────────────────
@@ -6401,7 +6541,7 @@ def _alp_count_open_orders():
     return 0
 
 
-def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
+def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, eff_conf: float = 72.0):
     """
     Two-phase order for accurate bracket placement:
       Phase 1: Submit market entry only.
@@ -6587,14 +6727,21 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
     # SPXL/SPXS: S&P 500 is less volatile — standard 1.5% stop works fine.
     # Both pairs: 2.0% target (0.67% move in the underlying, achievable in 20-40 min).
     _is_lev_etf  = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
+    # Dynamic target: high-conviction signals (eff_conf ≥ 90) use 2.5% target.
+    # At eff_conf ≥ 90 the model + cross-pair + social all agree → move more
+    # likely to extend.  R:R lifts from 1.18:1 to 1.47:1, lowering break-even
+    # WR from 46% to 40%.  Base target (2.0%) stays for lower-confidence entries.
+    _pair_target = _PAIR_TARGET_HIGH_PCT if eff_conf >= 90 else _PAIR_TARGET_PCT
     if sym in ("TQQQ", "SQQQ"):
         stop_pct   = _TQQQ_PAIR_STOP_PCT
-        target_pct = _PAIR_TARGET_PCT
-        print(f"[Bracket] {sym} Nasdaq pair — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}%")
+        target_pct = _pair_target
+        _conf_tag  = " [HIGH-CONV 2.5%]" if eff_conf >= 90 else ""
+        print(f"[Bracket] {sym} Nasdaq pair — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}%{_conf_tag}")
     elif sym in ("SPXL", "SPXS"):
         stop_pct   = _SPXL_PAIR_STOP_PCT
-        target_pct = _PAIR_TARGET_PCT
-        print(f"[Bracket] {sym} S&P pair — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}%")
+        target_pct = _pair_target
+        _conf_tag  = " [HIGH-CONV 2.5%]" if eff_conf >= 90 else ""
+        print(f"[Bracket] {sym} S&P pair — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}%{_conf_tag}")
     elif _is_lev_etf:
         stop_pct   = _ALP_ETF_STOP_PCT
         target_pct = _ALP_ETF_TARGET_PCT
@@ -8001,7 +8148,7 @@ def _alp_execute_signal(res: dict):
               f"conf={conf:.1f}→{eff_conf:.1f}{social_tag} "
               f"streak={streak} price=${price:.2f} strong={is_strong} "
               f"regime={regime} min_conf={min_conf}")
-        ok = _alp_place_bracket(sym, direction, price, is_strong)
+        ok = _alp_place_bracket(sym, direction, price, is_strong, eff_conf=eff_conf)
         if not ok:
             # Order failed — remove dedup so the next signal attempt can retry
             with _alp_lock:
