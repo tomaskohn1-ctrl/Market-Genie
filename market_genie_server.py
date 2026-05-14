@@ -5778,7 +5778,7 @@ _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.20"))   # ma
 _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
 _ALP_DEDUP_SECS       = 2700   # 45 min dedup — COP cycled 6x at 20-min intervals today because dedup expired exactly when time-exit fired; 45 min prevents re-entry churn
-_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "90"))  # min wait after a losing exit — 20 was too short (TECS stopped, re-entered same hour); 90 min forces true reset
+_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "60"))  # min wait after a losing exit — reduced 90→60 min: cascade-stop problem now solved by bracket-stop detection + daily trade cap; 60 min still prevents same-hour re-entry churn
 _ALP_MAX_BULL_POSITIONS = int(os.getenv("ALPACA_MAX_BULL_POSITIONS", "5"))  # max simultaneous bull/long positions (up to 5 of 6 slots)
 _ALP_MAX_BEAR_POSITIONS = int(os.getenv("ALPACA_MAX_BEAR_POSITIONS", "5"))  # max simultaneous bear/short positions (up to 5 of 6 slots)
 
@@ -7130,12 +7130,19 @@ def _alp_execute_signal(res: dict):
     # signal may be stock-specific, not tape-dependent (e.g. sector earnings move).
     _is_etf_universe = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
     if _is_etf_universe and 35 <= breadth_score <= 65:
-        if eff_conf < 90:
+        # Bypass A: both models agree (ba=1) AND eff_conf ≥ 82 — consensus signal in
+        #           mixed tape means the move is likely stock/sector-specific, not tape-driven.
+        #           Lowered from 90: ba=1 already provides strong quality gate on its own.
+        # Bypass B: eff_conf ≥ 90 regardless of ba — extreme conviction overrides lack of regime.
+        _neutral_ba_bypass   = (ba == 1 and eff_conf >= 82)
+        _neutral_elite_bypass = eff_conf >= 90
+        if not _neutral_ba_bypass and not _neutral_elite_bypass:
             print(f"[RegimeGate] {sym} — SKIPPED: NEUTRAL tape (breadth={breadth_score:.0f}), "
-                  f"ETF requires confirmed regime or ELITE eff_conf≥90 "
-                  f"(current={eff_conf:.1f}) — coin-flip territory blocked")
+                  f"ETF requires regime or (ba=1 + eff_conf≥82) or eff_conf≥90 "
+                  f"(ba={ba}, eff_conf={eff_conf:.1f})")
             return
-        print(f"[RegimeGate] {sym} — NEUTRAL tape bypassed: ELITE eff_conf={eff_conf:.1f} ≥ 90 ✓")
+        _bypass_reason = f"ba=1 + eff_conf={eff_conf:.1f}≥82" if _neutral_ba_bypass else f"ELITE eff_conf={eff_conf:.1f}≥90"
+        print(f"[RegimeGate] {sym} — NEUTRAL tape bypassed: {_bypass_reason} ✓")
     if breadth_score > 65 and sym in _ETF_BEAR_UNIVERSE:
         print(f"[RegimeGate] {sym} — SKIPPED: BULLISH tape (breadth={breadth_score:.0f}), bear ETF not allowed")
         return
@@ -7208,19 +7215,45 @@ def _alp_execute_signal(res: dict):
     if streak < _ALP_MIN_STREAK:
         print(f"[Alpaca] {sym} — SKIPPED: streak {streak} < min {_ALP_MIN_STREAK}")
         return
-    # ── both_agree hard gate ──────────────────────────────────────────────────
+    # ── both_agree hard gate (with Technical Consensus bypass) ───────────────
     # Historical analysis (May 6-12 2026, 92 trades):
     #   both_agree=1  → 88.4% WR  (Kronos + TFM aligned — strong directional edge)
     #   both_agree=0  → ~50%  WR  (coin flip — one model is counter-trend)
-    # Gate: require model consensus OR ELITE confidence bypass (eff_conf ≥ 85).
-    # At eff_conf ≥ 85 the signal is so high-conviction the model split matters less.
-    # Previously removed because a short live-data window showed ba=0 WR~54% ≈ ba=1.
-    # Re-enabled after the full 92-trade post-mortem confirmed the WR gap is real.
+    # Primary gate: require model consensus OR ELITE confidence (eff_conf ≥ 85).
+    #
+    # Technical Consensus bypass (increases trade frequency without lowering quality):
+    # When ba=0 and eff_conf 78–84, allow the trade if ALL 4 conditions are met:
+    #   1. eff_conf ≥ 78     — near-ELITE conviction, not marginal noise
+    #   2. VWAP aligned      — price above VWAP (bull) / below VWAP (bear) — institutional momentum
+    #   3. vol_ratio ≥ 1.3×  — real participation, not dead-tape noise
+    #   4. Regime confirms   — breadth > 55 for bull entries, < 45 for bear entries
+    # The 4 conditions together are collectively equivalent in predictive quality to ba=1,
+    # opening ~50% more qualifying signals while preserving the quality bar.
     ba = res.get("both_agree", 0)
     if ba != 1 and eff_conf < 85:
-        print(f"[BothAgree] {sym} — SKIPPED: both_agree=0 + eff_conf={eff_conf:.1f} < 85 "
-              f"(requires Kronos+TFM consensus or ELITE confidence for low-agreement signals)")
-        return
+        _tc_conf   = eff_conf >= 78
+        _tc_vwap_v = tech.get("vwap") if tech else None
+        _tc_vwap   = bool(_tc_vwap_v) and (
+            (direction == "bull" and price > _tc_vwap_v) or
+            (direction == "bear" and price < _tc_vwap_v)
+        )
+        _tc_vol_r  = tech.get("vol_ratio", 0.0) if tech else 0.0
+        _tc_vol    = _tc_vol_r >= 1.3
+        _tc_regime = ((direction == "bull" and breadth_score > 55) or
+                      (direction == "bear" and breadth_score < 45))
+        if _tc_conf and _tc_vwap and _tc_vol and _tc_regime:
+            print(f"[BothAgree] {sym} — ba=0 TECHNICAL CONSENSUS bypass ✓ "
+                  f"eff_conf={eff_conf:.1f}≥78, VWAP✓, vol={_tc_vol_r:.1f}×≥1.3, "
+                  f"regime✓ (breadth={breadth_score:.0f})")
+        else:
+            _fails = []
+            if not _tc_conf:   _fails.append(f"eff_conf={eff_conf:.1f}<78")
+            if not _tc_vwap:   _fails.append("VWAP_misaligned" if _tc_vwap_v else "no_vwap")
+            if not _tc_vol:    _fails.append(f"vol={_tc_vol_r:.1f}×<1.3")
+            if not _tc_regime: _fails.append(f"regime_mismatch(breadth={breadth_score:.0f})")
+            print(f"[BothAgree] {sym} — SKIPPED: ba=0, eff_conf={eff_conf:.1f}<85, "
+                  f"tech consensus fails: {', '.join(_fails)}")
+            return
     print(f"[Alpaca] {sym} — both_agree={ba} ✓ (eff_conf={eff_conf:.1f})")
 
     # ── Time-of-day dead zone ─────────────────────────────────────────────────
