@@ -6145,6 +6145,10 @@ _QQQ_STOP_PCT  = float(os.getenv("QQQ_STOP_PCT",  "0.006"))  # 0.6%
 _QQQ_TARGET_PCT= float(os.getenv("QQQ_TARGET_PCT", "0.008"))  # 0.8%
 _SPY_STOP_PCT  = float(os.getenv("SPY_STOP_PCT",  "0.005"))  # 0.5%
 _SPY_TARGET_PCT= float(os.getenv("SPY_TARGET_PCT", "0.007"))  # 0.7%
+_IWM_STOP_PCT  = float(os.getenv("IWM_STOP_PCT",  "0.006"))  # 0.6% — Russell 2000 moves like QQQ
+_IWM_TARGET_PCT= float(os.getenv("IWM_TARGET_PCT", "0.008"))  # 0.8%
+_SOXL_PAIR_STOP_PCT = float(os.getenv("SOXL_PAIR_STOP_PCT", "0.017"))  # 1.7% — semiconductors volatile like Nasdaq
+_SOXS_PAIR_STOP_PCT = float(os.getenv("SOXS_PAIR_STOP_PCT", "0.017"))  # 1.7%
 _PAIR_TARGET_PCT      = float(os.getenv("PAIR_TARGET_PCT",      "0.020"))  # 2.0% base target for both pairs
 _PAIR_TARGET_HIGH_PCT = float(os.getenv("PAIR_TARGET_HIGH_PCT", "0.025"))  # 2.5% elevated target for high-conviction signals (eff_conf ≥ 90)
 # Target lowered 3.0% → 2.0% after 92-trade post-mortem: only 6/92 trades hit
@@ -6783,6 +6787,11 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
         stop_pct   = _SPY_STOP_PCT
         target_pct = _SPY_TARGET_PCT
         print(f"[Bracket] SPY 1× S&P 500 — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}% (tape-follow)")
+    elif sym == "IWM":
+        # 1× Russell 2000 — same calibration as QQQ; tape-follow instrument
+        stop_pct   = _IWM_STOP_PCT
+        target_pct = _IWM_TARGET_PCT
+        print(f"[Bracket] IWM 1× Russell 2000 — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}% (tape-follow)")
     elif sym in ("TQQQ", "SQQQ"):
         stop_pct   = _TQQQ_PAIR_STOP_PCT
         target_pct = _pair_target
@@ -6793,6 +6802,13 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
         target_pct = _pair_target
         _conf_tag  = " [HIGH-CONV 2.5%]" if eff_conf >= 90 else ""
         print(f"[Bracket] {sym} S&P 500 3× pair — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}%{_conf_tag}")
+    elif sym in ("SOXL", "SOXS"):
+        # 3× Semiconductors — same volatility profile as TQQQ (NQ-correlated)
+        _sox_stop  = _SOXL_PAIR_STOP_PCT if sym == "SOXL" else _SOXS_PAIR_STOP_PCT
+        stop_pct   = _sox_stop
+        target_pct = _pair_target
+        _conf_tag  = " [HIGH-CONV 2.5%]" if eff_conf >= 90 else ""
+        print(f"[Bracket] {sym} Semiconductor 3× pair — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}%{_conf_tag}")
     elif _is_lev_etf:
         stop_pct   = _ALP_ETF_STOP_PCT
         target_pct = _ALP_ETF_TARGET_PCT
@@ -8010,7 +8026,11 @@ def _alp_execute_signal(res: dict):
             # halve the threshold so the same relative move standard applies.
             # QQQ at 0.24% from open = equivalent signal strength as TQQQ at 0.72%.
             if sym in _ETF_UNLEVERAGED:
-                threshold = round(threshold * 0.6, 3)  # 0.25% → 0.15% pre-noon, 0.5% → 0.30% post-noon
+                threshold = round(threshold * 0.4, 3)  # 0.25% → 0.10% pre-noon, 0.5% → 0.20% post-noon
+                # Reduced from 0.6×: QQQ/SPY/IWM only need 0.20% day range post-noon.
+                # In low-VIX environments these ETFs rarely move 0.30%+ from open
+                # even on strong trending days (observed QQQ at 0.24%, IWM at 0.29%
+                # on a +0.7% market day — both blocked all afternoon at 0.6×).
             if range_from_open < threshold:
                 # Bypass for high-conviction consensus signals.
                 # NVDL eff_conf=80.1, both_agree=1 was blocked at 0.09% day range —
