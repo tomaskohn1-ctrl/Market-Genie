@@ -4382,17 +4382,20 @@ def kronos_scanner():
 _ETF_BULL_UNIVERSE = frozenset([
     "TQQQ",   # 3× Nasdaq-100 — primary bull instrument (most liquid 3× ETF)
     "SPXL",   # 3× S&P 500    — secondary bull instrument (broader market confirmation)
+    "SOXL",   # 3× Semiconductors — NVDA/AVGO/AMD correlated; independent of QQQ/SPXL slots
     "QQQ",    # 1× Nasdaq-100 — tape-follow bull; lower volatility, higher hit rate on trending days
     "SPY",    # 1× S&P 500    — tape-follow bull; broadest market exposure, best for BULLISH regime days
+    "IWM",    # 1× Russell 2000 — tape-follow bull; independent sector from QQQ/SPY, frees up slots
 ])
 _ETF_BEAR_UNIVERSE = frozenset([
     "SQQQ",   # 3× inverse Nasdaq-100 — primary bear instrument
     "SPXS",   # 3× inverse S&P 500    — secondary bear instrument
+    "SOXS",   # 3× inverse Semiconductors — paired with SOXL
 ])
 # ── Non-leveraged (1×) subset — different stop/target calibration ─────────────
-# QQQ and SPY move ~1/3 as much as their 3× counterparts per underlying tick.
+# QQQ, SPY, and IWM move ~1/3 as much as their 3× counterparts per underlying tick.
 # They trade with-the-tape on BULLISH days; bear signals are blocked (ETFDir gate).
-_ETF_UNLEVERAGED = frozenset(["QQQ", "SPY"])
+_ETF_UNLEVERAGED = frozenset(["QQQ", "SPY", "IWM"])
 
 _PREDICT_WATCHLIST = sorted(_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
 
@@ -4404,7 +4407,9 @@ _PREDICT_WATCHLIST = sorted(_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
 _ETF_PAIRS: dict = {
     "TQQQ": "SQQQ",  "SQQQ": "TQQQ",   # Nasdaq-100 3× pair
     "SPXL": "SPXS",  "SPXS": "SPXL",   # S&P 500 3× pair
+    "SOXL": "SOXS",  "SOXS": "SOXL",   # Semiconductors 3× pair
     "QQQ":  "SQQQ",  "SPY":  "SPXS",   # 1× ETFs paired to their inverse 3× counterparts
+    # IWM (Russell 2000) has no inverse in universe — no pair conflict
 }
 
 _predict_results  = {}      # { sym: result_dict }  — accumulated across all buckets
@@ -5721,7 +5726,9 @@ _megacap_lock = threading.Lock()
 _CROSS_PAIR_MAP    = {
     "TQQQ": "SPXL", "SPXL": "TQQQ",   # 3× Nasdaq ↔ 3× S&P bull pair
     "SQQQ": "SPXS", "SPXS": "SQQQ",   # 3× inverse pair
+    "SOXL": "SOXS", "SOXS": "SOXL",   # 3× Semiconductor pair
     "QQQ":  "SPY",  "SPY":  "QQQ",    # 1× Nasdaq ↔ 1× S&P bull pair
+    "IWM":  "SPY",                     # 1× Russell ↔ 1× S&P (broad market confirmation)
 }
 _CROSS_PAIR_WINDOW = int(os.getenv("CROSS_PAIR_WINDOW_SECS", "300"))   # 5 min default
 _CROSS_PAIR_BOOST  = int(os.getenv("CROSS_PAIR_BOOST_PTS",   "5"))     # +5 conf pts
@@ -6156,8 +6163,8 @@ _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "15.0"))        # mi
 _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.20"))   # max bid-ask spread % — raised 0.15→0.20 to capture near-miss large caps like AVGO ($0.82 wide at 0.19%); still blocks thin/bad-quote spreads
 _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
-_ALP_DEDUP_SECS       = 1500   # 25 min dedup — reduced 45→25 min: holds are 20-40 min so 45 min was blocking valid re-entries after position exited; 25 min matches typical hold duration, prevents immediate re-entry churn while allowing a second setup in the same hour
-_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "30"))  # min wait after a losing exit — reduced 60→30 min: daily cap (3/sym) now limits churn; 30 min still prevents same-move re-entry after a stop without blocking the next legitimate setup
+_ALP_DEDUP_SECS       = 600    # 10 min dedup — reduced 25→10 min: with 9-ticker universe and 20-40 min holds, 25 min was blocking same-ticker re-entry in the same hour entirely; 10 min allows a fresh setup after the position exits while preventing immediate same-bar re-entry
+_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "15"))  # min wait after a losing exit — reduced 30→15 min: with expanded universe, 30 min was cutting too many afternoon setups; 15 min still blocks immediate re-entry churn while allowing a second attempt per hour
 _ALP_MAX_BULL_POSITIONS = int(os.getenv("ALPACA_MAX_BULL_POSITIONS", "5"))  # max simultaneous bull/long positions (up to 5 of 6 slots)
 _ALP_MAX_BEAR_POSITIONS = int(os.getenv("ALPACA_MAX_BEAR_POSITIONS", "5"))  # max simultaneous bear/short positions (up to 5 of 6 slots)
 
@@ -6168,7 +6175,7 @@ _alp_breakeven_set = set()   # syms whose stop has been moved to trailing stop �
 _alp_loss_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last losing exit per symbol
 _alp_bear_session_locked = set()  # bear ETFs locked for the session after a TimeExit loss on a BULLISH tape
 _alp_daily_trade_count = {}  # { sym: [date_str, count] } — prevent same-ticker churn (TECS 5x on May 12)
-_ALP_MAX_TRADES_PER_SYM_DAY = int(os.getenv("ALPACA_MAX_TRADES_PER_SYM_DAY", "3"))  # max entries same sym/day — raised 2→3: focused 4-ticker universe means only 1-2 symbols fire per day; 2 cap was cutting profitable continuation setups when first trade exited early
+_ALP_MAX_TRADES_PER_SYM_DAY = int(os.getenv("ALPACA_MAX_TRADES_PER_SYM_DAY", "6"))  # max entries same sym/day — raised 3→6: 9-ticker universe with 10-min dedup and 15-min cooldown can produce valid re-entries; 6 allows morning + midday + afternoon setups per ticker without opening the door to uncontrolled churn
 _alp_time_exit_prev_positions = {}  # { sym: {pnl_pct: float} } — previous cycle snapshot for bracket-stop detection
 
 # ── State Persistence (survives SIGKILL worker restarts) ──────────────────────
@@ -7488,7 +7495,7 @@ def _alp_execute_signal(res: dict):
     # These instruments' 3× leverage amplifies both moves AND stop-hit risk.
     # High VIX means intraday swings routinely exceed our 1.5-1.7% stop —
     # we'd be stop-hunted before any trend develops.
-    _is_focused_pair = sym in ("TQQQ", "SQQQ", "SPXL", "SPXS")
+    _is_focused_pair = sym in ("TQQQ", "SQQQ", "SPXL", "SPXS", "SOXL", "SOXS")
     if _is_focused_pair:
         with _vix_lock:
             _vix_now    = _vix_state.get("level", 18.0)
@@ -7597,7 +7604,7 @@ def _alp_execute_signal(res: dict):
     # ── VIX confidence adjustment (focused pairs only) ────────────────────────
     # Calm falling VIX → trend environment → small boost; elevated VIX → penalty.
     # Applied after social boost so total eff_conf reflects all context.
-    if sym in ("TQQQ", "SQQQ", "SPXL", "SPXS"):
+    if sym in ("TQQQ", "SQQQ", "SPXL", "SPXS", "SOXL", "SOXS"):
         with _vix_lock:
             _vix_adj  = _vix_state.get("level", 18.0)
             _vix_trnd = _vix_state.get("trend", "stable")
@@ -7619,20 +7626,21 @@ def _alp_execute_signal(res: dict):
     # Cap the combined futures+megacap adjustment at +10 / -10 to prevent
     # a single data source from overriding the model quality gate.
     _fut_adj_total = 0
-    if sym in ("TQQQ", "SQQQ", "SPXL", "SPXS"):
+    if sym in ("TQQQ", "SQQQ", "SPXL", "SPXS", "SOXL", "SOXS"):
         with _futures_lock:
             _nq = _futures_state.get("nq_chg", 0.0)
             _es = _futures_state.get("es_chg", 0.0)
             _fut_updated = _futures_state.get("updated_at", 0)
         # Only apply if data is fresh (updated within last 10 min)
         if time.time() - _fut_updated < 600:
-            _fut_ref = _nq if sym in ("TQQQ", "SQQQ") else _es
-            _fut_label = "NQ" if sym in ("TQQQ", "SQQQ") else "ES"
-            # BUG FIX: For inverse ETFs (SQQQ/SPXS), direction="bull" means "buy the
+            # SOXL/SOXS track semiconductors which are highly correlated to NQ
+            _fut_ref = _nq if sym in ("TQQQ", "SQQQ", "SOXL", "SOXS") else _es
+            _fut_label = "NQ" if sym in ("TQQQ", "SQQQ", "SOXL", "SOXS") else "ES"
+            # BUG FIX: For inverse ETFs (SQQQ/SPXS/SOXS), direction="bull" means "buy the
             # inverse ETF" which is BEARISH on the underlying (NQ/ES going DOWN).
-            # NQ rising should PENALIZE a SQQQ-bull signal, not boost it.
+            # NQ rising should PENALIZE a SQQQ/SOXS-bull signal, not boost it.
             # Compute the implied market direction before comparing to futures.
-            _fut_mkt_dir = ("bear" if direction == "bull" else "bull") if sym in ("SQQQ", "SPXS") else direction
+            _fut_mkt_dir = ("bear" if direction == "bull" else "bull") if sym in ("SQQQ", "SPXS", "SOXS") else direction
             if _fut_ref > 1.0 and _fut_mkt_dir == "bull":
                 _fut_adj_total += 8
             elif _fut_ref > 0.5 and _fut_mkt_dir == "bull":
@@ -7662,10 +7670,21 @@ def _alp_execute_signal(res: dict):
         _spy_leads = _megacap_state.get("spy_leads", False)
         _mc_updated = _megacap_state.get("updated_at", 0)
     if time.time() - _mc_updated < 600:
-        # BUG FIX: Same inversion as futures — SQQQ/SPXS direction="bull" is bearish
-        # on underlying mega-caps. Mega-caps up should PENALIZE SQQQ-bull, not boost.
-        _mc_mkt_dir = ("bear" if direction == "bull" else "bull") if sym in ("SQQQ", "SPXS") else direction
+        # BUG FIX: Same inversion as futures — SQQQ/SPXS/SOXS direction="bull" is bearish
+        # on underlying mega-caps. Mega-caps up should PENALIZE inverse-bull signals, not boost.
+        _mc_mkt_dir = ("bear" if direction == "bull" else "bull") if sym in ("SQQQ", "SPXS", "SOXS") else direction
         if sym in ("TQQQ", "SQQQ"):
+            if _mc_score > 1.0 and _mc_mkt_dir == "bull":
+                _mc_adj_total += 8
+            elif _mc_score > 0.5 and _mc_mkt_dir == "bull":
+                _mc_adj_total += 5
+            elif _mc_score < -1.0 and _mc_mkt_dir == "bear":
+                _mc_adj_total += 8
+            elif _mc_score < -0.5 and _mc_mkt_dir == "bear":
+                _mc_adj_total += 5
+        elif sym in ("SOXL", "SOXS"):
+            # Semiconductors are the highest-weight mega-cap sector (NVDA/AVGO/AMD).
+            # Give SOXL the same strong boost as TQQQ when mega-caps are leading.
             if _mc_score > 1.0 and _mc_mkt_dir == "bull":
                 _mc_adj_total += 8
             elif _mc_score > 0.5 and _mc_mkt_dir == "bull":
@@ -7702,7 +7721,7 @@ def _alp_execute_signal(res: dict):
     _cp_partner = _CROSS_PAIR_MAP.get(sym)
     # Inverse mirror: SQQQ also checks TQQQ (its bull-side partner whose bear signal
     # = equivalent conviction). Stored as dir="bull" when ETFDir translates it above.
-    _cp_mirror  = {"SQQQ": "TQQQ", "SPXS": "SPXL"}.get(sym)
+    _cp_mirror  = {"SQQQ": "TQQQ", "SPXS": "SPXL", "SOXS": "SOXL"}.get(sym)
     if _cp_partner or _cp_mirror:
         _now_cp = time.time()
         with _cross_pair_lock:
@@ -7743,8 +7762,8 @@ def _alp_execute_signal(res: dict):
     # Bearish tape (score < 35): boost inverse ETFs on BEAR signals
     # Neutral (35-65): no boost — regular single-stock signals take over
     # Focused 4-ticker pair strategy — only these instruments get the regime boost
-    _ETF_BULL_NAMES = frozenset(["TQQQ", "SPXL"])
-    _ETF_BEAR_NAMES = frozenset(["SQQQ", "SPXS"])
+    _ETF_BULL_NAMES = frozenset(["TQQQ", "SPXL", "SOXL"])
+    _ETF_BEAR_NAMES = frozenset(["SQQQ", "SPXS", "SOXS"])
     _ETF_REGIME_BOOST = 10   # pts — meaningful enough to push borderline ETF signals through
 
     with _breadth_lock:
