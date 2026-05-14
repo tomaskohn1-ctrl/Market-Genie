@@ -5017,16 +5017,18 @@ def _safe_to_enter() -> bool:
 
 def _in_dead_zone() -> bool:
     """Return True during known low-win-rate time windows (Mon-Fri only).
-    Dead zones identified from 92-trade post-mortem (May 6-12 2026):
-      10:00–10:45 AM ET — 0% win rate, -$520 loss across 7 trades (pure chop)
-      12:30–13:30 ET   — 14% win rate, -$586 loss (lunch lull, algo-only tape)
+    Dead zones from 92-trade post-mortem (May 6-12 2026):
+      10:00–10:45 AM ET — removed: post-mortem was on 24-ETF universe; focused
+                          4-ticker pair strategy with VIX/futures/megacap intel
+                          has sufficient edge to trade this window.
+      12:30–13:30 ET   — kept: 14% WR lunch lull is universal regardless of
+                          instrument — volume thins, spreads widen, moves fade.
     ELITE signals (eff_conf ≥ 85) bypass the dead zone in _alp_execute_signal."""
     et_now = _get_et_now()
     if et_now.weekday() > 4:
         return False
     t = et_now.time()
-    return (dtime(10, 0) <= t < dtime(10, 45) or
-            dtime(12, 30) <= t < dtime(13, 30))
+    return dtime(12, 30) <= t < dtime(13, 30)
 
 
 def _wr_edge_score(res):
