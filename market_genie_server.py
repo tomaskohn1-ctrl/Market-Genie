@@ -7944,6 +7944,11 @@ def _alp_execute_signal(res: dict):
             # but valid trends are forming. Tighten to full threshold after noon.
             et_hour = _get_et_now().hour
             threshold = _ALP_MIN_DAY_RANGE_EARLY_PCT if et_hour < 12 else _ALP_MIN_DAY_RANGE_PCT
+            # 1× ETFs (QQQ/SPY) move ~1/3 as much intraday as leveraged ETFs —
+            # halve the threshold so the same relative move standard applies.
+            # QQQ at 0.24% from open = equivalent signal strength as TQQQ at 0.72%.
+            if sym in _ETF_UNLEVERAGED:
+                threshold = round(threshold * 0.6, 3)  # 0.25% → 0.15% pre-noon, 0.5% → 0.30% post-noon
             if range_from_open < threshold:
                 # Bypass for high-conviction consensus signals.
                 # NVDL eff_conf=80.1, both_agree=1 was blocked at 0.09% day range —
