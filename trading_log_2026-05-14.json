@@ -119,5 +119,123 @@
       "spy_chg": 0.74,
       "qqq_chg": 0.723
     }
+  },
+  {
+    "timestamp": "2026-05-14T16:10:24.723450+00:00",
+    "runs_at_local": "16:10 UTC",
+    "equity": 94363.35,
+    "day_pnl": -532.96,
+    "cash": 74411.04,
+    "open_positions": [
+      {
+        "sym": "SQQQ",
+        "side": "long",
+        "qty": "490",
+        "entry_px": 40.75,
+        "current_px": 40.719,
+        "pnl": -15.19,
+        "pnl_pct": -0.076
+      }
+    ],
+    "completed_trades": [
+      {
+        "sym": "SPXS",
+        "entry_px": 26.95,
+        "exit_px": 26.79,
+        "qty": 741.0,
+        "pnl": -118.56,
+        "pct": -0.594,
+        "dur_s": 1210,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-14T14:29"
+      },
+      {
+        "sym": "SPXS",
+        "entry_px": 26.76,
+        "exit_px": 26.63,
+        "qty": 747.0,
+        "pnl": -97.11,
+        "pct": -0.486,
+        "dur_s": 1287,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-14T14:58"
+      },
+      {
+        "sym": "SQQQ",
+        "entry_px": 41.14,
+        "exit_px": 40.78,
+        "qty": 486.0,
+        "pnl": -174.96,
+        "pct": -0.875,
+        "dur_s": 0,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-14T14:59"
+      },
+      {
+        "sym": "SQQQ",
+        "entry_px": 40.83,
+        "exit_px": 40.78,
+        "qty": 489.0,
+        "pnl": -24.45,
+        "pct": -0.122,
+        "dur_s": 1287,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-14T15:34"
+      },
+      {
+        "sym": "SPXS",
+        "entry_px": 26.61,
+        "exit_px": 26.56,
+        "qty": 751.0,
+        "pnl": -37.55,
+        "pct": -0.188,
+        "dur_s": 1436,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-14T15:33"
+      },
+      {
+        "sym": "QQQ",
+        "entry_px": 721.78,
+        "exit_px": 721.64,
+        "qty": 27.0,
+        "pnl": -3.78,
+        "pct": -0.019,
+        "dur_s": 93,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-14T16:05"
+      },
+      {
+        "sym": "SPY",
+        "entry_px": 749.44,
+        "exit_px": 749.38,
+        "qty": 26.0,
+        "pnl": -1.56,
+        "pct": -0.008,
+        "dur_s": 0,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-14T16:05"
+      }
+    ],
+    "trade_stats": {
+      "total": 7,
+      "wins": 0,
+      "losses": 7,
+      "win_rate": 0.0,
+      "total_pnl": -457.97,
+      "avg_win": 0,
+      "avg_loss": -65.42,
+      "stops": 2,
+      "targets": 0,
+      "time_exits": 5,
+      "instant_stops_under_2min": 1
+    },
+    "breadth": {
+      "score": 77.0,
+      "regime": "BULLISH",
+      "bull_conf": 62,
+      "bear_conf": 80,
+      "spy_chg": 0.943,
+      "qqq_chg": 0.965
+    }
   }
 ]
