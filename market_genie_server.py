@@ -5566,6 +5566,16 @@ _megacap_state = {
 }
 _megacap_lock = threading.Lock()
 
+# ── Cross-Pair Confirmation State ─────────────────────────────────────────────
+# Tracks recent signals so that when TQQQ + SPXL (or SQQQ + SPXS) both fire
+# the same direction within _CROSS_PAIR_WINDOW seconds, the second signal gets
+# a confidence boost — "the whole tape agrees, not just one instrument."
+_CROSS_PAIR_MAP    = {"TQQQ": "SPXL", "SPXL": "TQQQ", "SQQQ": "SPXS", "SPXS": "SQQQ"}
+_CROSS_PAIR_WINDOW = int(os.getenv("CROSS_PAIR_WINDOW_SECS", "300"))   # 5 min default
+_CROSS_PAIR_BOOST  = int(os.getenv("CROSS_PAIR_BOOST_PTS",   "5"))     # +5 conf pts
+_cross_pair_signals: dict = {}   # {sym: {"dir": str, "conf": float, "at": float}}
+_cross_pair_lock   = threading.Lock()
+
 
 def _megacap_poll_loop():
     """
@@ -7443,6 +7453,32 @@ def _alp_execute_signal(res: dict):
             eff_conf += _mc_adj_total
             print(f"[MegaCap] {sym} — score={_mc_score:+.2f}% qqq_leads={_qqq_leads} spy_leads={_spy_leads} "
                   f"dir={direction} → eff_conf {_mc_adj_total:+d} → {eff_conf:.1f}")
+
+    # ── Cross-Pair Confirmation ───────────────────────────────────────────────
+    # TQQQ + SPXL firing the same direction within 5 min = both Nasdaq AND S&P
+    # futures vehicles agree → broad market conviction → +5 eff_conf on second signal.
+    # Same logic for SQQQ + SPXS on bearish days.
+    # We record every signal regardless (so the first one becomes the "anchor"),
+    # then check whether the partner already fired in the same direction recently.
+    _cp_partner = _CROSS_PAIR_MAP.get(sym)
+    if _cp_partner:
+        _now_cp = time.time()
+        with _cross_pair_lock:
+            # Record this signal
+            _cross_pair_signals[sym] = {"dir": direction, "conf": eff_conf, "at": _now_cp}
+            # Evict stale entries older than window
+            for _stale in [k for k, v in _cross_pair_signals.items()
+                           if _now_cp - v["at"] > _CROSS_PAIR_WINDOW]:
+                del _cross_pair_signals[_stale]
+            # Check if partner fired recently in same direction
+            _cp_sig = _cross_pair_signals.get(_cp_partner)
+        if (_cp_sig and
+                _cp_sig["dir"] == direction and
+                _now_cp - _cp_sig["at"] <= _CROSS_PAIR_WINDOW):
+            _cp_lag = int(_now_cp - _cp_sig["at"])
+            eff_conf += _CROSS_PAIR_BOOST
+            print(f"[CrossPair] ✅ {sym}+{_cp_partner} both {direction.upper()} "
+                  f"({_cp_lag}s apart) → eff_conf +{_CROSS_PAIR_BOOST} → {eff_conf:.1f}")
 
     # ── Regime ETF Boost ──────────────────────────────────────────────────────
     # Leveraged ETFs aligned with the current breadth regime get a confidence
