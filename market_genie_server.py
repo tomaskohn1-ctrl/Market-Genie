@@ -7351,6 +7351,7 @@ def _alp_execute_signal(res: dict):
     # a low-conviction ba=0 signal because both_agree is still required below.
     social_boost = _get_social_conf_boost(sym)
     eff_conf = conf + social_boost   # effective confidence after social bump
+    ba = res.get("both_agree", 0)    # assigned early — used by regime gate AND BothAgree gate
     if social_boost > 0:
         boost_tag = "⚡SPIKE" if social_boost >= _SOCIAL_BOOST_SPIKE else "🔥HOT"
         print(f"[SocialBoost] {sym} trending ({boost_tag}) — conf {conf:.1f} → {eff_conf:.1f} "
@@ -7621,7 +7622,7 @@ def _alp_execute_signal(res: dict):
     #   4. Regime confirms   — breadth > 55 for bull entries, < 45 for bear entries
     # The 4 conditions together are collectively equivalent in predictive quality to ba=1,
     # opening ~50% more qualifying signals while preserving the quality bar.
-    ba = res.get("both_agree", 0)
+    # Note: ba is assigned earlier (after social_boost) so it's available for regime gate too.
     if ba != 1 and eff_conf < 85:
         _tc_conf   = eff_conf >= 78
         _tc_vwap_v = tech.get("vwap") if tech else None
