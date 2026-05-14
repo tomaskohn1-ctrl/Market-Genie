@@ -6433,6 +6433,8 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
     # Using the wrong reference price corrupts the stale-price guard and qty
     # calc — both think price is lower than our actual fill will be.
     signal_price = price
+    ask_px = 0.0   # safe defaults — updated below if quote fetch succeeds
+    bid_px = 0.0
     try:
         q_resp = requests.get(
             f"{_ALP_DATA_URL}/v2/stocks/{sym}/quotes/latest",
@@ -7834,7 +7836,12 @@ def _alp_execute_signal(res: dict):
         # NOTE: dedup entry is written AFTER successful order (see _alp_place_bracket)
         # Storing tentative here to prevent race, will clear on failure
         _alp_last_traded[sym] = {"dir": direction, "ts": now}
-        _save_alp_state()
+        # _save_alp_state() is called OUTSIDE this with-block (below) to avoid
+        # deadlock: _save_alp_state() acquires _alp_lock internally, and
+        # threading.Lock() is NOT reentrant — calling it while already holding
+        # the lock causes the thread to block forever (silent signal drop).
+
+    _save_alp_state()   # safe here — _alp_lock already released
 
     # ── Serialized position-check + order placement ───────────────────────────
     # _alp_order_lock ensures only one thread at a time runs the check→place
