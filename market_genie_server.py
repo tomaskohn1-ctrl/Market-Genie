@@ -4937,6 +4937,12 @@ _WR_DB_PATH        = os.path.join(os.path.dirname(__file__), "winrate.db")
 _WR_RESOLVE_MINS   = 20    # resolve signal after this many minutes
 _WR_MIN_MOVE_PCT   = 0.30  # minimum move % to count as WIN/LOSS (else NEUTRAL)
 _WR_BLACKLIST      = {"MAXN"}  # tickers with confirmed Kronos calibration failure (100% conf, chronic loser)
+# Tickers that posted 0 TARGET exits and heavy losses across May 6-12 2026 (92-trade analysis).
+# Require ELITE confidence (≥85) before trading these — they fire frequently but rarely
+# deliver the move needed to reach target. At eff_conf<85 the edge simply isn't there.
+# NUGT: -$291, SQQQ: -$268, LABU: -$218, DUST: -$208, TECL: -$207
+_CHRONIC_LOSER_MIN_CONF = int(os.getenv("CHRONIC_LOSER_MIN_CONF", "85"))
+_CHRONIC_LOSERS = frozenset(["NUGT", "SQQQ", "LABU", "DUST", "TECL"])
 _WR_MAX_SPREAD_PCT = 0.35  # max bid-ask spread % to log — raised 0.25→0.35 for more opportunity
                            # stop is 0.5% so 0.35% spread still leaves meaningful edge
 _WR_MIN_AVG_VOL    = 200_000  # fast-reject micro-caps below this 3-month avg daily volume
@@ -5037,6 +5043,20 @@ def _safe_to_enter() -> bool:
     if et_now.weekday() > 4:
         return False
     return dtime(9, 45) <= et_now.time() < dtime(15, 30)
+
+
+def _in_dead_zone() -> bool:
+    """Return True during known low-win-rate time windows (Mon-Fri only).
+    Dead zones identified from 92-trade post-mortem (May 6-12 2026):
+      10:00–10:45 AM ET — 0% win rate, -$520 loss across 7 trades (pure chop)
+      12:30–13:30 ET   — 14% win rate, -$586 loss (lunch lull, algo-only tape)
+    ELITE signals (eff_conf ≥ 85) bypass the dead zone in _alp_execute_signal."""
+    et_now = _get_et_now()
+    if et_now.weekday() > 4:
+        return False
+    t = et_now.time()
+    return (dtime(10, 0) <= t < dtime(10, 45) or
+            dtime(12, 30) <= t < dtime(13, 30))
 
 
 def _wr_edge_score(res):
@@ -5743,7 +5763,14 @@ _ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.030"))# 3
 # and gets clipped by normal intraday noise before the real move develops.
 # 1.5% stop / 3.0% target maintains the same 2:1 R:R at a scale that fits ETF volatility.
 _ALP_ETF_STOP_PCT     = float(os.getenv("ALPACA_ETF_STOP_PCT",   "0.015"))  # 1.5% stop for leveraged ETFs
-_ALP_ETF_TARGET_PCT   = float(os.getenv("ALPACA_ETF_TARGET_PCT", "0.030"))  # 3.0% target for leveraged ETFs (2:1 R:R)
+_ALP_ETF_TARGET_PCT   = float(os.getenv("ALPACA_ETF_TARGET_PCT", "0.020"))  # 2.0% target for leveraged ETFs (1.33:1 R:R)
+# Target lowered 3.0% → 2.0% after 92-trade post-mortem: only 6/92 trades hit
+# the 3% target (6.5% hit rate). Typical ETF move in a 20-40 min window is 0.5-1.5%
+# (≈0.17-0.5% in the underlying), making 3% almost unreachable. At 2.0% target the
+# underlying needs only 0.67% — achievable on a confirmed directional signal.
+# R:R drops from 2:1 to 1.33:1; break-even WR = 43% (vs 33% before).
+# With new gates (both_agree, dead zones, blacklist, NEUTRAL block) win rate
+# should comfortably exceed 45%, making 1.33:1 R:R profitable.
 _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "72"))             # min confidence floor — data shows 28% win rate at 65, breakeven needs 42%; 72 filters noise
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
 _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "15.0"))        # min stock price — CLOV $2.62 (3 losses -$114), DJT $9.23, AI $9.25, SNAP $6.18 all under $10 and all losers today; $15 floor eliminates the worst noise
@@ -7091,9 +7118,24 @@ def _alp_execute_signal(res: dict):
 
     # ── Regime Direction Gate ─────────────────────────────────────────────────
     # ETF-only universe: never trade against the confirmed regime.
-    # BULLISH tape → only bull ETFs allowed (skip bear ETFs)
-    # BEARISH tape → only bear ETFs allowed (skip bull ETFs)
-    # NEUTRAL      → allow both sides (conf gate still applies)
+    # BULLISH tape (>65) → only bull ETFs allowed (skip bear ETFs)
+    # BEARISH tape (<35) → only bear ETFs allowed (skip bull ETFs)
+    # NEUTRAL (35-65)    → block ALL ETFs unless eff_conf ≥ 90 (breakout bypass)
+    #
+    # NEUTRAL gate added after 92-trade post-mortem: ETFs are pure directional
+    # 3× bets — when breadth is 40-70 there is no tape edge. Previously the code
+    # only skipped the conf boost (⚪ log) but still let ETFs trade through normal
+    # gates, producing coin-flip results. Now NEUTRAL = no ETF entry by default.
+    # eff_conf ≥ 90 bypass: if both models agree AND confidence is very high the
+    # signal may be stock-specific, not tape-dependent (e.g. sector earnings move).
+    _is_etf_universe = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
+    if _is_etf_universe and 35 <= breadth_score <= 65:
+        if eff_conf < 90:
+            print(f"[RegimeGate] {sym} — SKIPPED: NEUTRAL tape (breadth={breadth_score:.0f}), "
+                  f"ETF requires confirmed regime or ELITE eff_conf≥90 "
+                  f"(current={eff_conf:.1f}) — coin-flip territory blocked")
+            return
+        print(f"[RegimeGate] {sym} — NEUTRAL tape bypassed: ELITE eff_conf={eff_conf:.1f} ≥ 90 ✓")
     if breadth_score > 65 and sym in _ETF_BEAR_UNIVERSE:
         print(f"[RegimeGate] {sym} — SKIPPED: BULLISH tape (breadth={breadth_score:.0f}), bear ETF not allowed")
         return
@@ -7166,11 +7208,49 @@ def _alp_execute_signal(res: dict):
     if streak < _ALP_MIN_STREAK:
         print(f"[Alpaca] {sym} — SKIPPED: streak {streak} < min {_ALP_MIN_STREAK}")
         return
-    # both_agree gate REMOVED — live data showed ba=0 WR (54.2%) ≥ ba=1 WR (53.1%).
-    # Gate was blocking ~50% of signals with no measurable quality improvement.
-    # ba=1 signals still get priority sorting in the scanner and VWAP/EMA boosts.
+    # ── both_agree hard gate ──────────────────────────────────────────────────
+    # Historical analysis (May 6-12 2026, 92 trades):
+    #   both_agree=1  → 88.4% WR  (Kronos + TFM aligned — strong directional edge)
+    #   both_agree=0  → ~50%  WR  (coin flip — one model is counter-trend)
+    # Gate: require model consensus OR ELITE confidence bypass (eff_conf ≥ 85).
+    # At eff_conf ≥ 85 the signal is so high-conviction the model split matters less.
+    # Previously removed because a short live-data window showed ba=0 WR~54% ≈ ba=1.
+    # Re-enabled after the full 92-trade post-mortem confirmed the WR gap is real.
     ba = res.get("both_agree", 0)
-    print(f"[Alpaca] {sym} — both_agree={ba} (informational only, not gating)")
+    if ba != 1 and eff_conf < 85:
+        print(f"[BothAgree] {sym} — SKIPPED: both_agree=0 + eff_conf={eff_conf:.1f} < 85 "
+              f"(requires Kronos+TFM consensus or ELITE confidence for low-agreement signals)")
+        return
+    print(f"[Alpaca] {sym} — both_agree={ba} ✓ (eff_conf={eff_conf:.1f})")
+
+    # ── Time-of-day dead zone ─────────────────────────────────────────────────
+    # 10:00–10:45 AM ET: 0% win rate (-$520 across 7 trades) — opening chop,
+    #   price discovery still settling, algo-driven noise dominates.
+    # 12:30–13:30 ET: 14% win rate (-$586 across 7 trades) — lunch lull,
+    #   volume thins out, spread widens, moves often fade before target.
+    # ELITE bypass: eff_conf ≥ 85 can still trade (breakout moves are real).
+    if _in_dead_zone():
+        if eff_conf < 85:
+            _dz_now = _get_et_now()
+            print(f"[DeadZone] {sym} — SKIPPED: {_dz_now.strftime('%H:%M')} ET is a dead zone "
+                  f"(eff_conf={eff_conf:.1f} < 85 ELITE bypass — known 0-14% WR window)")
+            return
+        _dz_now = _get_et_now()
+        print(f"[DeadZone] {sym} — dead zone bypassed: ELITE eff_conf={eff_conf:.1f} ≥ 85 "
+              f"at {_dz_now.strftime('%H:%M')} ET ✓")
+
+    # ── Chronic loser high-confidence gate ───────────────────────────────────
+    # NUGT, SQQQ, LABU, DUST, TECL: 0 TARGET exits combined, -$1,192 total loss
+    # across May 6-12 2026. These fire frequently (strong models) but the move
+    # almost never reaches the +1.5% target — they chop and stop out repeatedly.
+    # Require ELITE confidence (≥85) before taking a position.
+    # At eff_conf ≥ 85 the conviction is high enough that the extra friction is
+    # worth accepting; below that threshold the edge simply isn't there.
+    if sym in _CHRONIC_LOSERS and eff_conf < _CHRONIC_LOSER_MIN_CONF:
+        print(f"[ChronicLoser] {sym} — SKIPPED: requires eff_conf≥{_CHRONIC_LOSER_MIN_CONF} "
+              f"(current={eff_conf:.1f}) — 0 target hits historically, "
+              f"min conf {_CHRONIC_LOSER_MIN_CONF} enforced via CHRONIC_LOSER_MIN_CONF")
+        return
 
     # ── ETF Signal Quality Gate ───────────────────────────────────────────────
     # Leveraged ETFs compete for limited slots. A single-model signal with
