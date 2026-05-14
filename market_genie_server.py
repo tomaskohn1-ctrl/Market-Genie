@@ -7521,11 +7521,26 @@ def _alp_execute_signal(res: dict):
         _bypass_reason = f"ba=1 + eff_conf={eff_conf:.1f}≥82" if _neutral_ba_bypass else f"ELITE eff_conf={eff_conf:.1f}≥90"
         print(f"[RegimeGate] {sym} — NEUTRAL tape bypassed: {_bypass_reason} ✓")
     if breadth_score > 65 and sym in _ETF_BEAR_UNIVERSE:
-        print(f"[RegimeGate] {sym} — SKIPPED: BULLISH tape (breadth={breadth_score:.0f}), bear ETF not allowed")
-        return
+        # Elite bypass: both models agree AND eff_conf ≥ 85 → models are strongly
+        # diverging from breadth (often a leading indicator of regime flip).
+        if ba == 1 and eff_conf >= 85:
+            print(f"[RegimeGate] {sym} — BULLISH tape bypass: ba=1 + eff_conf={eff_conf:.1f}≥85 "
+                  f"(models diverge from breadth — possible regime flip) ✓")
+        else:
+            print(f"[RegimeGate] {sym} — SKIPPED: BULLISH tape (breadth={breadth_score:.0f}), "
+                  f"bear ETF not allowed (needs ba=1 + eff_conf≥85 to override, "
+                  f"got ba={ba} eff_conf={eff_conf:.1f})")
+            return
     if breadth_score < 35 and sym in _ETF_BULL_UNIVERSE:
-        print(f"[RegimeGate] {sym} — SKIPPED: BEARISH tape (breadth={breadth_score:.0f}), bull ETF not allowed")
-        return
+        # Elite bypass: same logic for bullish ETFs in bearish regime.
+        if ba == 1 and eff_conf >= 85:
+            print(f"[RegimeGate] {sym} — BEARISH tape bypass: ba=1 + eff_conf={eff_conf:.1f}≥85 "
+                  f"(models diverge from breadth — possible regime flip) ✓")
+        else:
+            print(f"[RegimeGate] {sym} — SKIPPED: BEARISH tape (breadth={breadth_score:.0f}), "
+                  f"bull ETF not allowed (needs ba=1 + eff_conf≥85 to override, "
+                  f"got ba={ba} eff_conf={eff_conf:.1f})")
+            return
 
     regime_etf_boost = 0
     if breadth_score > 65 and direction == "bull" and sym in _ETF_BULL_NAMES:
