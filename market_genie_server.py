@@ -873,16 +873,9 @@ def _alp_ws_on_message(ws, raw):
                     # Priority: leveraged ETFs (regime plays) + top liquid high-beta stocks.
                     # 32 total ETFs — all fit under the 30-ticker paper cap after [:30] slice.
                     # Original 22 core names take priority; new sector names fill remaining slots.
-                    _ALP_WS_TICKERS = sorted(_PREDICT_WATCHLIST)[:30]  # auto-picks top 30 alphabetically
-                    # Override: manually order to ensure highest-liquidity ETFs are always included
-                    _ALP_WS_TICKERS = [
-                        # Core (highest volume — always include)
-                        "TQQQ","SQQQ","SPXL","SPXS","SOXL","TNA","TZA",
-                        "TECL","TECS","FAS","FAZ","LABU","LABD","FNGU","FNGD",
-                        "UVXY","VXX","UDOW","SDOW","NVDL","TSLL",
-                        # New sectors (fill remaining slots — liquid pairs only)
-                        "ERX","ERY","NUGT","DUST",
-                    ][:30]   # hard cap at 30 — Alpaca paper limit
+                    # Focused 4-ticker pair strategy — only watch the instruments we actually trade.
+                    # Well within the 30-ticker paper cap; simpler = faster tick processing.
+                    _ALP_WS_TICKERS = ["TQQQ", "SQQQ", "SPXL", "SPXS"]
                     print(f"[AlpacaWS] Authenticated — subscribing to {len(_ALP_WS_TICKERS)} tickers (paper cap=30)")
                     ws.send(json.dumps({
                         "action": "subscribe",
@@ -4373,42 +4366,26 @@ def kronos_scanner():
 # expression of that direction with no single-stock risk, tight spreads, and
 # high liquidity. Regime gate (below) ensures we only trade the aligned side.
 #
-# Bull ETFs: go long when BULLISH regime confirmed
+# ── Focused Pair Strategy ─────────────────────────────────────────────────────
+# Hard focus on 2 pairs only: Nasdaq-100 and S&P 500.
+# Rationale: broad sector ETF universe (NUGT, LABU, TECL, SOXL...) produced
+# 0 target hits and -$1,192 in losses across May 6-12 2026 (92-trade post-mortem).
+# TQQQ/SPXL in confirmed BULLISH regimes were the only consistent winners.
+# By concentrating on the 2 most liquid, most predictable, most regime-correlated
+# pairs we can calibrate stops/targets precisely and become a niche expert on
+# exactly how these instruments behave intraday.
+#
+# TQQQ — 3× Nasdaq-100 — highest volume leveraged ETF, most momentum-driven index
+# SPXL — 3× S&P 500    — broader market confirmation, slightly less volatile
+# SQQQ — 3× inv Nasdaq — bear side of the QQQ pair
+# SPXS — 3× inv S&P    — bear side of the SPX pair
 _ETF_BULL_UNIVERSE = frozenset([
-    "TQQQ",   # 3× Nasdaq-100 — most liquid leveraged ETF
-    "SPXL",   # 3× S&P 500
-    "SOXL",   # 3× Semiconductors
-    "TNA",    # 3× Russell 2000 small caps
-    "TECL",   # 3× Tech sector
-    "FAS",    # 3× Financials
-    "LABU",   # 3× Biotech
-    "FNGU",   # 3× FANG+ mega tech
-    "NVDL",   # 2× NVDA
-    "TSLL",   # 2× TSLA (yfinance 1y history broken post-split — handled gracefully)
-    "UDOW",   # 3× Dow Jones
-    # ── New sectors (liquid enough to pass spread gate avg_vol≥200K) ────────
-    "ERX",    # 3× Energy — active on oil/gas moves
-    "NUGT",   # 3× Gold Miners — spikes with metals momentum
+    "TQQQ",   # 3× Nasdaq-100 — primary bull instrument (most liquid 3× ETF)
+    "SPXL",   # 3× S&P 500    — secondary bull instrument (broader market confirmation)
 ])
-# Bear ETFs: go short when BEARISH regime confirmed
 _ETF_BEAR_UNIVERSE = frozenset([
-    "SQQQ",   # 3× inverse Nasdaq-100
-    "SPXS",   # 3× inverse S&P 500
-    # SOXS removed — yfinance reports possibly delisted (reverse split history broken)
-    "TZA",    # 3× inverse Russell 2000
-    "TECS",   # 3× inverse Tech sector
-    "FAZ",    # 3× inverse Financials
-    "LABD",   # 3× inverse Biotech
-    "FNGD",   # 3× inverse FANG+
-    "UVXY",   # 1.5× VIX (spikes in selloffs)
-    "VXX",    # 1× VIX front-month futures
-    "SDOW",   # 3× inverse Dow Jones
-    # ── New sectors (matched pairs for expansion above) ─────────────────────
-    "ERY",    # 3× inverse Energy
-    "DUST",   # 3× inverse Gold Miners
-    # HIBS/HIBL removed — HIBL avg_vol 85K fails spread gate
-    # RXD/CURE removed — CURE avg_vol 47K fails spread gate
-    # DRV/NAIL removed — DRV avg_vol 174K fails spread gate
+    "SQQQ",   # 3× inverse Nasdaq-100 — primary bear instrument
+    "SPXS",   # 3× inverse S&P 500    — secondary bear instrument
 ])
 
 _PREDICT_WATCHLIST = sorted(_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
@@ -4419,19 +4396,9 @@ _PREDICT_WATCHLIST = sorted(_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
 # zero net diversification (e.g. TECL short + TECS long = 2× bearish tech).
 # Gate in _alp_execute_signal blocks entry if the paired ETF is already open.
 _ETF_PAIRS: dict = {
-    "TQQQ": "SQQQ",  "SQQQ": "TQQQ",   # Nasdaq-100
-    "SPXL": "SPXS",  "SPXS": "SPXL",   # S&P 500
-    "SOXL": "TECS",                       # Semiconductors → Tech inverse (SOXS delisted/broken)
-    "TNA":  "TZA",   "TZA":  "TNA",    # Russell 2000
-    "TECL": "TECS",  "TECS": "TECL",   # Tech sector
-    "FAS":  "FAZ",   "FAZ":  "FAS",    # Financials
-    "LABU": "LABD",  "LABD": "LABU",   # Biotech
-    "FNGU": "FNGD",  "FNGD": "FNGU",   # FANG+
-    "UDOW": "SDOW",  "SDOW": "UDOW",   # Dow Jones
-    # ── New sector pairs ───────────────────────────────────────────────────
-    "ERX":  "ERY",   "ERY":  "ERX",    # Energy (both legs liquid ✅)
-    "NUGT": "DUST",  "DUST": "NUGT",   # Gold Miners (both legs liquid ✅)
-    # HIBL/HIBS, CURE/RXD, NAIL/DRV removed — one or both legs fail avg_vol≥200K
+    "TQQQ": "SQQQ",  "SQQQ": "TQQQ",   # Nasdaq-100 pair
+    "SPXL": "SPXS",  "SPXS": "SPXL",   # S&P 500 pair
+    # All sector pairs removed — focused 4-ticker strategy (May 2026)
 }
 
 _predict_results  = {}      # { sym: result_dict }  — accumulated across all buckets
@@ -4942,7 +4909,10 @@ _WR_BLACKLIST      = {"MAXN"}  # tickers with confirmed Kronos calibration failu
 # deliver the move needed to reach target. At eff_conf<85 the edge simply isn't there.
 # NUGT: -$291, SQQQ: -$268, LABU: -$218, DUST: -$208, TECL: -$207
 _CHRONIC_LOSER_MIN_CONF = int(os.getenv("CHRONIC_LOSER_MIN_CONF", "85"))
-_CHRONIC_LOSERS = frozenset(["NUGT", "SQQQ", "LABU", "DUST", "TECL"])
+_CHRONIC_LOSERS = frozenset(["NUGT", "LABU", "DUST", "TECL"])
+# SQQQ removed from chronic losers — it is now a PRIMARY focused-pair instrument.
+# Its historical losses were due to trading in wrong conditions (BULLISH/NEUTRAL tape).
+# With regime gate + focused strategy, SQQQ only fires in confirmed BEARISH tape.
 _WR_MAX_SPREAD_PCT = 0.35  # max bid-ask spread % to log — raised 0.25→0.35 for more opportunity
                            # stop is 0.5% so 0.35% spread still leaves meaningful edge
 _WR_MIN_AVG_VOL    = 200_000  # fast-reject micro-caps below this 3-month avg daily volume
@@ -5442,6 +5412,61 @@ _breadth_state = {
 }
 _breadth_lock = threading.Lock()
 
+# ── VIX Live Feed ─────────────────────────────────────────────────────────────
+# Polls ^VIX every 3 minutes via yfinance. VIX is the CBOE Volatility Index —
+# the market's forward-looking measure of expected 30-day S&P 500 volatility.
+# For TQQQ/SQQQ/SPXL/SPXS specifically, VIX level directly controls:
+#   • Whether to trade at all (VIX > 35 = market panic, stops hit by noise)
+#   • Whether to require higher signal quality (VIX > 25 = ba=1 only)
+#   • How large to size positions (VIX-adjusted multiplier)
+#   • Whether to give a calm-tape confidence bonus (VIX < 15, falling)
+#
+# VIX regimes for leveraged index ETFs:
+#   < 15   — historically bullish, low vol → trend days likely → size up slightly
+#   15-20  — normal market → standard parameters
+#   20-25  — elevated → reduce size 15%, no technical consensus bypass
+#   25-30  — high → reduce size 30%, require ba=1
+#   30-35  — very high → reduce size 50%, ba=1 only, widen stops
+#   > 35   — extreme panic → pause all new ETF entries entirely
+_vix_state = {
+    "level":      18.0,    # current VIX level (starts at market average)
+    "prev":       18.0,    # prior reading for trend detection
+    "trend":      "stable",# "rising" | "falling" | "stable"
+    "updated_at": 0,       # epoch of last successful update
+}
+_vix_lock = threading.Lock()
+
+
+def _vix_poll_loop():
+    """Background thread: poll ^VIX every 3 minutes and update _vix_state."""
+    import yfinance as yf
+    while True:
+        try:
+            hist = yf.Ticker("^VIX").history(period="2d", interval="5m")
+            if len(hist) >= 2:
+                current = float(hist["Close"].iloc[-1])
+                prev    = float(hist["Close"].iloc[-2])
+                if current > prev * 1.02:
+                    trend = "rising"
+                elif current < prev * 0.98:
+                    trend = "falling"
+                else:
+                    trend = "stable"
+                with _vix_lock:
+                    _vix_state["prev"]       = _vix_state["level"]
+                    _vix_state["level"]      = current
+                    _vix_state["trend"]      = trend
+                    _vix_state["updated_at"] = time.time()
+                print(f"[VIX] Level={current:.1f} trend={trend} "
+                      f"({'📉' if trend == 'falling' else '📈' if trend == 'rising' else '➡'})")
+        except Exception as e:
+            print(f"[VIX] Poll error: {e}")
+        time.sleep(180)  # every 3 minutes
+
+
+threading.Thread(target=_vix_poll_loop, daemon=True, name="vix-feed").start()
+print("[VIX] Live feed thread started (^VIX polled every 3 min)")
+
 # ── Dynamic Confidence Floors ─────────────────────────────────────────────────
 # With-trend floor scales automatically with breadth score strength:
 #   Neutral edge (score=35 or 65): easy-direction floor = BREADTH_EASY_CONF_NEUTRAL (65)
@@ -5754,7 +5779,7 @@ _ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.market
 
 # Execution settings (override via Railway Variables)
 _ALP_ENABLED          = os.getenv("ALPACA_EXEC_ENABLED", "true").lower() == "true"
-_ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "15000"))  # $15K per trade → 6 positions = $90K deployed
+_ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "20000"))  # $20K per trade — raised 15K→20K for focused 4-pair strategy (fewer signals, higher quality)
 _ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "6"))         # max open at once — raised 5→6 to avoid missing high-conf signals when full
 _ALP_STOP_PCT         = float(os.getenv("ALPACA_STOP_PCT", "0.0075"))       # 0.75% stop loss — wider room for intraday noise (was 0.5%, too tight for $50-150 stocks)
 _ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.015"))      # 1.5% target — maintains 2:1 R:R with wider stop
@@ -5762,8 +5787,17 @@ _ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.030"))# 3
 # Leveraged ETF overrides — 3× products move 3× faster, 0.75% stop is ~0.25% in the underlying
 # and gets clipped by normal intraday noise before the real move develops.
 # 1.5% stop / 3.0% target maintains the same 2:1 R:R at a scale that fits ETF volatility.
-_ALP_ETF_STOP_PCT     = float(os.getenv("ALPACA_ETF_STOP_PCT",   "0.015"))  # 1.5% stop for leveraged ETFs
-_ALP_ETF_TARGET_PCT   = float(os.getenv("ALPACA_ETF_TARGET_PCT", "0.020"))  # 2.0% target for leveraged ETFs (1.33:1 R:R)
+_ALP_ETF_STOP_PCT     = float(os.getenv("ALPACA_ETF_STOP_PCT",   "0.015"))  # 1.5% stop fallback for any remaining leveraged ETFs
+_ALP_ETF_TARGET_PCT   = float(os.getenv("ALPACA_ETF_TARGET_PCT", "0.020"))  # 2.0% target fallback
+# ── Pair-specific stop/target calibration ─────────────────────────────────────
+# TQQQ/SQQQ track the Nasdaq-100 (QQQ) which is more volatile than the S&P.
+# QQQ intraday swings are ~20% wider than SPY, so a 1.5% stop gets hit by noise
+# before the real move develops. 1.7% gives enough room for Nasdaq's natural chop.
+# Both pairs share the 2.0% target — achievable in a confirmed regime in 20-40 min.
+# SPXL/SPXS track SPX, which is less volatile — standard 1.5% stop is fine.
+_TQQQ_PAIR_STOP_PCT = float(os.getenv("TQQQ_PAIR_STOP_PCT", "0.017"))  # 1.7% — wider for Nasdaq volatility
+_SPXL_PAIR_STOP_PCT = float(os.getenv("SPXL_PAIR_STOP_PCT", "0.015"))  # 1.5% — standard for S&P 500
+_PAIR_TARGET_PCT    = float(os.getenv("PAIR_TARGET_PCT",    "0.020"))  # 2.0% target for both pairs
 # Target lowered 3.0% → 2.0% after 92-trade post-mortem: only 6/92 trades hit
 # the 3% target (6.5% hit rate). Typical ETF move in a 20-40 min window is 0.5-1.5%
 # (≈0.17-0.5% in the underlying), making 3% almost unreachable. At 2.0% target the
@@ -6349,16 +6383,50 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
 
     side         = "buy"  if direction == "bull" else "sell"
     close_side   = "sell" if direction == "bull" else "buy"
-    qty          = max(1, int(_ALP_POSITION_SIZE_USD / price)) if price > 0 else 1
 
-    # Leveraged ETFs get wider stop/target — 3× products hit 0.75% on noise;
-    # 1.5% stop / 3.0% target keeps the same 2:1 R:R at the right scale.
+    # ── VIX-adjusted position sizing ─────────────────────────────────────────
+    # In calm markets (VIX < 15) trend days are more reliable → size up slightly.
+    # In elevated markets (VIX > 20) stops are hit more easily → size down.
+    # Applied before qty so the bracket is sized for actual risk tolerance.
+    _pos_usd = _ALP_POSITION_SIZE_USD
+    if sym in ("TQQQ", "SQQQ", "SPXL", "SPXS"):
+        with _vix_lock:
+            _vix_sz = _vix_state.get("level", 18.0)
+        if _vix_sz > 30:
+            _pos_usd *= 0.60   # -40% — very high vol, protect capital
+            print(f"[VIX] {sym} position reduced to ${_pos_usd:,.0f} (VIX={_vix_sz:.1f}>30, -40%)")
+        elif _vix_sz > 25:
+            _pos_usd *= 0.75   # -25% — elevated vol
+            print(f"[VIX] {sym} position reduced to ${_pos_usd:,.0f} (VIX={_vix_sz:.1f}>25, -25%)")
+        elif _vix_sz > 20:
+            _pos_usd *= 0.85   # -15% — mildly elevated
+            print(f"[VIX] {sym} position reduced to ${_pos_usd:,.0f} (VIX={_vix_sz:.1f}>20, -15%)")
+        elif _vix_sz < 15:
+            _pos_usd *= 1.10   # +10% — calm trend environment, size up slightly
+            print(f"[VIX] {sym} position increased to ${_pos_usd:,.0f} (VIX={_vix_sz:.1f}<15, +10%)")
+
+    qty = max(1, int(_pos_usd / price)) if price > 0 else 1
+
+    # ── Pair-specific stop/target calibration ────────────────────────────────
+    # TQQQ/SQQQ: Nasdaq tracks QQQ which swings ~20% wider than SPY intraday.
+    #   1.7% stop gives enough room for Nasdaq's natural noise without premature stops.
+    # SPXL/SPXS: S&P 500 is less volatile — standard 1.5% stop works fine.
+    # Both pairs: 2.0% target (0.67% move in the underlying, achievable in 20-40 min).
     _is_lev_etf  = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
-    stop_pct     = _ALP_ETF_STOP_PCT   if _is_lev_etf else _ALP_STOP_PCT
-    if _is_lev_etf:
+    if sym in ("TQQQ", "SQQQ"):
+        stop_pct   = _TQQQ_PAIR_STOP_PCT
+        target_pct = _PAIR_TARGET_PCT
+        print(f"[Bracket] {sym} Nasdaq pair — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}%")
+    elif sym in ("SPXL", "SPXS"):
+        stop_pct   = _SPXL_PAIR_STOP_PCT
+        target_pct = _PAIR_TARGET_PCT
+        print(f"[Bracket] {sym} S&P pair — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}%")
+    elif _is_lev_etf:
+        stop_pct   = _ALP_ETF_STOP_PCT
         target_pct = _ALP_ETF_TARGET_PCT
         print(f"[Bracket] {sym} ETF bracket — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}%")
     else:
+        stop_pct   = _ALP_STOP_PCT
         target_pct = _ALP_STRONG_TARGET_PCT if is_strong else _ALP_TARGET_PCT
 
     # ── Phase 1: Limit-at-mid entry with 20s market fallback ─────────────────
@@ -7034,6 +7102,29 @@ def _alp_execute_signal(res: dict):
         print(f"[Alpaca] {sym} — SKIPPED: past 15:32 ET entry cutoff (EOD safety buffer)")
         return
 
+    # ── VIX gate — volatility-aware entry filter ──────────────────────────────
+    # Only applies to the 4 focused ETFs (TQQQ/SQQQ/SPXL/SPXS).
+    # These instruments' 3× leverage amplifies both moves AND stop-hit risk.
+    # High VIX means intraday swings routinely exceed our 1.5-1.7% stop —
+    # we'd be stop-hunted before any trend develops.
+    _is_focused_pair = sym in ("TQQQ", "SQQQ", "SPXL", "SPXS")
+    if _is_focused_pair:
+        with _vix_lock:
+            _vix_now    = _vix_state.get("level", 18.0)
+            _vix_trend  = _vix_state.get("trend", "stable")
+        if _vix_now > 35:
+            print(f"[VIX] {sym} — SKIPPED: VIX={_vix_now:.1f} > 35 (extreme panic — "
+                  f"3× ETF stops hit by normal noise in this environment)")
+            return
+        if _vix_now > 25:
+            # Elevated vol: only allow highest-quality consensus signals
+            _ba_for_vix = res.get("both_agree", 0)
+            if _ba_for_vix != 1:
+                print(f"[VIX] {sym} — SKIPPED: VIX={_vix_now:.1f} > 25 (elevated vol) "
+                      f"requires both_agree=1 — ba={_ba_for_vix}")
+                return
+            print(f"[VIX] {sym} — elevated VIX={_vix_now:.1f} cleared: ba=1 ✓")
+
     # ── Per-symbol loss cooldown ──────────────────────────────────────────────
     # ── Profit Guard pause — no new entries while guard is active ────────────
     if _alp_profit_guard_until and time.time() < _alp_profit_guard_until:
@@ -7093,6 +7184,23 @@ def _alp_execute_signal(res: dict):
         print(f"[SocialBoost] {sym} trending ({boost_tag}) — conf {conf:.1f} → {eff_conf:.1f} "
               f"(+{social_boost} pts)")
 
+    # ── VIX confidence adjustment (focused pairs only) ────────────────────────
+    # Calm falling VIX → trend environment → small boost; elevated VIX → penalty.
+    # Applied after social boost so total eff_conf reflects all context.
+    if sym in ("TQQQ", "SQQQ", "SPXL", "SPXS"):
+        with _vix_lock:
+            _vix_adj  = _vix_state.get("level", 18.0)
+            _vix_trnd = _vix_state.get("trend", "stable")
+        if _vix_adj < 15 and _vix_trnd == "falling":
+            eff_conf += 3
+            print(f"[VIX] {sym} — calm-tape bonus: VIX={_vix_adj:.1f} falling → eff_conf +3 → {eff_conf:.1f}")
+        elif _vix_adj > 25:
+            eff_conf -= 5
+            print(f"[VIX] {sym} — elevated-vol penalty: VIX={_vix_adj:.1f} → eff_conf -5 → {eff_conf:.1f}")
+        elif _vix_adj > 20:
+            eff_conf -= 2
+            print(f"[VIX] {sym} — mildly elevated VIX={_vix_adj:.1f} → eff_conf -2 → {eff_conf:.1f}")
+
     # ── Regime ETF Boost ──────────────────────────────────────────────────────
     # Leveraged ETFs aligned with the current breadth regime get a confidence
     # bonus — they move with the whole tape, have no single-stock risk, and
@@ -7104,12 +7212,9 @@ def _alp_execute_signal(res: dict):
     # Bullish tape (score > 65): boost long leveraged ETFs on BULL signals
     # Bearish tape (score < 35): boost inverse ETFs on BEAR signals
     # Neutral (35-65): no boost — regular single-stock signals take over
-    _ETF_BULL_NAMES = frozenset(["TQQQ","SPXL","BULZ","SOXL","FNGU","TECL",
-                                  "LABU","DPST","NAIL","CURE","BOIL","TNA",
-                                  "WEBL","NVDL","TSLL","UDOW","URPO"])
-    _ETF_BEAR_NAMES = frozenset(["SQQQ","SPXS","BERZ","FNGD","TECS",
-                                  "LABD","TZA","WEBS","KOLD","UVXY","VXX",
-                                  "BITI","SDSOX"])
+    # Focused 4-ticker pair strategy — only these instruments get the regime boost
+    _ETF_BULL_NAMES = frozenset(["TQQQ", "SPXL"])
+    _ETF_BEAR_NAMES = frozenset(["SQQQ", "SPXS"])
     _ETF_REGIME_BOOST = 10   # pts — meaningful enough to push borderline ETF signals through
 
     with _breadth_lock:
@@ -7779,6 +7884,11 @@ def api_debug_signals():
         "market_open":         _us_market_open(),
         "safe_to_enter":       _safe_to_enter(),
         "gate_rejections":     dict(_wr_gate_stats),
+        "vix": {
+            "level":      round(_vix_state.get("level", 18.0), 1),
+            "trend":      _vix_state.get("trend", "stable"),
+            "updated_at": _vix_state.get("updated_at", 0),
+        },
         "open_positions":      len(_alp_get_open_positions()),
         "top_candidates": [{
             "sym":        r.get("sym"),
