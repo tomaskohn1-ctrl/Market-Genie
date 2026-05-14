@@ -5706,11 +5706,12 @@ def _breadth_loop():
 
 
 def _get_dynamic_thresholds(direction: str) -> int:
-    """Return the current min-confidence threshold for the given direction."""
+    """Return the current min-confidence threshold for the given direction.
+    Never goes below _ALP_MIN_CONF (floor=72) — breadth engine can compute
+    bull_conf as low as 59 in a strong tape, which produced 28% win rates."""
     with _breadth_lock:
-        if direction == "bull":
-            return _breadth_state["bull_conf"]
-        return _breadth_state["bear_conf"]
+        raw = _breadth_state["bull_conf"] if direction == "bull" else _breadth_state["bear_conf"]
+    return max(raw, _ALP_MIN_CONF)
 
 
 # Start breadth engine on import
@@ -5743,14 +5744,14 @@ _ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.030"))# 3
 # 1.5% stop / 3.0% target maintains the same 2:1 R:R at a scale that fits ETF volatility.
 _ALP_ETF_STOP_PCT     = float(os.getenv("ALPACA_ETF_STOP_PCT",   "0.015"))  # 1.5% stop for leveraged ETFs
 _ALP_ETF_TARGET_PCT   = float(os.getenv("ALPACA_ETF_TARGET_PCT", "0.030"))  # 3.0% target for leveraged ETFs (2:1 R:R)
-_ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "65"))             # min confidence
+_ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "72"))             # min confidence floor — data shows 28% win rate at 65, breakeven needs 42%; 72 filters noise
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
 _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "15.0"))        # min stock price — CLOV $2.62 (3 losses -$114), DJT $9.23, AI $9.25, SNAP $6.18 all under $10 and all losers today; $15 floor eliminates the worst noise
 _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.20"))   # max bid-ask spread % — raised 0.15→0.20 to capture near-miss large caps like AVGO ($0.82 wide at 0.19%); still blocks thin/bad-quote spreads
 _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
 _ALP_DEDUP_SECS       = 2700   # 45 min dedup — COP cycled 6x at 20-min intervals today because dedup expired exactly when time-exit fired; 45 min prevents re-entry churn
-_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "20"))  # min wait after a losing exit before re-entering same symbol
+_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "90"))  # min wait after a losing exit — 20 was too short (TECS stopped, re-entered same hour); 90 min forces true reset
 _ALP_MAX_BULL_POSITIONS = int(os.getenv("ALPACA_MAX_BULL_POSITIONS", "5"))  # max simultaneous bull/long positions (up to 5 of 6 slots)
 _ALP_MAX_BEAR_POSITIONS = int(os.getenv("ALPACA_MAX_BEAR_POSITIONS", "5"))  # max simultaneous bear/short positions (up to 5 of 6 slots)
 
@@ -5759,6 +5760,54 @@ _alp_lock         = threading.Lock()
 _alp_order_lock   = threading.Lock()   # serializes position-check → place to prevent over-filling
 _alp_breakeven_set = set()   # syms whose stop has been moved to trailing stop — prevents double-moves
 _alp_loss_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last losing exit per symbol
+_alp_daily_trade_count = {}  # { sym: [date_str, count] } — prevent same-ticker churn (TECS 5x on May 12)
+_ALP_MAX_TRADES_PER_SYM_DAY = int(os.getenv("ALPACA_MAX_TRADES_PER_SYM_DAY", "2"))  # max entries same sym/day
+_alp_time_exit_prev_positions = {}  # { sym: {pnl_pct: float} } — previous cycle snapshot for bracket-stop detection
+
+# ── State Persistence (survives SIGKILL worker restarts) ──────────────────────
+# dedup (_alp_last_traded) and cooldown (_alp_loss_cooldown) are in-memory.
+# On SIGKILL the state resets → same symbol re-entered minutes after a stop.
+# We persist to /tmp so state survives within the same Railway deployment.
+_ALP_STATE_FILE = "/tmp/alp_trade_state.json"
+
+def _save_alp_state():
+    """Write dedup + cooldown + daily counts to disk. Called after every mutation."""
+    try:
+        with _alp_lock:
+            state = {
+                "last_traded":        dict(_alp_last_traded),
+                "loss_cooldown":      dict(_alp_loss_cooldown),
+                "daily_trade_count":  {k: list(v) for k, v in _alp_daily_trade_count.items()},
+                "saved_at":           time.time(),
+            }
+        with open(_ALP_STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except Exception:
+        pass  # non-fatal — best-effort persistence
+
+def _load_alp_state():
+    """Restore persisted state on startup. Ignores entries older than 24 h."""
+    try:
+        if not os.path.exists(_ALP_STATE_FILE):
+            return
+        with open(_ALP_STATE_FILE) as f:
+            state = json.load(f)
+        age = time.time() - state.get("saved_at", 0)
+        if age > 86400:
+            print("[State] State file older than 24h — ignoring")
+            return
+        count_lt = count_lc = 0
+        for k, v in state.get("last_traded", {}).items():
+            _alp_last_traded[k] = v;  count_lt += 1
+        for k, v in state.get("loss_cooldown", {}).items():
+            _alp_loss_cooldown[k] = v;  count_lc += 1
+        for k, v in state.get("daily_trade_count", {}).items():
+            _alp_daily_trade_count[k] = list(v)
+        print(f"[State] ✅ Restored {count_lt} dedup entries + {count_lc} cooldowns (age={age/60:.0f}m)")
+    except Exception as e:
+        print(f"[State] Warning loading state: {e}")
+
+_load_alp_state()   # restore on every worker start
 
 # ── Portfolio High-Water Mark Profit Guard ────────────────────────────────────
 # If session P&L peaks above $200 and then drops more than $300 from that peak,
@@ -6472,11 +6521,17 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool):
                   f"fill=${fill_price:.2f} | stop=${stop_px} | target=${target_px} "
                   f"| oco_id={oco_resp.get('id','?')[:8]}")
 
-            # Store fill price so breakeven stop monitor can reference entry
+            # Store fill price + increment daily trade count
             with _alp_lock:
                 if sym in _alp_last_traded:
                     _alp_last_traded[sym]["fill"] = fill_price
                 _alp_breakeven_set.discard(sym)   # reset breakeven flag for new trade
+                today_str2 = _get_et_now().date().isoformat()
+                prev = _alp_daily_trade_count.get(sym, [today_str2, 0])
+                if prev[0] != today_str2:
+                    prev = [today_str2, 0]
+                _alp_daily_trade_count[sym] = [today_str2, prev[1] + 1]
+            _save_alp_state()
 
             # ── 90-second conviction check ────────────────────────────────────
             # Fires in background after 90s. If Alpha Engine has reversed or
@@ -6696,6 +6751,32 @@ def _alp_time_exit_loop():
             positions = r.json()
             now_ts = time.time()
 
+            # ── Bracket Stop Detection ──────────────────────────────────────
+            # When Alpaca's OCO bracket fires a stop, the server never calls
+            # _alp_close_position, so loss_cooldown is never set — same symbol
+            # can re-enter immediately. Fix: compare current positions to
+            # previous cycle; any sym that vanished with negative P&L → cooldown.
+            current_syms = {p["symbol"] for p in positions}
+            for _gone_sym, _gone_info in list(_alp_time_exit_prev_positions.items()):
+                if _gone_sym not in current_syms:
+                    if _gone_info.get("pnl_pct", 0) < 0:
+                        with _alp_lock:
+                            _alp_loss_cooldown[_gone_sym] = now_ts
+                        _save_alp_state()
+                        print(f"[BracketStop] ❄️  {_gone_sym} bracket stop detected "
+                              f"(was {_gone_info.get('pnl_pct',0):.2f}%) — "
+                              f"{_ALP_LOSS_COOLDOWN_MINS}m cooldown set")
+                    else:
+                        with _alp_lock:
+                            _alp_last_traded.pop(_gone_sym, None)
+                        _save_alp_state()
+            # Update tracker for next cycle
+            _alp_time_exit_prev_positions.clear()
+            for _p in positions:
+                _alp_time_exit_prev_positions[_p["symbol"]] = {
+                    "pnl_pct": float(_p.get("unrealized_plpc", 0)) * 100
+                }
+
             # ── Portfolio High-Water Mark Profit Guard ──────────────────────
             # Track session equity so we can detect "gave back all gains" days.
             # On first loop run, snapshot the starting equity as baseline.
@@ -6842,6 +6923,7 @@ def _alp_time_exit_loop():
                         _alp_last_traded.pop(sym, None)
                         _alp_breakeven_set.discard(sym)
                         _alp_loss_cooldown[sym] = time.time()
+                    _save_alp_state()
                     print(f"[Cooldown] ❄️  {sym} — loss cooldown started ({_ALP_LOSS_COOLDOWN_MINS}m block)")
                 # Case 2: Winner past 20 min — log that we're letting it ride
                 elif is_winner and age_mins >= _ALP_LOSER_EXIT_MINS and age_mins < _ALP_WINNER_MAX_MINS:
@@ -6862,6 +6944,7 @@ def _alp_time_exit_loop():
                         if not is_winner:
                             _alp_loss_cooldown[sym] = time.time()
                             print(f"[Cooldown] ❄️  {sym} — loss cooldown started at hard max ({_ALP_LOSS_COOLDOWN_MINS}m block)")
+                    _save_alp_state()
         except Exception as e:
             print(f"[TimeExit] Loop error: {e}")
 
@@ -7203,9 +7286,21 @@ def _alp_execute_signal(res: dict):
             else:
                 print(f"[Alpaca] {sym} — SKIPPED: dedup ({age_min}m ago, last dir={last_dir}, new dir={direction})")
                 return
+        # ── Daily per-symbol trade cap ─────────────────────────────────────────
+        # Prevents same ticker from being traded more than N times per day.
+        # Root cause of May 12: TECS entered 5x (-$535 on TECS alone).
+        today_str = _get_et_now().date().isoformat()
+        sym_day_entry = _alp_daily_trade_count.get(sym, [today_str, 0])
+        if sym_day_entry[0] != today_str:
+            sym_day_entry = [today_str, 0]  # new day — reset count
+        if sym_day_entry[1] >= _ALP_MAX_TRADES_PER_SYM_DAY:
+            print(f"[DayCap] {sym} — SKIPPED: reached {sym_day_entry[1]}/{_ALP_MAX_TRADES_PER_SYM_DAY} trades today")
+            return
+
         # NOTE: dedup entry is written AFTER successful order (see _alp_place_bracket)
         # Storing tentative here to prevent race, will clear on failure
         _alp_last_traded[sym] = {"dir": direction, "ts": now}
+        _save_alp_state()
 
     # ── Serialized position-check + order placement ───────────────────────────
     # _alp_order_lock ensures only one thread at a time runs the check→place
