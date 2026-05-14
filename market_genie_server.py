@@ -6996,14 +6996,22 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
             # ── 90-second conviction check ────────────────────────────────────
             # Fires in background after 90s. If Alpha Engine has reversed or
             # lost streak by then, exits at market before the stop is hit.
-            _cc = threading.Thread(
-                target=_conviction_check,
-                args=(sym, direction, fill_price, fill_qty),
-                daemon=True,
-                name=f"ConvCheck-{sym}"
-            )
-            _cc.start()
-            print(f"[ConvCheck] {sym} — 90s conviction check armed")
+            # SKIP for QQQ/SPY tape-follow entries: their thesis is "breadth is
+            # BULLISH → hold" not "Kronos is BULL at this exact second." Kronos
+            # oscillates on 1× ETFs within 90s and causes unnecessary whipsaws.
+            # The tight bracket stop (0.5-0.6%) + 20-min TimeExit provide enough
+            # protection without needing the early ConvCheck cut.
+            if sym in _ETF_UNLEVERAGED:
+                print(f"[ConvCheck] {sym} — SKIPPED (tape-follow entry; bracket+TimeExit sufficient)")
+            else:
+                _cc = threading.Thread(
+                    target=_conviction_check,
+                    args=(sym, direction, fill_price, fill_qty),
+                    daemon=True,
+                    name=f"ConvCheck-{sym}"
+                )
+                _cc.start()
+                print(f"[ConvCheck] {sym} — 90s conviction check armed")
             return True
         else:
             # Entry is already filled — position is open but unprotected.
