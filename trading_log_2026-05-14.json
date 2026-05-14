@@ -1,0 +1,32 @@
+[
+  {
+    "timestamp": "2026-05-14T10:40:53.933781+00:00",
+    "runs_at_local": "10:40 UTC",
+    "equity": 94896.31,
+    "day_pnl": 0.0,
+    "cash": 94896.31,
+    "open_positions": [],
+    "completed_trades": [],
+    "trade_stats": {
+      "total": 0,
+      "wins": 0,
+      "losses": 0,
+      "win_rate": 0,
+      "total_pnl": 0,
+      "avg_win": 0,
+      "avg_loss": 0,
+      "stops": 0,
+      "targets": 0,
+      "time_exits": 0,
+      "instant_stops_under_2min": 0
+    },
+    "breadth": {
+      "score": 73.0,
+      "regime": "BULLISH",
+      "bull_conf": 63,
+      "bear_conf": 80,
+      "spy_chg": 0.559,
+      "qqq_chg": 1.056
+    }
+  }
+]

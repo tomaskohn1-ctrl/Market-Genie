@@ -1,0 +1,528 @@
+[
+  {
+    "timestamp": "2026-05-11T14:08:30.400873+00:00",
+    "runs_at_local": "14:08 UTC",
+    "equity": 97382.42,
+    "day_pnl": 0.0,
+    "cash": 97382.42,
+    "open_positions": [],
+    "completed_trades": [],
+    "trade_stats": {
+      "total": 0,
+      "wins": 0,
+      "losses": 0,
+      "win_rate": 0,
+      "total_pnl": 0,
+      "avg_win": 0,
+      "avg_loss": 0,
+      "stops": 0,
+      "targets": 0,
+      "time_exits": 0,
+      "instant_stops_under_2min": 0
+    },
+    "breadth": {
+      "score": 54.0,
+      "regime": "NEUTRAL",
+      "bull_conf": 65,
+      "bear_conf": 65,
+      "spy_chg": 0.167,
+      "qqq_chg": 0.143
+    }
+  },
+  {
+    "timestamp": "2026-05-11T15:08:31.234624+00:00",
+    "runs_at_local": "15:08 UTC",
+    "equity": 97129.68,
+    "day_pnl": -252.74,
+    "cash": 52199.43,
+    "open_positions": [
+      {
+        "sym": "DUST",
+        "side": "long",
+        "qty": "350",
+        "entry_px": 42.758971,
+        "current_px": 42.69,
+        "pnl": -24.13985,
+        "pnl_pct": -0.161
+      },
+      {
+        "sym": "ERY",
+        "side": "long",
+        "qty": "1270",
+        "entry_px": 11.81,
+        "current_px": 11.81,
+        "pnl": 0.0,
+        "pnl_pct": 0.0
+      },
+      {
+        "sym": "LABD",
+        "side": "long",
+        "qty": "1178",
+        "entry_px": 12.73,
+        "current_px": 12.725,
+        "pnl": -5.89,
+        "pnl_pct": -0.039
+      }
+    ],
+    "completed_trades": [
+      {
+        "sym": "LABU",
+        "entry_px": 201.54,
+        "exit_px": 200.63,
+        "qty": 74.0,
+        "pnl": -67.34,
+        "pct": -0.452,
+        "dur_s": 1207,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-11T14:41"
+      },
+      {
+        "sym": "FAS",
+        "entry_px": 130.99,
+        "exit_px": 130.319474,
+        "qty": 114.0,
+        "pnl": -76.44,
+        "pct": -0.512,
+        "dur_s": 1263,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-11T14:42"
+      }
+    ],
+    "trade_stats": {
+      "total": 2,
+      "wins": 0,
+      "losses": 2,
+      "win_rate": 0.0,
+      "total_pnl": -143.78,
+      "avg_win": 0,
+      "avg_loss": -71.89,
+      "stops": 1,
+      "targets": 0,
+      "time_exits": 1,
+      "instant_stops_under_2min": 0
+    },
+    "breadth": {
+      "score": 59.0,
+      "regime": "NEUTRAL",
+      "bull_conf": 65,
+      "bear_conf": 65,
+      "spy_chg": 0.266,
+      "qqq_chg": 0.193
+    }
+  },
+  {
+    "timestamp": "2026-05-11T16:08:31.778465+00:00",
+    "runs_at_local": "16:08 UTC",
+    "equity": 97356.09,
+    "day_pnl": -26.33,
+    "cash": 97356.09,
+    "open_positions": [],
+    "completed_trades": [
+      {
+        "sym": "LABU",
+        "entry_px": 201.54,
+        "exit_px": 200.63,
+        "qty": 74.0,
+        "pnl": -67.34,
+        "pct": -0.452,
+        "dur_s": 1207,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-11T14:41"
+      },
+      {
+        "sym": "FAS",
+        "entry_px": 130.99,
+        "exit_px": 130.319474,
+        "qty": 114.0,
+        "pnl": -76.44,
+        "pct": -0.512,
+        "dur_s": 1263,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-11T14:42"
+      },
+      {
+        "sym": "LABD",
+        "entry_px": 12.73,
+        "exit_px": 13.11,
+        "qty": 1178.0,
+        "pnl": 447.64,
+        "pct": 2.985,
+        "dur_s": 2162,
+        "exit_type": "TARGET",
+        "entry_ts": "2026-05-11T15:06"
+      },
+      {
+        "sym": "DUST",
+        "entry_px": 42.758971,
+        "exit_px": 42.53,
+        "qty": 350.0,
+        "pnl": -80.14,
+        "pct": -0.535,
+        "dur_s": 1741,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-11T14:54"
+      },
+      {
+        "sym": "ERY",
+        "entry_px": 11.81,
+        "exit_px": 11.79,
+        "qty": 1270.0,
+        "pnl": -25.4,
+        "pct": -0.169,
+        "dur_s": 1499,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-11T14:58"
+      },
+      {
+        "sym": "FNGD",
+        "entry_px": 36.88,
+        "exit_px": 36.65,
+        "qty": 406.0,
+        "pnl": -93.38,
+        "pct": -0.624,
+        "dur_s": 1211,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-11T15:21"
+      },
+      {
+        "sym": "UDOW",
+        "entry_px": 60.878618,
+        "exit_px": 60.75,
+        "qty": 246.0,
+        "pnl": -31.64,
+        "pct": -0.211,
+        "dur_s": 1618,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-11T15:22"
+      },
+      {
+        "sym": "FAS",
+        "entry_px": 129.62,
+        "exit_px": 129.44,
+        "qty": 115.0,
+        "pnl": -20.7,
+        "pct": -0.139,
+        "dur_s": 1576,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-11T15:25"
+      }
+    ],
+    "trade_stats": {
+      "total": 8,
+      "wins": 1,
+      "losses": 7,
+      "win_rate": 12.5,
+      "total_pnl": 52.6,
+      "avg_win": 447.64,
+      "avg_loss": -56.43,
+      "stops": 3,
+      "targets": 1,
+      "time_exits": 4,
+      "instant_stops_under_2min": 0
+    },
+    "breadth": {
+      "score": 62.0,
+      "regime": "NEUTRAL",
+      "bull_conf": 65,
+      "bear_conf": 65,
+      "spy_chg": 0.343,
+      "qqq_chg": 0.451
+    }
+  },
+  {
+    "timestamp": "2026-05-11T17:08:31.429124+00:00",
+    "runs_at_local": "17:08 UTC",
+    "equity": 97356.09,
+    "day_pnl": -26.33,
+    "cash": 97356.09,
+    "open_positions": [],
+    "completed_trades": [
+      {
+        "sym": "LABU",
+        "entry_px": 201.54,
+        "exit_px": 200.63,
+        "qty": 74.0,
+        "pnl": -67.34,
+        "pct": -0.452,
+        "dur_s": 1207,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-11T14:41"
+      },
+      {
+        "sym": "FAS",
+        "entry_px": 130.99,
+        "exit_px": 130.319474,
+        "qty": 114.0,
+        "pnl": -76.44,
+        "pct": -0.512,
+        "dur_s": 1263,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-11T14:42"
+      },
+      {
+        "sym": "LABD",
+        "entry_px": 12.73,
+        "exit_px": 13.11,
+        "qty": 1178.0,
+        "pnl": 447.64,
+        "pct": 2.985,
+        "dur_s": 2162,
+        "exit_type": "TARGET",
+        "entry_ts": "2026-05-11T15:06"
+      },
+      {
+        "sym": "DUST",
+        "entry_px": 42.758971,
+        "exit_px": 42.53,
+        "qty": 350.0,
+        "pnl": -80.14,
+        "pct": -0.535,
+        "dur_s": 1741,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-11T14:54"
+      },
+      {
+        "sym": "ERY",
+        "entry_px": 11.81,
+        "exit_px": 11.79,
+        "qty": 1270.0,
+        "pnl": -25.4,
+        "pct": -0.169,
+        "dur_s": 1499,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-11T14:58"
+      },
+      {
+        "sym": "FNGD",
+        "entry_px": 36.88,
+        "exit_px": 36.65,
+        "qty": 406.0,
+        "pnl": -93.38,
+        "pct": -0.624,
+        "dur_s": 1211,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-11T15:21"
+      },
+      {
+        "sym": "UDOW",
+        "entry_px": 60.878618,
+        "exit_px": 60.75,
+        "qty": 246.0,
+        "pnl": -31.64,
+        "pct": -0.211,
+        "dur_s": 1618,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-11T15:22"
+      },
+      {
+        "sym": "FAS",
+        "entry_px": 129.62,
+        "exit_px": 129.44,
+        "qty": 115.0,
+        "pnl": -20.7,
+        "pct": -0.139,
+        "dur_s": 1576,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-11T15:25"
+      }
+    ],
+    "trade_stats": {
+      "total": 8,
+      "wins": 1,
+      "losses": 7,
+      "win_rate": 12.5,
+      "total_pnl": 52.6,
+      "avg_win": 447.64,
+      "avg_loss": -56.43,
+      "stops": 3,
+      "targets": 1,
+      "time_exits": 4,
+      "instant_stops_under_2min": 0
+    },
+    "breadth": {
+      "score": 62.0,
+      "regime": "NEUTRAL",
+      "bull_conf": 65,
+      "bear_conf": 65,
+      "spy_chg": 0.251,
+      "qqq_chg": 0.246
+    }
+  },
+  {
+    "timestamp": "2026-05-11T18:08:40.371818+00:00",
+    "runs_at_local": "18:08 UTC",
+    "equity": 97356.09,
+    "day_pnl": -26.33,
+    "cash": 97356.09,
+    "open_positions": [],
+    "completed_trades": [
+      {
+        "sym": "LABU",
+        "entry_px": 201.54,
+        "exit_px": 200.63,
+        "qty": 74.0,
+        "pnl": -67.34,
+        "pct": -0.452,
+        "dur_s": 1207,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-11T14:41"
+      },
+      {
+        "sym": "FAS",
+        "entry_px": 130.99,
+        "exit_px": 130.319474,
+        "qty": 114.0,
+        "pnl": -76.44,
+        "pct": -0.512,
+        "dur_s": 1263,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-11T14:42"
+      },
+      {
+        "sym": "LABD",
+        "entry_px": 12.73,
+        "exit_px": 13.11,
+        "qty": 1178.0,
+        "pnl": 447.64,
+        "pct": 2.985,
+        "dur_s": 2162,
+        "exit_type": "TARGET",
+        "entry_ts": "2026-05-11T15:06"
+      },
+      {
+        "sym": "DUST",
+        "entry_px": 42.758971,
+        "exit_px": 42.53,
+        "qty": 350.0,
+        "pnl": -80.14,
+        "pct": -0.535,
+        "dur_s": 1741,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-11T14:54"
+      },
+      {
+        "sym": "ERY",
+        "entry_px": 11.81,
+        "exit_px": 11.79,
+        "qty": 1270.0,
+        "pnl": -25.4,
+        "pct": -0.169,
+        "dur_s": 1499,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-11T14:58"
+      },
+      {
+        "sym": "FNGD",
+        "entry_px": 36.88,
+        "exit_px": 36.65,
+        "qty": 406.0,
+        "pnl": -93.38,
+        "pct": -0.624,
+        "dur_s": 1211,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-11T15:21"
+      },
+      {
+        "sym": "UDOW",
+        "entry_px": 60.878618,
+        "exit_px": 60.75,
+        "qty": 246.0,
+        "pnl": -31.64,
+        "pct": -0.211,
+        "dur_s": 1618,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-11T15:22"
+      },
+      {
+        "sym": "FAS",
+        "entry_px": 129.62,
+        "exit_px": 129.44,
+        "qty": 115.0,
+        "pnl": -20.7,
+        "pct": -0.139,
+        "dur_s": 1576,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-11T15:25"
+      }
+    ],
+    "trade_stats": {
+      "total": 8,
+      "wins": 1,
+      "losses": 7,
+      "win_rate": 12.5,
+      "total_pnl": 52.6,
+      "avg_win": 447.64,
+      "avg_loss": -56.43,
+      "stops": 3,
+      "targets": 1,
+      "time_exits": 4,
+      "instant_stops_under_2min": 0
+    },
+    "breadth": {
+      "score": 62.0,
+      "regime": "NEUTRAL",
+      "bull_conf": 65,
+      "bear_conf": 65,
+      "spy_chg": 0.403,
+      "qqq_chg": 0.432
+    }
+  },
+  {
+    "timestamp": "2026-05-12T01:26:58.671973+00:00",
+    "runs_at_local": "01:26 UTC",
+    "equity": 96632.71,
+    "day_pnl": -749.71,
+    "cash": 63034.41,
+    "open_positions": [
+      {
+        "sym": "ERX",
+        "side": "long",
+        "qty": "170",
+        "entry_px": 88.16,
+        "current_px": 86.01,
+        "pnl": -365.5,
+        "pnl_pct": -2.439
+      },
+      {
+        "sym": "FNGU",
+        "side": "long",
+        "qty": "140",
+        "entry_px": 29.39,
+        "current_px": 28.92,
+        "pnl": -65.8,
+        "pnl_pct": -1.599
+      },
+      {
+        "sym": "UVXY",
+        "side": "long",
+        "qty": "404",
+        "entry_px": 37.04,
+        "current_px": 36.95,
+        "pnl": -36.36,
+        "pnl_pct": -0.243
+      }
+    ],
+    "completed_trades": [],
+    "trade_stats": {
+      "total": 0,
+      "wins": 0,
+      "losses": 0,
+      "win_rate": 0,
+      "total_pnl": 0,
+      "avg_win": 0,
+      "avg_loss": 0,
+      "stops": 0,
+      "targets": 0,
+      "time_exits": 0,
+      "instant_stops_under_2min": 0
+    },
+    "breadth": {
+      "score": 61.0,
+      "regime": "NEUTRAL",
+      "bull_conf": 65,
+      "bear_conf": 65,
+      "spy_chg": 0.228,
+      "qqq_chg": 0.29
+    }
+  }
+]
