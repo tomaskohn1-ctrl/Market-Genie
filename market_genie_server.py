@@ -4382,11 +4382,17 @@ def kronos_scanner():
 _ETF_BULL_UNIVERSE = frozenset([
     "TQQQ",   # 3× Nasdaq-100 — primary bull instrument (most liquid 3× ETF)
     "SPXL",   # 3× S&P 500    — secondary bull instrument (broader market confirmation)
+    "QQQ",    # 1× Nasdaq-100 — tape-follow bull; lower volatility, higher hit rate on trending days
+    "SPY",    # 1× S&P 500    — tape-follow bull; broadest market exposure, best for BULLISH regime days
 ])
 _ETF_BEAR_UNIVERSE = frozenset([
     "SQQQ",   # 3× inverse Nasdaq-100 — primary bear instrument
     "SPXS",   # 3× inverse S&P 500    — secondary bear instrument
 ])
+# ── Non-leveraged (1×) subset — different stop/target calibration ─────────────
+# QQQ and SPY move ~1/3 as much as their 3× counterparts per underlying tick.
+# They trade with-the-tape on BULLISH days; bear signals are blocked (ETFDir gate).
+_ETF_UNLEVERAGED = frozenset(["QQQ", "SPY"])
 
 _PREDICT_WATCHLIST = sorted(_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
 
@@ -4396,9 +4402,9 @@ _PREDICT_WATCHLIST = sorted(_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
 # zero net diversification (e.g. TECL short + TECS long = 2× bearish tech).
 # Gate in _alp_execute_signal blocks entry if the paired ETF is already open.
 _ETF_PAIRS: dict = {
-    "TQQQ": "SQQQ",  "SQQQ": "TQQQ",   # Nasdaq-100 pair
-    "SPXL": "SPXS",  "SPXS": "SPXL",   # S&P 500 pair
-    # All sector pairs removed — focused 4-ticker strategy (May 2026)
+    "TQQQ": "SQQQ",  "SQQQ": "TQQQ",   # Nasdaq-100 3× pair
+    "SPXL": "SPXS",  "SPXS": "SPXL",   # S&P 500 3× pair
+    "QQQ":  "SQQQ",  "SPY":  "SPXS",   # 1× ETFs paired to their inverse 3× counterparts
 }
 
 _predict_results  = {}      # { sym: result_dict }  — accumulated across all buckets
@@ -4848,15 +4854,24 @@ def _check_tape_follow_entries():
         return
     _tape_follow_last_check = now
 
-    # Require strongly BULLISH regime (score ≥ 80, not just > 65)
+    # Regime thresholds differ by instrument leverage:
+    #   QQQ/SPY (1×): fire when breadth ≥ 70 (standard BULLISH regime)
+    #   TQQQ/SPXL (3×): require ≥ 80 (stronger confirmation before using leverage)
     with _breadth_lock:
         bs = _breadth_state["score"]
         br = _breadth_state["regime"]
-    if bs < 80:
-        return   # tape not strong enough — don't force entries
+    if bs < 70:
+        return   # tape not BULLISH at all — no tape-follow entries
 
-    for sym in ("TQQQ", "SPXL"):
+    for sym in ("QQQ", "SPY", "TQQQ", "SPXL"):
         try:
+            # Per-instrument breadth threshold:
+            # 1× ETFs (QQQ/SPY) enter at breadth ≥ 70 — standard BULLISH regime
+            # 3× ETFs (TQQQ/SPXL) require breadth ≥ 80 — need stronger tape for leverage
+            _min_bs = 70 if sym in _ETF_UNLEVERAGED else 80
+            if bs < _min_bs:
+                continue  # not enough tape strength for this instrument's leverage level
+
             # Skip if already in dedup window (trade fired recently)
             with _alp_lock:
                 last_t = _alp_last_traded.get(sym, {})
@@ -4910,17 +4925,17 @@ def _check_tape_follow_entries():
 
             # ── Confidence formula ───────────────────────────────────────────
             # Base: 76 (above min gate, below base trade threshold)
-            # +breadth premium: each point above 80 adds 0.4 (max +8 at 100)
+            # +breadth premium over the instrument's min threshold
             # +volume premium: vol_ratio above 1.0 adds up to 4 pts
             # Cap at 88 — tape-follow entries are not as high-conviction as
             # full model+cross-pair agreement signals
             conf = min(88.0,
                        76.0
-                       + (bs - 80) * 0.4          # breadth premium
+                       + (bs - _min_bs) * 0.4       # breadth premium above floor
                        + min(4.0, (vol_ratio - 1.0) * 8)  # volume premium
                        )
-
-            print(f"[TapeFollow] ✅ {sym} BULL — breadth={bs:.0f} regime={br} "
+            _lev_tag = "1×" if sym in _ETF_UNLEVERAGED else "3×"
+            print(f"[TapeFollow] ✅ {sym} BULL ({_lev_tag}) — breadth={bs:.0f} regime={br} "
                   f"price=${price:.2f} VWAP=${vwap:.2f} "
                   f"EMA5={ema5:.2f}>EMA13={ema13:.2f} RSI={rsi:.1f} "
                   f"vol_ratio={vol_ratio:.2f} → conf={conf:.1f}")
@@ -5699,7 +5714,11 @@ _megacap_lock = threading.Lock()
 # Tracks recent signals so that when TQQQ + SPXL (or SQQQ + SPXS) both fire
 # the same direction within _CROSS_PAIR_WINDOW seconds, the second signal gets
 # a confidence boost — "the whole tape agrees, not just one instrument."
-_CROSS_PAIR_MAP    = {"TQQQ": "SPXL", "SPXL": "TQQQ", "SQQQ": "SPXS", "SPXS": "SQQQ"}
+_CROSS_PAIR_MAP    = {
+    "TQQQ": "SPXL", "SPXL": "TQQQ",   # 3× Nasdaq ↔ 3× S&P bull pair
+    "SQQQ": "SPXS", "SPXS": "SQQQ",   # 3× inverse pair
+    "QQQ":  "SPY",  "SPY":  "QQQ",    # 1× Nasdaq ↔ 1× S&P bull pair
+}
 _CROSS_PAIR_WINDOW = int(os.getenv("CROSS_PAIR_WINDOW_SECS", "300"))   # 5 min default
 _CROSS_PAIR_BOOST  = int(os.getenv("CROSS_PAIR_BOOST_PTS",   "5"))     # +5 conf pts
 _cross_pair_signals: dict = {}   # {sym: {"dir": str, "conf": float, "at": float}}
@@ -6105,6 +6124,16 @@ _ALP_ETF_TARGET_PCT   = float(os.getenv("ALPACA_ETF_TARGET_PCT", "0.020"))  # 2.
 # SPXL/SPXS track SPX, which is less volatile — standard 1.5% stop is fine.
 _TQQQ_PAIR_STOP_PCT = float(os.getenv("TQQQ_PAIR_STOP_PCT", "0.017"))  # 1.7% — wider for Nasdaq volatility
 _SPXL_PAIR_STOP_PCT = float(os.getenv("SPXL_PAIR_STOP_PCT", "0.015"))  # 1.5% — standard for S&P 500
+# QQQ/SPY are 1× (non-leveraged) — move ~1/3 as much as TQQQ/SPXL per tick.
+# Stop and target scaled down proportionally to maintain similar R:R ratios.
+# QQQ: 0.6% stop / 0.8% target → R:R 1.33:1, break-even WR 43%
+# SPY: 0.5% stop / 0.7% target → R:R 1.40:1, break-even WR 42%
+# Smaller absolute $ per trade ($120-160 win on $20K) but far higher hit rate
+# on with-tape entries — these are the "balance the portfolio" instruments.
+_QQQ_STOP_PCT  = float(os.getenv("QQQ_STOP_PCT",  "0.006"))  # 0.6%
+_QQQ_TARGET_PCT= float(os.getenv("QQQ_TARGET_PCT", "0.008"))  # 0.8%
+_SPY_STOP_PCT  = float(os.getenv("SPY_STOP_PCT",  "0.005"))  # 0.5%
+_SPY_TARGET_PCT= float(os.getenv("SPY_TARGET_PCT", "0.007"))  # 0.7%
 _PAIR_TARGET_PCT      = float(os.getenv("PAIR_TARGET_PCT",      "0.020"))  # 2.0% base target for both pairs
 _PAIR_TARGET_HIGH_PCT = float(os.getenv("PAIR_TARGET_HIGH_PCT", "0.025"))  # 2.5% elevated target for high-conviction signals (eff_conf ≥ 90)
 # Target lowered 3.0% → 2.0% after 92-trade post-mortem: only 6/92 trades hit
@@ -6732,16 +6761,26 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
     # likely to extend.  R:R lifts from 1.18:1 to 1.47:1, lowering break-even
     # WR from 46% to 40%.  Base target (2.0%) stays for lower-confidence entries.
     _pair_target = _PAIR_TARGET_HIGH_PCT if eff_conf >= 90 else _PAIR_TARGET_PCT
-    if sym in ("TQQQ", "SQQQ"):
+    if sym == "QQQ":
+        # 1× Nasdaq — 0.6% stop / 0.8% target; bull-only tape-follow instrument
+        stop_pct   = _QQQ_STOP_PCT
+        target_pct = _QQQ_TARGET_PCT
+        print(f"[Bracket] QQQ 1× Nasdaq — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}% (tape-follow)")
+    elif sym == "SPY":
+        # 1× S&P 500 — 0.5% stop / 0.7% target; bull-only tape-follow instrument
+        stop_pct   = _SPY_STOP_PCT
+        target_pct = _SPY_TARGET_PCT
+        print(f"[Bracket] SPY 1× S&P 500 — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}% (tape-follow)")
+    elif sym in ("TQQQ", "SQQQ"):
         stop_pct   = _TQQQ_PAIR_STOP_PCT
         target_pct = _pair_target
         _conf_tag  = " [HIGH-CONV 2.5%]" if eff_conf >= 90 else ""
-        print(f"[Bracket] {sym} Nasdaq pair — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}%{_conf_tag}")
+        print(f"[Bracket] {sym} Nasdaq 3× pair — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}%{_conf_tag}")
     elif sym in ("SPXL", "SPXS"):
         stop_pct   = _SPXL_PAIR_STOP_PCT
         target_pct = _pair_target
         _conf_tag  = " [HIGH-CONV 2.5%]" if eff_conf >= 90 else ""
-        print(f"[Bracket] {sym} S&P pair — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}%{_conf_tag}")
+        print(f"[Bracket] {sym} S&P 500 3× pair — stop={stop_pct*100:.1f}% target={target_pct*100:.1f}%{_conf_tag}")
     elif _is_lev_etf:
         stop_pct   = _ALP_ETF_STOP_PCT
         target_pct = _ALP_ETF_TARGET_PCT
@@ -7489,7 +7528,12 @@ def _alp_execute_signal(res: dict):
         # will fall. Translate this blocked signal into a cross-pair hint so SQQQ
         # can use TQQQ's bear conviction as confirmation when it fires shortly after.
         # Same for SPXL-bear → SPXS-bull.
-        _inv_mirror = {"TQQQ": "SQQQ", "SPXL": "SPXS"}.get(sym)
+        # QQQ-bear and SPY-bear also translate — a bearish 1× signal is weaker
+        # conviction than a 3× model signal, so use a discounted conf (×0.8).
+        _inv_mirror = {"TQQQ": "SQQQ", "SPXL": "SPXS",
+                       "QQQ":  "SQQQ", "SPY":  "SPXS"}.get(sym)
+        if sym in _ETF_UNLEVERAGED:
+            conf = conf * 0.8   # 1× bear signal carries less conviction than 3×
         if _inv_mirror:
             _now_inv = time.time()
             with _cross_pair_lock:
