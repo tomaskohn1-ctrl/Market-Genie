@@ -5469,7 +5469,7 @@ print("[VIX] Live feed thread started (^VIX polled every 3 min)")
 
 
 # ── NQ / ES Futures Bias Engine ───────────────────────────────────────────────
-# Nasdaq futures (^NQ=F) and S&P futures (^ES=F) trade nearly 24/7.
+# Nasdaq futures (NQ=F) and S&P futures (ES=F) trade nearly 24/7.
 # By the time the market opens at 9:30 AM, futures have already been running
 # for 15+ hours and reflect overnight news, Asia/Europe sessions, and pre-market
 # earnings. This is the single best pre-market directional signal for TQQQ/SPXL.
@@ -5491,26 +5491,28 @@ _futures_lock = threading.Lock()
 
 
 def _futures_poll_loop():
-    """Poll ^NQ=F and ^ES=F every 3 minutes via yfinance fast_info."""
+    """Poll NQ=F and ES=F every 3 minutes via yfinance fast_info.
+    Note: Yahoo Finance futures use NQ=F / ES=F (no ^ prefix).
+    Trend is derived from last_price vs day_open to avoid .history() calls
+    which are unreliable for futures contracts in some yfinance versions.
+    """
     import yfinance as yf
     while True:
         try:
             updates = {}
-            for sym, key in [("^NQ=F", "nq"), ("^ES=F", "es")]:
+            for sym, key in [("NQ=F", "nq"), ("ES=F", "es")]:
                 try:
                     fi   = yf.Ticker(sym).fast_info
                     cur  = float(fi.get("last_price") or fi.get("lastPrice") or 0)
                     prev = float(fi.get("previous_close") or fi.get("previousClose") or 0)
+                    day_open = float(fi.get("open") or fi.get("day_open") or 0)
                     if cur > 0 and prev > 0:
                         chg = (cur - prev) / prev * 100
-                        # 5-min trend from recent history
-                        hist = yf.Ticker(sym).history(period="1d", interval="5m")
+                        # Intra-day trend: last vs open (avoids broken .history() on futures)
                         trend = "flat"
-                        if len(hist) >= 3:
-                            recent = float(hist["Close"].iloc[-1])
-                            older  = float(hist["Close"].iloc[-3])
-                            if recent > older * 1.001:  trend = "rising"
-                            elif recent < older * 0.999: trend = "falling"
+                        if day_open > 0:
+                            if cur > day_open * 1.001:   trend = "rising"
+                            elif cur < day_open * 0.999: trend = "falling"
                         updates[f"{key}_chg"]   = round(chg, 3)
                         updates[f"{key}_trend"]  = trend
                 except Exception as _fe:
