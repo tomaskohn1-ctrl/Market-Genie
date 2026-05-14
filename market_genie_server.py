@@ -7804,15 +7804,36 @@ def _alp_execute_signal(res: dict):
         #           mixed tape means the move is likely stock/sector-specific, not tape-driven.
         #           Lowered from 90: ba=1 already provides strong quality gate on its own.
         # Bypass B: eff_conf ≥ 90 regardless of ba — extreme conviction overrides lack of regime.
-        _neutral_ba_bypass   = (ba == 1 and eff_conf >= 82)
+        # Bypass C: DIRECTIONAL TAPE — breadth score lags price action by 5-10 min.
+        #           If SPY AND QQQ are both clearly negative (≤ -0.2%), a bear ETF
+        #           signal with ba=1 + eff_conf ≥ 68 is valid before breadth drops
+        #           below 35. Symmetrically for bull ETFs when both are positive.
+        #           Threshold -0.2% filters noise (flat/choppy market); -0.2% on both
+        #           benchmarks simultaneously = real directional pressure.
+        with _breadth_lock:
+            _spy_chg = _breadth_state.get("spy_chg", 0.0)
+            _qqq_chg = _breadth_state.get("qqq_chg", 0.0)
+        _tape_bearish = _spy_chg <= -0.2 and _qqq_chg <= -0.2
+        _tape_bullish = _spy_chg >=  0.2 and _qqq_chg >=  0.2
+        _neutral_ba_bypass    = (ba == 1 and eff_conf >= 82)
         _neutral_elite_bypass = eff_conf >= 90
-        if not _neutral_ba_bypass and not _neutral_elite_bypass:
-            print(f"[RegimeGate] {sym} — SKIPPED: NEUTRAL tape (breadth={breadth_score:.0f}), "
-                  f"ETF requires regime or (ba=1 + eff_conf≥82) or eff_conf≥90 "
-                  f"(ba={ba}, eff_conf={eff_conf:.1f})")
+        _neutral_dir_bypass   = (
+            (sym in _ETF_BEAR_UNIVERSE and _tape_bearish and ba == 1 and eff_conf >= 68) or
+            (sym in _ETF_BULL_UNIVERSE and _tape_bullish and ba == 1 and eff_conf >= 68)
+        )
+        if not _neutral_ba_bypass and not _neutral_elite_bypass and not _neutral_dir_bypass:
+            print(f"[RegimeGate] {sym} — SKIPPED: NEUTRAL tape (breadth={breadth_score:.0f}, "
+                  f"SPY={_spy_chg:+.2f}% QQQ={_qqq_chg:+.2f}%), "
+                  f"ETF requires regime or (ba=1+eff_conf≥82) or eff_conf≥90 or "
+                  f"(directional tape ba=1+eff_conf≥68) — got ba={ba} eff_conf={eff_conf:.1f}")
             return
-        _bypass_reason = f"ba=1 + eff_conf={eff_conf:.1f}≥82" if _neutral_ba_bypass else f"ELITE eff_conf={eff_conf:.1f}≥90"
-        print(f"[RegimeGate] {sym} — NEUTRAL tape bypassed: {_bypass_reason} ✓")
+        if _neutral_dir_bypass and not _neutral_ba_bypass and not _neutral_elite_bypass:
+            _dir_tag = f"BEARISH SPY={_spy_chg:+.2f}% QQQ={_qqq_chg:+.2f}%" if _tape_bearish else f"BULLISH SPY={_spy_chg:+.2f}% QQQ={_qqq_chg:+.2f}%"
+            print(f"[RegimeGate] {sym} — NEUTRAL bypassed: directional tape ({_dir_tag}) "
+                  f"ba=1 + eff_conf={eff_conf:.1f}≥68 ✓")
+        else:
+            _bypass_reason = f"ba=1 + eff_conf={eff_conf:.1f}≥82" if _neutral_ba_bypass else f"ELITE eff_conf={eff_conf:.1f}≥90"
+            print(f"[RegimeGate] {sym} — NEUTRAL tape bypassed: {_bypass_reason} ✓")
     if breadth_score > 65 and sym in _ETF_BEAR_UNIVERSE:
         # Elite bypass: both models agree AND eff_conf ≥ 95 → models are very strongly
         # diverging from breadth (leading indicator of regime flip). Raised 85→95 because
