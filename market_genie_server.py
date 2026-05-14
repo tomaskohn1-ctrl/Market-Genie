@@ -7946,12 +7946,17 @@ def _alp_execute_signal(res: dict):
             (direction == "bear" and price < _tc_vwap_v)
         )
         _tc_vol_r  = tech.get("vol_ratio", 0.0) if tech else 0.0
-        _tc_vol    = _tc_vol_r >= 1.3
+        # 1× tape-follow ETFs (QQQ/SPY/IWM) have structurally lower midday volume
+        # (0.7-0.9× their morning baseline every day — not weakness). VWAP + regime
+        # + eff_conf≥78 is sufficient quality signal; vol_ratio check omitted for
+        # unleveraged instruments the same way it's exempted in the TapeFollow engine.
+        _tc_vol    = _tc_vol_r >= 1.3 if sym not in _ETF_UNLEVERAGED else True
         _tc_regime = ((direction == "bull" and breadth_score > 55) or
                       (direction == "bear" and breadth_score < 45))
         if _tc_conf and _tc_vwap and _tc_vol and _tc_regime:
+            _vol_note = f"vol={_tc_vol_r:.1f}× (1× exempt)" if sym in _ETF_UNLEVERAGED else f"vol={_tc_vol_r:.1f}×≥1.3"
             print(f"[BothAgree] {sym} — ba=0 TECHNICAL CONSENSUS bypass ✓ "
-                  f"eff_conf={eff_conf:.1f}≥78, VWAP✓, vol={_tc_vol_r:.1f}×≥1.3, "
+                  f"eff_conf={eff_conf:.1f}≥78, VWAP✓, {_vol_note}, "
                   f"regime✓ (breadth={breadth_score:.0f})")
         else:
             _fails = []
