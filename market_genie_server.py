@@ -6166,6 +6166,7 @@ _alp_lock         = threading.Lock()
 _alp_order_lock   = threading.Lock()   # serializes position-check → place to prevent over-filling
 _alp_breakeven_set = set()   # syms whose stop has been moved to trailing stop — prevents double-moves
 _alp_loss_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last losing exit per symbol
+_alp_bear_session_locked = set()  # bear ETFs locked for the session after a TimeExit loss on a BULLISH tape
 _alp_daily_trade_count = {}  # { sym: [date_str, count] } — prevent same-ticker churn (TECS 5x on May 12)
 _ALP_MAX_TRADES_PER_SYM_DAY = int(os.getenv("ALPACA_MAX_TRADES_PER_SYM_DAY", "3"))  # max entries same sym/day — raised 2→3: focused 4-ticker universe means only 1-2 symbols fire per day; 2 cap was cutting profitable continuation setups when first trade exited early
 _alp_time_exit_prev_positions = {}  # { sym: {pnl_pct: float} } — previous cycle snapshot for bracket-stop detection
@@ -7412,6 +7413,14 @@ def _alp_time_exit_loop():
                         _alp_loss_cooldown[sym] = time.time()
                     _save_alp_state()
                     print(f"[Cooldown] ❄️  {sym} — loss cooldown started ({_ALP_LOSS_COOLDOWN_MINS}m block)")
+                    # Session-lock bear ETFs that lose while the tape is BULLISH.
+                    # If SQQQ/SPXS can't make money on a bullish day, don't keep trying.
+                    # Lock lifts automatically when breadth drops to NEUTRAL/BEARISH.
+                    _bs_now = _breadth_state.get("score", 50)
+                    if sym in _ETF_BEAR_UNIVERSE and _bs_now > 65:
+                        _alp_bear_session_locked.add(sym)
+                        print(f"[SessionLock] 🔒 {sym} — session-locked after BULLISH-tape loss "
+                              f"(breadth={_bs_now:.0f}). Unlocks when regime flips.")
                 # Case 2: Winner past 20 min — log that we're letting it ride
                 elif is_winner and age_mins >= _ALP_LOSER_EXIT_MINS and age_mins < _ALP_WINNER_MAX_MINS:
                     remaining = _ALP_WINNER_MAX_MINS - age_mins
@@ -7510,6 +7519,18 @@ def _alp_execute_signal(res: dict):
             print(f"[Alpaca] {sym} — SKIPPED: loss cooldown active ({mins_left}m remaining)")
             return
 
+    # Bear ETF session lock — if SQQQ/SPXS lost on a BULLISH tape, block for the
+    # rest of the session. Re-evaluates every signal: auto-unlocks if regime flips.
+    if sym in _alp_bear_session_locked:
+        _bs_check = _breadth_state.get("score", 50)
+        if _bs_check > 65:
+            print(f"[SessionLock] {sym} — SKIPPED: session-locked (lost on BULLISH tape, "
+                  f"breadth={_bs_check:.0f} still BULLISH)")
+            return
+        else:
+            _alp_bear_session_locked.discard(sym)
+            print(f"[SessionLock] {sym} — unlocked: regime flipped (breadth={_bs_check:.0f})")
+
     direction = (res.get("consensus_dir") or res.get("direction") or "").lower()
     conf      = res.get("confidence") or res.get("conf") or 0
     streak    = res.get("streak_count", 1)
@@ -7599,17 +7620,22 @@ def _alp_execute_signal(res: dict):
         if time.time() - _fut_updated < 600:
             _fut_ref = _nq if sym in ("TQQQ", "SQQQ") else _es
             _fut_label = "NQ" if sym in ("TQQQ", "SQQQ") else "ES"
-            if _fut_ref > 1.0 and direction == "bull":
+            # BUG FIX: For inverse ETFs (SQQQ/SPXS), direction="bull" means "buy the
+            # inverse ETF" which is BEARISH on the underlying (NQ/ES going DOWN).
+            # NQ rising should PENALIZE a SQQQ-bull signal, not boost it.
+            # Compute the implied market direction before comparing to futures.
+            _fut_mkt_dir = ("bear" if direction == "bull" else "bull") if sym in ("SQQQ", "SPXS") else direction
+            if _fut_ref > 1.0 and _fut_mkt_dir == "bull":
                 _fut_adj_total += 8
-            elif _fut_ref > 0.5 and direction == "bull":
+            elif _fut_ref > 0.5 and _fut_mkt_dir == "bull":
                 _fut_adj_total += 6
-            elif _fut_ref < -1.0 and direction == "bear":
+            elif _fut_ref < -1.0 and _fut_mkt_dir == "bear":
                 _fut_adj_total += 8
-            elif _fut_ref < -0.5 and direction == "bear":
+            elif _fut_ref < -0.5 and _fut_mkt_dir == "bear":
                 _fut_adj_total += 6
-            elif _fut_ref < -0.5 and direction == "bull":
+            elif _fut_ref < -0.5 and _fut_mkt_dir == "bull":
                 _fut_adj_total -= 6
-            elif _fut_ref > 0.5 and direction == "bear":
+            elif _fut_ref > 0.5 and _fut_mkt_dir == "bear":
                 _fut_adj_total -= 6
             if _fut_adj_total != 0:
                 eff_conf += _fut_adj_total
@@ -7628,19 +7654,22 @@ def _alp_execute_signal(res: dict):
         _spy_leads = _megacap_state.get("spy_leads", False)
         _mc_updated = _megacap_state.get("updated_at", 0)
     if time.time() - _mc_updated < 600:
+        # BUG FIX: Same inversion as futures — SQQQ/SPXS direction="bull" is bearish
+        # on underlying mega-caps. Mega-caps up should PENALIZE SQQQ-bull, not boost.
+        _mc_mkt_dir = ("bear" if direction == "bull" else "bull") if sym in ("SQQQ", "SPXS") else direction
         if sym in ("TQQQ", "SQQQ"):
-            if _mc_score > 1.0 and direction == "bull":
+            if _mc_score > 1.0 and _mc_mkt_dir == "bull":
                 _mc_adj_total += 8
-            elif _mc_score > 0.5 and direction == "bull":
+            elif _mc_score > 0.5 and _mc_mkt_dir == "bull":
                 _mc_adj_total += 5
-            elif _mc_score < -1.0 and direction == "bear":
+            elif _mc_score < -1.0 and _mc_mkt_dir == "bear":
                 _mc_adj_total += 8
-            elif _mc_score < -0.5 and direction == "bear":
+            elif _mc_score < -0.5 and _mc_mkt_dir == "bear":
                 _mc_adj_total += 5
         elif sym in ("SPXL", "SPXS"):
-            if _mc_score > 0.5 and direction == "bull":
+            if _mc_score > 0.5 and _mc_mkt_dir == "bull":
                 _mc_adj_total += 3
-            elif _mc_score < -0.5 and direction == "bear":
+            elif _mc_score < -0.5 and _mc_mkt_dir == "bear":
                 _mc_adj_total += 3
         # QQQ/SPY relative-strength pair preference
         if _qqq_leads and sym == "TQQQ":
@@ -7742,14 +7771,16 @@ def _alp_execute_signal(res: dict):
         _bypass_reason = f"ba=1 + eff_conf={eff_conf:.1f}≥82" if _neutral_ba_bypass else f"ELITE eff_conf={eff_conf:.1f}≥90"
         print(f"[RegimeGate] {sym} — NEUTRAL tape bypassed: {_bypass_reason} ✓")
     if breadth_score > 65 and sym in _ETF_BEAR_UNIVERSE:
-        # Elite bypass: both models agree AND eff_conf ≥ 85 → models are strongly
-        # diverging from breadth (often a leading indicator of regime flip).
-        if ba == 1 and eff_conf >= 85:
-            print(f"[RegimeGate] {sym} — BULLISH tape bypass: ba=1 + eff_conf={eff_conf:.1f}≥85 "
+        # Elite bypass: both models agree AND eff_conf ≥ 95 → models are very strongly
+        # diverging from breadth (leading indicator of regime flip). Raised 85→95 because
+        # bogus futures/megacap boosts were inflating eff_conf for inverse ETFs on bullish
+        # days — now that those are fixed, 95 is a genuine high-conviction threshold.
+        if ba == 1 and eff_conf >= 95:
+            print(f"[RegimeGate] {sym} — BULLISH tape bypass: ba=1 + eff_conf={eff_conf:.1f}≥95 "
                   f"(models diverge from breadth — possible regime flip) ✓")
         else:
             print(f"[RegimeGate] {sym} — SKIPPED: BULLISH tape (breadth={breadth_score:.0f}), "
-                  f"bear ETF not allowed (needs ba=1 + eff_conf≥85 to override, "
+                  f"bear ETF not allowed (needs ba=1 + eff_conf≥95 to override, "
                   f"got ba={ba} eff_conf={eff_conf:.1f})")
             return
     if breadth_score < 35 and sym in _ETF_BULL_UNIVERSE:
