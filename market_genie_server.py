@@ -4918,7 +4918,11 @@ def _check_tape_follow_entries():
                 print(f"[TapeFollow] {sym} — SKIP: RSI {rsi:.1f} outside 40-75 "
                       f"({'overbought' if rsi > 75 else 'oversold'})")
                 continue
-            if vol_ratio < 1.1:
+            # vol_ratio gate: skip 3× leveraged ETFs if volume is weak (noisy signals).
+            # QQQ/SPY are exempt — midday volume on index ETFs is structurally below
+            # their morning average every day. VWAP + EMA alignment is sufficient
+            # confirmation for 1× instruments; adding vol_ratio blocks all afternoon entries.
+            if sym not in _ETF_UNLEVERAGED and vol_ratio < 1.1:
                 print(f"[TapeFollow] {sym} — SKIP: vol_ratio {vol_ratio:.2f} < 1.1 "
                       f"(below-average participation)")
                 continue
