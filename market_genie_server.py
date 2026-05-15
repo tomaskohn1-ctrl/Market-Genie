@@ -7493,11 +7493,27 @@ def _alp_execute_signal(res: dict):
     # _us_market_open() allows from 9:30 but the first 15 min have wide spreads,
     # erratic order flow, and price discovery noise. _safe_to_enter() enforces
     # the 9:45 floor. Previously this function existed but was never called here.
+    #
+    # EARLY BEAR BYPASS (9:35–9:44 AM): On confirmed gap-down opens where NQ
+    # futures are < -0.7% (or ES < -0.5%), bear ETF gap-down continuation is one
+    # of the highest-probability setups of the day. Allow SQQQ/SPXS/SOXS entry
+    # from 9:35 AM on these days. All downstream quality gates (BothAgree, ETFQuality,
+    # RegimeGate, spread) still apply — this only opens the time window.
     if not _safe_to_enter():
         et_now_chk = _get_et_now()
-        print(f"[Alpaca] {sym} — SKIPPED: outside safe entry window "
-              f"(current ET={et_now_chk.strftime('%H:%M')}, window=09:45-15:30)")
-        return
+        _early_bear_ok = False
+        if sym in ("SQQQ", "SPXS", "SOXS") and dtime(9, 35) <= et_now_chk.time() < dtime(9, 45):
+            with _futures_lock:
+                _nq_early = _futures_state.get("nq_chg", 0.0)
+                _es_early = _futures_state.get("es_chg", 0.0)
+            if _nq_early < -0.7 or _es_early < -0.5:
+                _early_bear_ok = True
+                print(f"[EarlyBear] {sym} — gap-down bypass: NQ={_nq_early:+.2f}% ES={_es_early:+.2f}% "
+                      f"at {et_now_chk.strftime('%H:%M')} ET — all quality gates still active")
+        if not _early_bear_ok:
+            print(f"[Alpaca] {sym} — SKIPPED: outside safe entry window "
+                  f"(current ET={et_now_chk.strftime('%H:%M')}, window=09:45-15:30)")
+            return
     # Hard entry cutoff at 15:32 ET — backstop in case _safe_to_enter() race.
     # _safe_to_enter() already blocks after 15:30; this catches any edge case
     # where the signal fires within the same second as the cutoff.
