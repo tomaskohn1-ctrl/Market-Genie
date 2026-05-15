@@ -4865,17 +4865,29 @@ def _check_tape_follow_entries():
     with _breadth_lock:
         bs = _breadth_state["score"]
         br = _breadth_state["regime"]
-    if bs < 70:
+        _tf_spy_chg = _breadth_state.get("spy_chg", 0.0)
+        _tf_qqq_chg = _breadth_state.get("qqq_chg", 0.0)
+
+    # Live-price bypass: breadth score lags actual price action by 5-10 min.
+    # If QQQ AND SPY are both genuinely positive (≥ +0.15% from open), treat the
+    # tape as BULLISH for 1× ETF tape-follow entries even if breadth hasn't caught up.
+    # Only applies to QQQ/SPY (1×) — 3× ETFs still require the full breadth score.
+    _price_confirmed_bullish = _tf_qqq_chg >= 0.15 and _tf_spy_chg >= 0.15
+    if bs < 70 and not _price_confirmed_bullish:
         return   # tape not BULLISH at all — no tape-follow entries
 
     for sym in ("QQQ", "SPY", "TQQQ", "SPXL"):
         try:
             # Per-instrument breadth threshold:
-            # 1× ETFs (QQQ/SPY) enter at breadth ≥ 70 — standard BULLISH regime
-            # 3× ETFs (TQQQ/SPXL) require breadth ≥ 80 — need stronger tape for leverage
+            # 1× ETFs (QQQ/SPY): breadth ≥ 70 OR live-price bypass (both +0.15%)
+            # 3× ETFs (TQQQ/SPXL): require breadth ≥ 80 — full confirmation for leverage
             _min_bs = 70 if sym in _ETF_UNLEVERAGED else 80
             if bs < _min_bs:
-                continue  # not enough tape strength for this instrument's leverage level
+                # 1× ETFs can bypass via price action when breadth lags
+                if sym in _ETF_UNLEVERAGED and _price_confirmed_bullish:
+                    pass  # live-price bypass: QQQ/SPY can proceed
+                else:
+                    continue  # not enough tape strength for this instrument's leverage level
 
             # Skip if already in dedup window (trade fired recently)
             with _alp_lock:
