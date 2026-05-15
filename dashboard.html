@@ -5504,7 +5504,7 @@ function renderAlpaca(d) {
       <td style="padding:4px 8px">$${p.entry.toFixed(2)}</td>
       <td style="padding:4px 8px;color:${pnlC}">${pnlS}$${p.pnl.toFixed(2)} (${pnlS}${p.pnl_pct.toFixed(2)}%)</td>
       <td style="padding:4px 8px">
-        <button onclick="closePosition('${p.sym}')" style="padding:2px 8px;font-size:10px;background:rgba(255,60,60,0.15);color:#ff6060;border:1px solid rgba(255,60,60,0.3);border-radius:4px;cursor:pointer" title="Close ${p.sym} at market">✂ Close</button>
+        <button onclick="closePosition('${p.sym}', ${p.entry.toFixed(2)})" style="padding:2px 8px;font-size:10px;background:rgba(255,60,60,0.15);color:#ff6060;border:1px solid rgba(255,60,60,0.3);border-radius:4px;cursor:pointer" title="Close ${p.sym} — market or limit">✂ Close</button>
       </td>
     </tr>`;
   }).join('');
@@ -5558,17 +5558,38 @@ async function toggleAlpaca() {
   } catch(e) { console.error('Toggle failed', e); }
 }
 
-async function closePosition(sym) {
-  if (!confirm(`Close ${sym} at market price?`)) return;
+async function closePosition(sym, entryPrice) {
+  // Prompt for optional limit price — blank = market close
+  const hint = entryPrice ? ` (entry $${entryPrice})` : '';
+  const raw = prompt(
+    `Close ${sym}${hint}\n\nEnter a limit price — or leave blank to close at market:`,
+    ''
+  );
+  if (raw === null) return;   // user hit Cancel
+
+  const limitStr = raw.trim();
+  if (limitStr && isNaN(parseFloat(limitStr))) {
+    alert('Invalid price. Enter a number (e.g. 8.95) or leave blank for market.');
+    return;
+  }
+  const limitPrice = limitStr ? parseFloat(limitStr) : null;
+  const confirmMsg = limitPrice
+    ? `Place limit close for ${sym} @ $${limitPrice.toFixed(2)}?`
+    : `Close ${sym} at market price?`;
+  if (!confirm(confirmMsg)) return;
+
   try {
-    const r = await fetch(`/api/alpaca/close/${sym}`, { method: 'POST' });
+    const body = limitPrice ? { limit_price: limitPrice } : {};
+    const r = await fetch(`/api/alpaca/close/${sym}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
     const d = await r.json();
-    if (d.ok) {
-      console.log(`[Close] ${sym} closed`);
-    } else {
+    if (!d.ok) {
       alert(`Could not close ${sym}: ${d.error || 'unknown error'}`);
     }
-    setTimeout(loadAlpaca, 1500);  // refresh after 1.5s to show updated positions
+    setTimeout(loadAlpaca, 1500);
   } catch(e) {
     alert(`Close request failed: ${e}`);
   }

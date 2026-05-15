@@ -8443,15 +8443,18 @@ def api_alpaca_force(sym):
 @app.route("/api/alpaca/close/<sym>", methods=["POST"])
 def api_alpaca_close(sym):
     """
-    Manually close a single open position at market price.
-    Cancels any open bracket orders first, then sends a market close.
-    Also clears dedup so the system can re-enter cleanly if a new signal forms.
+    Manually close a single open position.
+    POST body (JSON, all optional):
+      limit_price: float  — if provided, places a DAY limit order instead of market close
+    Cancels any open bracket orders first, clears dedup so system can re-enter cleanly.
     """
     sym = sym.upper().strip()
     if not sym:
         return jsonify({"ok": False, "error": "missing symbol"}), 400
+    data = request.get_json(silent=True) or {}
+    limit_price = data.get("limit_price")   # float or None
     try:
-        # Look up the side (long/short) from Alpaca
+        # Look up position: need side + qty
         r = requests.get(f"{_ALPACA_BASE_URL}/v2/positions",
                          headers=_alp_headers(), timeout=8)
         if r.status_code != 200:
@@ -8459,14 +8462,58 @@ def api_alpaca_close(sym):
         pos_map = {p["symbol"]: p for p in r.json()}
         if sym not in pos_map:
             return jsonify({"ok": False, "error": f"{sym} not found in open positions"})
-        side = pos_map[sym].get("side", "long")
-        _alp_close_position(sym, side)
+        pos  = pos_map[sym]
+        side = pos.get("side", "long")
+        qty  = abs(int(float(pos.get("qty", 1))))
+
+        # Cancel existing bracket legs first (stop + target)
+        try:
+            r_ord = requests.get(f"{_ALPACA_BASE_URL}/v2/orders?status=open",
+                                 headers=_alp_headers(), timeout=8)
+            if r_ord.status_code == 200:
+                for o in r_ord.json():
+                    if o.get("symbol") == sym:
+                        requests.delete(f"{_ALPACA_BASE_URL}/v2/orders/{o['id']}",
+                                        headers=_alp_headers(), timeout=5)
+            time.sleep(0.4)   # allow cancels to settle
+        except Exception as ce:
+            print(f"[Manual] Cancel orders error for {sym}: {ce}")
+
+        if limit_price:
+            # Place a DAY limit order to close at the requested price
+            close_side  = "sell" if side == "long" else "buy"
+            limit_price = round(float(limit_price), 2)
+            order = {
+                "symbol":        sym,
+                "qty":           str(qty),
+                "side":          close_side,
+                "type":          "limit",
+                "time_in_force": "day",
+                "limit_price":   str(limit_price),
+            }
+            r_lim = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
+                                  headers=_alp_headers(), json=order, timeout=8)
+            if r_lim.status_code not in (200, 201):
+                return jsonify({"ok": False,
+                                "error": f"Limit order failed HTTP {r_lim.status_code}: {r_lim.text[:200]}"})
+            msg = f"{sym} limit close @ ${limit_price:.2f} placed (qty={qty})"
+            order_type = "limit"
+        else:
+            # Market close via DELETE /v2/positions/{sym}
+            r_mkt = requests.delete(f"{_ALPACA_BASE_URL}/v2/positions/{sym}",
+                                    headers=_alp_headers(), timeout=10)
+            if r_mkt.status_code not in (200, 201, 204):
+                return jsonify({"ok": False,
+                                "error": f"Market close failed HTTP {r_mkt.status_code}: {r_mkt.text[:200]}"})
+            msg = f"{sym} closed at market"
+            order_type = "market"
+
         # Clear dedup + trailing-stop flag so system can re-enter cleanly
         with _alp_lock:
             _alp_last_traded.pop(sym, None)
             _alp_breakeven_set.discard(sym)
-        print(f"[Manual] ✂ {sym} closed by user request (side={side})")
-        return jsonify({"ok": True, "msg": f"{sym} closed at market"})
+        print(f"[Manual] ✂ {msg}")
+        return jsonify({"ok": True, "msg": msg, "order_type": order_type})
     except Exception as e:
         print(f"[Manual] ✂ {sym} close error: {e}")
         return jsonify({"ok": False, "error": str(e)})
