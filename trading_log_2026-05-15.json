@@ -1,0 +1,65 @@
+[
+  {
+    "timestamp": "2026-05-15T14:08:44.413548+00:00",
+    "runs_at_local": "14:08 UTC",
+    "equity": 94609.67,
+    "day_pnl": 25.98,
+    "cash": 74602.48,
+    "open_positions": [
+      {
+        "sym": "TQQQ",
+        "side": "long",
+        "qty": "266",
+        "entry_px": 75.045188,
+        "current_px": 75.2099,
+        "pnl": 43.813392,
+        "pnl_pct": 0.219
+      }
+    ],
+    "completed_trades": [
+      {
+        "sym": "TQQQ",
+        "entry_px": 74.618689,
+        "exit_px": 75.0,
+        "qty": 267.0,
+        "pnl": 101.81,
+        "pct": 0.511,
+        "dur_s": 0,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-15T13:45"
+      },
+      {
+        "sym": "SOXL",
+        "entry_px": 164.0,
+        "exit_px": 163.0,
+        "qty": 121.0,
+        "pnl": -121.0,
+        "pct": -0.61,
+        "dur_s": 757,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-15T13:45"
+      }
+    ],
+    "trade_stats": {
+      "total": 2,
+      "wins": 1,
+      "losses": 1,
+      "win_rate": 50.0,
+      "total_pnl": -19.19,
+      "avg_win": 101.81,
+      "avg_loss": -121.0,
+      "stops": 1,
+      "targets": 0,
+      "time_exits": 1,
+      "instant_stops_under_2min": 0
+    },
+    "breadth": {
+      "score": 24.0,
+      "regime": "BEARISH",
+      "bull_conf": 80,
+      "bear_conf": 62,
+      "spy_chg": -1.145,
+      "qqq_chg": -1.663
+    }
+  }
+]
