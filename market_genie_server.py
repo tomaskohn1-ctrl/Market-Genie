@@ -7614,6 +7614,7 @@ def _alp_execute_signal(res: dict):
         # QQQ-bear and SPY-bear also translate — a bearish 1× signal is weaker
         # conviction than a 3× model signal, so use a discounted conf (×0.8).
         _inv_mirror = {"TQQQ": "SQQQ", "SPXL": "SPXS",
+                       "SOXL": "SOXS", "SOXS": "SOXL",   # semis pair
                        "QQQ":  "SQQQ", "SPY":  "SPXS"}.get(sym)
         if sym in _ETF_UNLEVERAGED:
             conf = conf * 0.8   # 1× bear signal carries less conviction than 3×
