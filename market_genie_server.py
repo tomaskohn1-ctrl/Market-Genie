@@ -7843,7 +7843,14 @@ def _alp_execute_signal(res: dict):
             _qqq_chg = _breadth_state.get("qqq_chg", 0.0)
         _tape_bearish = _spy_chg <= -0.2 and _qqq_chg <= -0.2
         _tape_bullish = _spy_chg >=  0.2 and _qqq_chg >=  0.2
-        _neutral_ba_bypass    = (ba == 1 and eff_conf >= 82)
+        # Bypass A: ba=1 + eff_conf ≥ 82 — but MUST be directionally aligned with tape.
+        # If SPY/QQQ are both negative, only bear ETFs can use this bypass (and vice versa).
+        # Prevents bull ETFs from entering via Bypass A while the tape is clearly falling.
+        _ba_dir_ok = (
+            (sym in _ETF_BEAR_UNIVERSE and not _tape_bullish) or
+            (sym in _ETF_BULL_UNIVERSE and not _tape_bearish)
+        )
+        _neutral_ba_bypass    = (ba == 1 and eff_conf >= 82 and _ba_dir_ok)
         _neutral_elite_bypass = eff_conf >= 90
         _neutral_dir_bypass   = (
             (sym in _ETF_BEAR_UNIVERSE and _tape_bearish and ba == 1 and eff_conf >= 68) or
@@ -7876,13 +7883,17 @@ def _alp_execute_signal(res: dict):
                   f"got ba={ba} eff_conf={eff_conf:.1f})")
             return
     if breadth_score < 35 and sym in _ETF_BULL_UNIVERSE:
-        # Elite bypass: same logic for bullish ETFs in bearish regime.
-        if ba == 1 and eff_conf >= 85:
-            print(f"[RegimeGate] {sym} — BEARISH tape bypass: ba=1 + eff_conf={eff_conf:.1f}≥85 "
+        # Elite bypass: raised 85→95 (matches the BULLISH tape bear bypass threshold).
+        # Breadth < 35 = strongly BEARISH confirmed regime. Bull ETFs entering here
+        # are fighting the tape — only allow at extreme conviction (both models agree
+        # at eff_conf ≥ 95) for genuine regime-flip signals. At 85 the threshold was
+        # too low: NQ/megacap boosts could push TQQQ/SOXL above 85 even on down days.
+        if ba == 1 and eff_conf >= 95:
+            print(f"[RegimeGate] {sym} — BEARISH tape bypass: ba=1 + eff_conf={eff_conf:.1f}≥95 "
                   f"(models diverge from breadth — possible regime flip) ✓")
         else:
             print(f"[RegimeGate] {sym} — SKIPPED: BEARISH tape (breadth={breadth_score:.0f}), "
-                  f"bull ETF not allowed (needs ba=1 + eff_conf≥85 to override, "
+                  f"bull ETF not allowed (needs ba=1 + eff_conf≥95 to override, "
                   f"got ba={ba} eff_conf={eff_conf:.1f})")
             return
 
