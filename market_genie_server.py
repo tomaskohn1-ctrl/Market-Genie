@@ -7895,17 +7895,20 @@ def _alp_execute_signal(res: dict):
                   f"got ba={ba} eff_conf={eff_conf:.1f})")
             return
     if breadth_score < 35 and sym in _ETF_BULL_UNIVERSE:
-        # Elite bypass: raised 85→95 (matches the BULLISH tape bear bypass threshold).
+        # Elite bypass: raised 85→92.
         # Breadth < 35 = strongly BEARISH confirmed regime. Bull ETFs entering here
-        # are fighting the tape — only allow at extreme conviction (both models agree
-        # at eff_conf ≥ 95) for genuine regime-flip signals. At 85 the threshold was
-        # too low: NQ/megacap boosts could push TQQQ/SOXL above 85 even on down days.
-        if ba == 1 and eff_conf >= 95:
-            print(f"[RegimeGate] {sym} — BEARISH tape bypass: ba=1 + eff_conf={eff_conf:.1f}≥95 "
+        # are fighting the tape — only allow at very high conviction (both models agree
+        # at eff_conf ≥ 92) for genuine regime-flip signals. At 85 the threshold was
+        # too low: moderate-confidence signals (base=85 + small boosts) could sneak
+        # through. At 95 it was too strict: conf=100 signals with a NQ futures penalty
+        # (-6) land at 94 and get blocked even though model quality is maximum.
+        # 92 correctly passes only near-maximum confidence (base≥98 after penalties).
+        if ba == 1 and eff_conf >= 92:
+            print(f"[RegimeGate] {sym} — BEARISH tape bypass: ba=1 + eff_conf={eff_conf:.1f}≥92 "
                   f"(models diverge from breadth — possible regime flip) ✓")
         else:
             print(f"[RegimeGate] {sym} — SKIPPED: BEARISH tape (breadth={breadth_score:.0f}), "
-                  f"bull ETF not allowed (needs ba=1 + eff_conf≥95 to override, "
+                  f"bull ETF not allowed (needs ba=1 + eff_conf≥92 to override, "
                   f"got ba={ba} eff_conf={eff_conf:.1f})")
             return
 
