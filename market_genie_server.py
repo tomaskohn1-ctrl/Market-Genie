@@ -7502,13 +7502,24 @@ def _alp_execute_signal(res: dict):
     if not _safe_to_enter():
         et_now_chk = _get_et_now()
         _early_bear_ok = False
-        if sym in ("SQQQ", "SPXS", "SOXS") and dtime(9, 35) <= et_now_chk.time() < dtime(9, 45):
+        if sym in ("SQQQ", "SPXS", "SOXS") and dtime(9, 30) <= et_now_chk.time() < dtime(9, 45):
             with _futures_lock:
                 _nq_early = _futures_state.get("nq_chg", 0.0)
                 _es_early = _futures_state.get("es_chg", 0.0)
-            if _nq_early < -0.7 or _es_early < -0.5:
+            # Strong gap-down (NQ < -1.0% or ES < -0.7%): open from 9:30 — these
+            # are confirmed directional opens, not opening noise.
+            # Moderate gap-down (NQ < -0.7% or ES < -0.5%): open from 9:35 — wait
+            # one bar for price discovery to settle.
+            _strong_gap  = _nq_early < -1.0 or _es_early < -0.7
+            _moderate_gap = _nq_early < -0.7 or _es_early < -0.5
+            _time_ok = (
+                (_strong_gap  and et_now_chk.time() >= dtime(9, 30)) or
+                (_moderate_gap and et_now_chk.time() >= dtime(9, 35))
+            )
+            if _time_ok:
                 _early_bear_ok = True
-                print(f"[EarlyBear] {sym} — gap-down bypass: NQ={_nq_early:+.2f}% ES={_es_early:+.2f}% "
+                _gap_tag = "STRONG gap-down" if _strong_gap else "gap-down"
+                print(f"[EarlyBear] {sym} — {_gap_tag} bypass: NQ={_nq_early:+.2f}% ES={_es_early:+.2f}% "
                       f"at {et_now_chk.strftime('%H:%M')} ET — all quality gates still active")
         if not _early_bear_ok:
             print(f"[Alpaca] {sym} — SKIPPED: outside safe entry window "
