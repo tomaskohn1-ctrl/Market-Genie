@@ -2333,6 +2333,7 @@
         <span id="alpacaStatusBadge" class="card-tag" style="background:rgba(255,198,0,0.15);color:#ffc600;border:1px solid rgba(255,198,0,0.3)">Loading…</span>
         <span id="breadthRegimeBadge" class="card-tag" style="background:rgba(100,100,100,0.15);color:#aaa;border:1px solid rgba(100,100,100,0.3);font-size:10px" title="Market breadth regime — adjusts bull/bear confidence thresholds automatically">⚡ …</span>
         <button id="alpacaToggleBtn" class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="toggleAlpaca()">⏸ Pause</button>
+        <button class="btn secondary" style="padding:4px 10px;font-size:10px;background:rgba(255,60,60,0.12);color:#ff6060;border-color:rgba(255,60,60,0.3)" onclick="closeAllPositions()" title="Close all open positions at market">✂ Close All</button>
         <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="loadAlpaca()">↻ Refresh</button>
       </div>
     </div>
@@ -5502,6 +5503,9 @@ function renderAlpaca(d) {
       <td style="padding:4px 8px">${p.qty}</td>
       <td style="padding:4px 8px">$${p.entry.toFixed(2)}</td>
       <td style="padding:4px 8px;color:${pnlC}">${pnlS}$${p.pnl.toFixed(2)} (${pnlS}${p.pnl_pct.toFixed(2)}%)</td>
+      <td style="padding:4px 8px">
+        <button onclick="closePosition('${p.sym}')" style="padding:2px 8px;font-size:10px;background:rgba(255,60,60,0.15);color:#ff6060;border:1px solid rgba(255,60,60,0.3);border-radius:4px;cursor:pointer" title="Close ${p.sym} at market">✂ Close</button>
+      </td>
     </tr>`;
   }).join('');
 
@@ -5533,6 +5537,7 @@ function renderAlpaca(d) {
           <th style="padding:4px 8px;text-align:left;font-weight:400">Qty</th>
           <th style="padding:4px 8px;text-align:left;font-weight:400">Entry</th>
           <th style="padding:4px 8px;text-align:left;font-weight:400">Unrealized P&L</th>
+          <th style="padding:4px 8px;text-align:left;font-weight:400"></th>
         </tr>
       </thead>
       <tbody>${posRows}</tbody>
@@ -5551,6 +5556,34 @@ async function toggleAlpaca() {
     });
     await loadAlpaca();
   } catch(e) { console.error('Toggle failed', e); }
+}
+
+async function closePosition(sym) {
+  if (!confirm(`Close ${sym} at market price?`)) return;
+  try {
+    const r = await fetch(`/api/alpaca/close/${sym}`, { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      console.log(`[Close] ${sym} closed`);
+    } else {
+      alert(`Could not close ${sym}: ${d.error || 'unknown error'}`);
+    }
+    setTimeout(loadAlpaca, 1500);  // refresh after 1.5s to show updated positions
+  } catch(e) {
+    alert(`Close request failed: ${e}`);
+  }
+}
+
+async function closeAllPositions() {
+  if (!confirm('Close ALL open positions at market? This cannot be undone.')) return;
+  try {
+    const r = await fetch('/api/alpaca/close-all', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) alert(`Close-all error: ${d.error || 'unknown error'}`);
+    setTimeout(loadAlpaca, 1500);
+  } catch(e) {
+    alert(`Close-all request failed: ${e}`);
+  }
 }
 
 loadAlpaca();

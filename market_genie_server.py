@@ -8440,6 +8440,56 @@ def api_alpaca_force(sym):
     })
 
 
+@app.route("/api/alpaca/close/<sym>", methods=["POST"])
+def api_alpaca_close(sym):
+    """
+    Manually close a single open position at market price.
+    Cancels any open bracket orders first, then sends a market close.
+    Also clears dedup so the system can re-enter cleanly if a new signal forms.
+    """
+    sym = sym.upper().strip()
+    if not sym:
+        return jsonify({"ok": False, "error": "missing symbol"}), 400
+    try:
+        # Look up the side (long/short) from Alpaca
+        r = requests.get(f"{_ALPACA_BASE_URL}/v2/positions",
+                         headers=_alp_headers(), timeout=8)
+        if r.status_code != 200:
+            return jsonify({"ok": False, "error": f"Alpaca positions error {r.status_code}"})
+        pos_map = {p["symbol"]: p for p in r.json()}
+        if sym not in pos_map:
+            return jsonify({"ok": False, "error": f"{sym} not found in open positions"})
+        side = pos_map[sym].get("side", "long")
+        _alp_close_position(sym, side)
+        # Clear dedup + trailing-stop flag so system can re-enter cleanly
+        with _alp_lock:
+            _alp_last_traded.pop(sym, None)
+            _alp_breakeven_set.discard(sym)
+        print(f"[Manual] ✂ {sym} closed by user request (side={side})")
+        return jsonify({"ok": True, "msg": f"{sym} closed at market"})
+    except Exception as e:
+        print(f"[Manual] ✂ {sym} close error: {e}")
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/alpaca/close-all", methods=["POST"])
+def api_alpaca_close_all():
+    """
+    Manually close ALL open positions at market price.
+    Same as EOD flattener but user-triggered.
+    """
+    try:
+        _alp_flatten_all()
+        with _alp_lock:
+            _alp_last_traded.clear()
+            _alp_breakeven_set.clear()
+        print("[Manual] ✂ ALL positions closed by user request")
+        return jsonify({"ok": True, "msg": "All positions closed at market"})
+    except Exception as e:
+        print(f"[Manual] ✂ close-all error: {e}")
+        return jsonify({"ok": False, "error": str(e)})
+
+
 @app.route("/api/alpaca/test")
 def api_alpaca_test():
     """Diagnostic endpoint — shows raw Alpaca API response to debug auth issues."""
