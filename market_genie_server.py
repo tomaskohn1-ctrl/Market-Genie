@@ -7925,17 +7925,34 @@ def _alp_execute_signal(res: dict):
                   f"got ba={ba} eff_conf={eff_conf:.1f})")
             return
     if breadth_score < 35 and sym in _ETF_BULL_UNIVERSE:
-        # Elite bypass: raised 85→92.
-        # Breadth < 35 = strongly BEARISH confirmed regime. Bull ETFs entering here
-        # are fighting the tape — only allow at very high conviction (both models agree
-        # at eff_conf ≥ 92) for genuine regime-flip signals. At 85 the threshold was
-        # too low: moderate-confidence signals (base=85 + small boosts) could sneak
-        # through. At 95 it was too strict: conf=100 signals with a NQ futures penalty
-        # (-6) land at 94 and get blocked even though model quality is maximum.
-        # 92 correctly passes only near-maximum confidence (base≥98 after penalties).
+        # Elite bypass: requires BOTH model agreement (ba=1) AND eff_conf ≥ 92,
+        # AND futures must NOT be confirming the bearish direction.
+        #
+        # The bypass is designed for genuine regime-flip signals where breadth is
+        # lagging reality. If NQ/ES futures are ALSO negative, the bearish regime
+        # is real and confirmed — not a stale breadth reading. Allowing the bypass
+        # when futures confirm the bearish move is what caused the May 15 losses:
+        # SOXL and TQQQ both entered via bypass while NQ=-0.53% and breadth=34,
+        # both pointing the same direction. Stops hit = all gains erased.
+        #
+        # FUTURES GATE: bypass only fires when NQ > -0.3% AND ES > -0.3%.
+        # Rationale: if futures are flat-to-positive while breadth is bearish,
+        # that IS a genuine divergence (breadth lagging intraday recovery).
+        # If futures are also negative, both signals agree = real bearish regime.
+        with _futures_lock:
+            _nq_bp = _futures_state.get("nq_chg", 0.0)
+            _es_bp = _futures_state.get("es_chg", 0.0)
+            _fut_fresh_bp = _futures_state.get("updated_at", 0)
+        _futures_confirm_bear = (_nq_bp < -0.3 or _es_bp < -0.3) and (time.time() - _fut_fresh_bp < 600)
         if ba == 1 and eff_conf >= 92:
+            if _futures_confirm_bear:
+                print(f"[RegimeGate] {sym} — SKIPPED: BEARISH tape (breadth={breadth_score:.0f}) "
+                      f"AND futures confirming bearish (NQ={_nq_bp:+.2f}% ES={_es_bp:+.2f}%) — "
+                      f"bypass blocked: both signals agree this is a real bearish regime, not a lag")
+                return
             print(f"[RegimeGate] {sym} — BEARISH tape bypass: ba=1 + eff_conf={eff_conf:.1f}≥92 "
-                  f"(models diverge from breadth — possible regime flip) ✓")
+                  f"+ futures not confirming bearish (NQ={_nq_bp:+.2f}% ES={_es_bp:+.2f}%) ✓ "
+                  f"(breadth lagging, genuine divergence)")
         else:
             print(f"[RegimeGate] {sym} — SKIPPED: BEARISH tape (breadth={breadth_score:.0f}), "
                   f"bull ETF not allowed (needs ba=1 + eff_conf≥92 to override, "
