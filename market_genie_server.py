@@ -6644,6 +6644,22 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
             # Use ask for longs (we pay ask), bid for shorts (we sell at bid)
             ref_px  = ask_px if direction == "bull" else bid_px
             if ref_px > 0:
+                # ── Price sanity check — catch bad Alpaca quote API responses ──────
+                # Root cause of May 15 QQQ undersizing: Alpaca quote API returned
+                # ~$253 for a ticker actually trading at $77.25. qty was calculated
+                # as int($20K/$253)=79 but filled at $77.25 → only $6,103 deployed.
+                # Rule: if live ask differs from signal price by more than 40%,
+                # the quote is almost certainly stale/wrong — fall back to signal price.
+                # 40% threshold allows for genuine intraday moves while catching
+                # the 3× magnitude errors that cause severe undersizing.
+                _quote_drift = abs(ref_px - signal_price) / signal_price if signal_price > 0 else 0
+                if _quote_drift > 0.40:
+                    print(f"[Alpaca] {sym} — ⚠️  STALE QUOTE DETECTED: Alpaca ask=${ref_px:.2f} "
+                          f"vs signal ${signal_price:.2f} ({_quote_drift*100:+.0f}% drift). "
+                          f"Using signal price for qty to prevent severe undersizing.")
+                    ref_px = signal_price
+                    ask_px = signal_price
+                    bid_px = signal_price * 0.999   # synthetic spread ~0.1%
                 price = ref_px
                 spread_pct = (ask_px - bid_px) / ask_px * 100 if ask_px > 0 else 0
                 print(f"[Alpaca] {sym} live quote bid=${bid_px:.2f} ask=${ask_px:.2f} "
@@ -6777,6 +6793,20 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
             print(f"[VIX] {sym} position increased to ${_pos_usd:,.0f} (VIX={_vix_sz:.1f}<15, +10%)")
 
     qty = max(1, int(_pos_usd / price)) if price > 0 else 1
+
+    # ── Notional sanity guard ─────────────────────────────────────────────────
+    # If qty × price < 60% of target, the price used for qty was almost certainly
+    # wrong (e.g. Alpaca quote API bug returning stale data). Skip rather than
+    # deploy a severely undersized position that wastes a slot and dedup window.
+    _notional = qty * price
+    if _notional < _pos_usd * 0.60 and signal_price > 0:
+        _alt_qty  = max(1, int(_pos_usd / signal_price))
+        _alt_notl = _alt_qty * signal_price
+        print(f"[Alpaca] {sym} — ⛔ NOTIONAL SANITY FAIL: "
+              f"{qty}×${price:.2f}=${_notional:.0f} ({_notional/_pos_usd:.0%} of ${_pos_usd:.0f}). "
+              f"Signal price ${signal_price:.2f} would give {_alt_qty}×=${_alt_notl:.0f}. "
+              f"Skipping — price data unreliable, retry next scan cycle.")
+        return False
 
     # ── Pair-specific stop/target calibration ────────────────────────────────
     # TQQQ/SQQQ: Nasdaq tracks QQQ which swings ~20% wider than SPY intraday.
