@@ -8294,6 +8294,30 @@ def _alp_execute_signal(res: dict):
                 _alp_last_traded.pop(sym, None)
             return
 
+        # ── Contradiction Filter ──────────────────────────────────────────────
+        # Block bear ETF entries while any bull ETF is open (and vice versa).
+        # Root cause of SPXS loss on May 15: system bought SPXS (bear S&P) while
+        # holding SOXL + TQQQ (bull). Net effect: two longs + one short = the bear
+        # leg fighting the bull legs dollar-for-dollar, reducing P&L by ~$80-$336.
+        # Rule: BULL ETF open → no BEAR ETF entries. BEAR ETF open → no BULL ETF entries.
+        # Applied AFTER PairGate (same-sector block) and BEFORE slot cap check.
+        if sym in _ETF_BEAR_UNIVERSE:
+            _bull_conflicts = [s for s in open_positions if s in _ETF_BULL_UNIVERSE]
+            if _bull_conflicts:
+                print(f"[ContradictionFilter] {sym} — SKIPPED: bull ETF(s) {_bull_conflicts} "
+                      f"already open — bear entry contradicts existing bull exposure")
+                with _alp_lock:
+                    _alp_last_traded.pop(sym, None)
+                return
+        elif sym in _ETF_BULL_UNIVERSE:
+            _bear_conflicts = [s for s in open_positions if s in _ETF_BEAR_UNIVERSE]
+            if _bear_conflicts:
+                print(f"[ContradictionFilter] {sym} — SKIPPED: bear ETF(s) {_bear_conflicts} "
+                      f"already open — bull entry contradicts existing bear exposure")
+                with _alp_lock:
+                    _alp_last_traded.pop(sym, None)
+                return
+
         if total_exposure >= _ALP_MAX_POSITIONS:
             # ── ELITE Preemption ──────────────────────────────────────────────
             # If this is an ELITE signal (both_agree=1, conf ≥ threshold) and
