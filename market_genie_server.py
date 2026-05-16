@@ -5893,32 +5893,47 @@ def _tlt_pc_tick_poll_loop():
             except Exception as _te:
                 print(f"[TLT] fetch error: {_te}")
 
-            # ── NYSE TICK (via Massive/Polygon I:TICK) ────────────────────────
+            # ── NYSE TICK (via Massive/Polygon) ──────────────────────────────
+            # Try v3 snapshot first (wider plan coverage), fall back to v2 aggs.
+            # v3 snapshot returns the current index value directly — no bars needed.
             if now - _last_tick_fetch >= _TICK_FETCH_INTERVAL:
                 try:
-                    bars = massive_1min_bars("I:TICK", minutes_back=10)
-                    if bars is not None:
-                        closes = bars[0]   # (closes, opens, highs, lows, volumes)
-                        if len(closes) >= 1:
-                            raw_tick  = float(closes[-1])
-                            # Smooth over last 3 bars to reduce noise
-                            smooth_n  = min(3, len(closes))
-                            smoothed  = float(closes[-smooth_n:].mean())
-                            if smoothed <= -400:
-                                label = "distribution"
-                            elif smoothed >= 400:
-                                label = "accumulation"
-                            else:
-                                label = "neutral"
-                            with _tick_lock:
-                                _tick_state["value"]      = round(smoothed, 1)
-                                _tick_state["raw"]        = round(raw_tick, 1)
-                                _tick_state["label"]      = label
-                                _tick_state["updated_at"] = time.time()
-                            tick_icon = "🟢" if label == "accumulation" else "🔴" if label == "distribution" else "⚪"
-                            print(f"[TICK] {tick_icon} raw={raw_tick:+.0f} smoothed={smoothed:+.0f} ({label})")
+                    _tick_val_raw = None
+                    # Attempt 1: v3 indices snapshot (available on more plan tiers)
+                    _snap = massive_get("/v3/snapshot/indices",
+                                        {"ticker.any_of": "I:TICK"})
+                    if _snap and _snap.get("results"):
+                        _res = _snap["results"][0]
+                        # v3 response: {"value": float} or nested under "session"
+                        _tick_val_raw = _res.get("value") or _res.get("session", {}).get("close")
+                    # Attempt 2: v2 aggs 1-min bars (higher plan tier)
+                    if _tick_val_raw is None:
+                        bars = massive_1min_bars("I:TICK", minutes_back=10)
+                        if bars is not None and len(bars[0]) >= 1:
+                            import numpy as np
+                            closes = bars[0]
+                            _tick_val_raw = float(closes[-1])
+                            # For bars we smooth over 3; for snapshot single value is already current
+                            smooth_n = min(3, len(closes))
+                            _tick_val_raw = float(closes[-smooth_n:].mean())
+                    if _tick_val_raw is not None:
+                        tick_v = float(_tick_val_raw)
+                        if tick_v <= -400:
+                            label = "distribution"
+                        elif tick_v >= 400:
+                            label = "accumulation"
+                        else:
+                            label = "neutral"
+                        with _tick_lock:
+                            _tick_state["value"]      = round(tick_v, 1)
+                            _tick_state["raw"]        = round(tick_v, 1)
+                            _tick_state["label"]      = label
+                            _tick_state["updated_at"] = time.time()
+                        tick_icon = "🟢" if label == "accumulation" else "🔴" if label == "distribution" else "⚪"
+                        print(f"[TICK] {tick_icon} value={tick_v:+.0f} ({label})")
                     else:
-                        print("[TICK] I:TICK bars unavailable (plan check: need Massive indices access)")
+                        print("[TICK] unavailable — both v3 snapshot and v2 aggs returned no data "
+                              "(check Massive plan for indices access)")
                     _last_tick_fetch = now
                 except Exception as _tke:
                     print(f"[TICK] fetch error: {_tke}")
