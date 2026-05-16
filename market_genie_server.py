@@ -6286,7 +6286,7 @@ _alp_loss_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last losing
 _alp_exit_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last ANY exit (win OR lose); prevents churn re-entry after trailing stops / target hits
 _alp_bear_session_locked = set()  # bear ETFs locked for the session after a TimeExit loss on a BULLISH tape
 _alp_daily_trade_count = {}  # { sym: [date_str, count] } — prevent same-ticker churn (TECS 5x on May 12)
-_ALP_MAX_TRADES_PER_SYM_DAY = int(os.getenv("ALPACA_MAX_TRADES_PER_SYM_DAY", "4"))  # max entries same sym/day — lowered 6→4: exit cooldown (30 min) is now the primary churn brake; daily cap is a hard backstop. 4 allows morning + midday + afternoon setups per ticker
+_ALP_MAX_TRADES_PER_SYM_DAY = int(os.getenv("ALPACA_MAX_TRADES_PER_SYM_DAY", "5"))  # max entries same sym/day — lowered 6→5: exit cooldown (30 min) is the primary churn brake; daily cap is a hard backstop for redeploy edge cases. 5 allows morning + midday + afternoon setups with room for one strong re-entry on trending days
 _alp_time_exit_prev_positions = {}  # { sym: {pnl_pct: float} } — previous cycle snapshot for bracket-stop detection
 
 # ── State Persistence (survives SIGKILL worker restarts) ──────────────────────
