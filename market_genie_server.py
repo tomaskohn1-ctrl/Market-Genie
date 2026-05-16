@@ -5758,6 +5758,22 @@ _pc_state = {
 _pc_lock = threading.Lock()
 
 
+# ── NYSE TICK Index Engine ─────────────────────────────────────────────────────
+# NYSE TICK = number of NYSE stocks on an uptick minus those on a downtick.
+# Range roughly −1500 to +1500. A single reading is noise; a 3-bar average is signal.
+# −400 or below = distribution (sellers in control, don't buy dips)
+# +400 or above = accumulation (buyers active, confirm bull entries)
+# Available via Massive/Polygon as ticker "I:TICK" on the aggs endpoint.
+# Polled every 2 minutes via 1-min bars, smoothed over last 3 bars.
+_tick_state = {
+    "value":      0.0,   # smoothed 3-bar average TICK reading
+    "raw":        0.0,   # most recent single bar close
+    "label":      "neutral",   # "distribution" | "neutral" | "accumulation"
+    "updated_at": 0,
+}
+_tick_lock = threading.Lock()
+
+
 # ── Cross-Pair Confirmation State ─────────────────────────────────────────────
 # Tracks recent signals so that when TQQQ + SPXL (or SQQQ + SPXS) both fire
 # the same direction within _CROSS_PAIR_WINDOW seconds, the second signal gets
@@ -5844,24 +5860,28 @@ threading.Thread(target=_megacap_poll_loop, daemon=True, name="megacap-feed").st
 print("[MegaCap] Mega-cap momentum thread started (NVDA/AAPL/MSFT/AMZN/META polled every 2 min)")
 
 
-def _tlt_pc_poll_loop():
+def _tlt_pc_tick_poll_loop():
     """
-    Poll TLT (Treasury ETF) and QQQ options P/C ratio every 3 minutes.
-    TLT uses fast_info (same pattern as NQ/ES futures).
-    P/C uses the nearest-expiry QQQ options chain — volume builds through the session
-    so early readings (before ~10 AM) are less reliable; we flag low-volume cases.
+    Poll TLT, QQQ P/C ratio, and NYSE TICK index every 2 minutes.
+    - TLT: yfinance fast_info (rate pressure on tech)
+    - P/C: yfinance QQQ options chain, every 10 min (sentiment)
+    - TICK: Massive/Polygon I:TICK 1-min bars, smoothed over last 3 bars (buying pressure)
     """
     import yfinance as yf
-    _PC_FETCH_INTERVAL = 600   # options chain is slower/heavier — every 10 min
-    _last_pc_fetch = 0.0
+    _PC_FETCH_INTERVAL   = 600   # options chain is heavier — every 10 min
+    _TICK_FETCH_INTERVAL = 120   # TICK every 2 min — fast-moving intraday signal
+    _last_pc_fetch   = 0.0
+    _last_tick_fetch = 0.0
 
     while True:
         try:
+            now = time.time()
+
             # ── TLT ──────────────────────────────────────────────────────────
             try:
-                fi       = yf.Ticker("TLT").fast_info
-                cur      = float(fi.get("last_price") or fi.get("lastPrice") or 0)
-                prev     = float(fi.get("previous_close") or fi.get("previousClose") or 0)
+                fi   = yf.Ticker("TLT").fast_info
+                cur  = float(fi.get("last_price") or fi.get("lastPrice") or 0)
+                prev = float(fi.get("previous_close") or fi.get("previousClose") or 0)
                 if cur > 0 and prev > 0:
                     chg = (cur - prev) / prev * 100
                     with _tlt_lock:
@@ -5873,17 +5893,47 @@ def _tlt_pc_poll_loop():
             except Exception as _te:
                 print(f"[TLT] fetch error: {_te}")
 
+            # ── NYSE TICK (via Massive/Polygon I:TICK) ────────────────────────
+            if now - _last_tick_fetch >= _TICK_FETCH_INTERVAL:
+                try:
+                    bars = massive_1min_bars("I:TICK", minutes_back=10)
+                    if bars is not None:
+                        closes = bars[0]   # (closes, opens, highs, lows, volumes)
+                        if len(closes) >= 1:
+                            raw_tick  = float(closes[-1])
+                            # Smooth over last 3 bars to reduce noise
+                            smooth_n  = min(3, len(closes))
+                            smoothed  = float(closes[-smooth_n:].mean())
+                            if smoothed <= -400:
+                                label = "distribution"
+                            elif smoothed >= 400:
+                                label = "accumulation"
+                            else:
+                                label = "neutral"
+                            with _tick_lock:
+                                _tick_state["value"]      = round(smoothed, 1)
+                                _tick_state["raw"]        = round(raw_tick, 1)
+                                _tick_state["label"]      = label
+                                _tick_state["updated_at"] = time.time()
+                            tick_icon = "🟢" if label == "accumulation" else "🔴" if label == "distribution" else "⚪"
+                            print(f"[TICK] {tick_icon} raw={raw_tick:+.0f} smoothed={smoothed:+.0f} ({label})")
+                    else:
+                        print("[TICK] I:TICK bars unavailable (plan check: need Massive indices access)")
+                    _last_tick_fetch = now
+                except Exception as _tke:
+                    print(f"[TICK] fetch error: {_tke}")
+                    _last_tick_fetch = now
+
             # ── QQQ P/C Ratio ─────────────────────────────────────────────────
-            now = time.time()
             if now - _last_pc_fetch >= _PC_FETCH_INTERVAL:
                 try:
                     tkr  = yf.Ticker("QQQ")
                     exps = tkr.options
                     if exps:
-                        chain    = tkr.option_chain(exps[0])   # nearest expiry
+                        chain    = tkr.option_chain(exps[0])
                         put_vol  = float(chain.puts["volume"].fillna(0).sum())
                         call_vol = float(chain.calls["volume"].fillna(0).sum())
-                        if call_vol >= 500:   # need meaningful volume to trust the ratio
+                        if call_vol >= 500:
                             ratio = round(put_vol / call_vol, 3)
                             with _pc_lock:
                                 _pc_state["ratio"]      = ratio
@@ -5894,20 +5944,19 @@ def _tlt_pc_poll_loop():
                             print(f"[PC] QQQ P/C={ratio:.2f} {fear_icon} "
                                   f"(puts={put_vol:.0f} calls={call_vol:.0f})")
                         else:
-                            print(f"[PC] skipped — low volume ({call_vol:.0f} calls, "
-                                  f"market may not be open yet)")
+                            print(f"[PC] skipped — low volume ({call_vol:.0f} calls)")
                     _last_pc_fetch = now
                 except Exception as _pce:
                     print(f"[PC] fetch error: {_pce}")
-                    _last_pc_fetch = now   # don't retry immediately on error
+                    _last_pc_fetch = now
 
         except Exception as e:
-            print(f"[TLT/PC] Loop error: {e}")
-        time.sleep(180)   # TLT every 3 min; P/C checked inside at 10-min cadence
+            print(f"[TLT/PC/TICK] Loop error: {e}")
+        time.sleep(120)   # base loop every 2 min; sub-signals on their own cadence
 
 
-threading.Thread(target=_tlt_pc_poll_loop, daemon=True, name="tlt-pc-feed").start()
-print("[TLT/PC] Treasury + P/C ratio thread started (TLT every 3 min, P/C every 10 min)")
+threading.Thread(target=_tlt_pc_tick_poll_loop, daemon=True, name="tlt-pc-tick-feed").start()
+print("[TLT/PC/TICK] Treasury + P/C + TICK thread started (TLT/TICK every 2 min, P/C every 10 min)")
 
 
 # ── Dynamic Confidence Floors ─────────────────────────────────────────────────
@@ -7952,6 +8001,33 @@ def _alp_execute_signal(res: dict):
                 print(f"[TLT] {sym} — TLT={_tlt_chg:+.2f}% dir={direction} "
                       f"→ eff_conf {_tlt_adj:+d} → {eff_conf:.1f}")
 
+    # ── NYSE TICK Buying Pressure ─────────────────────────────────────────────
+    # TICK > +400 = buyers dominating NYSE = confirm bull entries (+3 pts)
+    # TICK < −400 = sellers dominating NYSE = penalize bull entries (−4 pts) /
+    #                                          confirm bear entries (+3 pts)
+    # Adjustment is intentionally modest — TICK is a fast-moving confirming signal,
+    # not a primary gate. Only applied when data is fresh (within 5 min).
+    if sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE):
+        with _tick_lock:
+            _tick_val     = _tick_state.get("value", 0.0)
+            _tick_label   = _tick_state.get("label", "neutral")
+            _tick_updated = _tick_state.get("updated_at", 0)
+        if time.time() - _tick_updated < 300:   # only use if data is fresh (5 min)
+            _tick_mkt_dir = ("bear" if direction == "bull" else "bull") if sym in ("SQQQ", "SPXS", "SOXS") else direction
+            _tick_adj = 0
+            if _tick_label == "accumulation" and _tick_mkt_dir == "bull":
+                _tick_adj = 3
+            elif _tick_label == "distribution" and _tick_mkt_dir == "bull":
+                _tick_adj = -4
+            elif _tick_label == "distribution" and _tick_mkt_dir == "bear":
+                _tick_adj = 3
+            elif _tick_label == "accumulation" and _tick_mkt_dir == "bear":
+                _tick_adj = -3
+            if _tick_adj != 0:
+                eff_conf += _tick_adj
+                print(f"[TICK] {sym} — TICK={_tick_val:+.0f} ({_tick_label}) dir={direction} "
+                      f"→ eff_conf {_tick_adj:+d} → {eff_conf:.1f}")
+
     # ── Cross-Pair Confirmation ───────────────────────────────────────────────
     # TQQQ + SPXL firing the same direction within 5 min = both Nasdaq AND S&P
     # futures vehicles agree → broad market conviction → +5 eff_conf on second signal.
@@ -8106,6 +8182,11 @@ def _alp_execute_signal(res: dict):
             _tlt_chg_bp  = _tlt_state.get("chg", 0.0)
             _tlt_updated_bp = _tlt_state.get("updated_at", 0)
         _tlt_bearish   = _tlt_chg_bp < -0.3 and (time.time() - _tlt_updated_bp < 600)
+        with _tick_lock:
+            _tick_val_bp     = _tick_state.get("value", 0.0)
+            _tick_label_bp   = _tick_state.get("label", "neutral")
+            _tick_updated_bp = _tick_state.get("updated_at", 0)
+        _tick_distribution = (_tick_label_bp == "distribution") and (time.time() - _tick_updated_bp < 300)
         if ba == 1 and eff_conf >= 92:
             if _futures_confirm_bear:
                 print(f"[RegimeGate] {sym} — SKIPPED: BEARISH tape (breadth={breadth_score:.0f}) "
@@ -8118,10 +8199,17 @@ def _alp_execute_signal(res: dict):
                       f"AND TLT={_tlt_chg_bp:+.2f}% (yields rising) — "
                       f"bypass blocked: options market + rates confirm real bear regime")
                 return
+            if _tick_distribution and _tlt_bearish:
+                print(f"[RegimeGate] {sym} — SKIPPED: BEARISH tape (breadth={breadth_score:.0f}) "
+                      f"AND TICK={_tick_val_bp:+.0f} (distribution) "
+                      f"AND TLT={_tlt_chg_bp:+.2f}% (yields rising) — "
+                      f"bypass blocked: NYSE selling pressure + rates confirm real bear regime")
+                return
             _bypass_confirms = []
-            if not _futures_confirm_bear: _bypass_confirms.append(f"NQ={_nq_bp:+.2f}%/ES={_es_bp:+.2f}% flat-pos")
-            if not _pc_fear:              _bypass_confirms.append(f"P/C={_pc_ratio:.2f}<1.2")
-            if not _tlt_bearish:         _bypass_confirms.append(f"TLT={_tlt_chg_bp:+.2f}%>-0.3%")
+            if not _futures_confirm_bear:   _bypass_confirms.append(f"NQ={_nq_bp:+.2f}%/ES={_es_bp:+.2f}% flat-pos")
+            if not _pc_fear:                _bypass_confirms.append(f"P/C={_pc_ratio:.2f}<1.2")
+            if not _tlt_bearish:            _bypass_confirms.append(f"TLT={_tlt_chg_bp:+.2f}%>-0.3%")
+            if not _tick_distribution:      _bypass_confirms.append(f"TICK={_tick_val_bp:+.0f} ok")
             print(f"[RegimeGate] {sym} — BEARISH tape bypass: ba=1 + eff_conf={eff_conf:.1f}≥92 "
                   f"✓ ({', '.join(_bypass_confirms)})")
         else:
@@ -8930,6 +9018,12 @@ def api_debug_signals():
             "put_vol":    _pc_state.get("put_vol", 0.0),
             "call_vol":   _pc_state.get("call_vol", 0.0),
             "updated_at": _pc_state.get("updated_at", 0),
+        },
+        "tick": {
+            "value":      round(_tick_state.get("value", 0.0), 1),
+            "raw":        round(_tick_state.get("raw", 0.0), 1),
+            "label":      _tick_state.get("label", "neutral"),
+            "updated_at": _tick_state.get("updated_at", 0),
         },
         "open_positions":      len(_alp_get_open_positions()),
         "top_candidates": [{
