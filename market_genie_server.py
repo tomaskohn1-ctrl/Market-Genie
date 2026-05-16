@@ -6181,6 +6181,7 @@ _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5")
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
 _ALP_DEDUP_SECS       = 600    # 10 min dedup — reduced 25→10 min: with 9-ticker universe and 20-40 min holds, 25 min was blocking same-ticker re-entry in the same hour entirely; 10 min allows a fresh setup after the position exits while preventing immediate same-bar re-entry
 _ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "15"))  # min wait after a losing exit — reduced 30→15 min: with expanded universe, 30 min was cutting too many afternoon setups; 15 min still blocks immediate re-entry churn while allowing a second attempt per hour
+_ALP_EXIT_COOLDOWN_MINS = int(os.getenv("ALPACA_EXIT_COOLDOWN_MINS", "30"))  # min wait after ANY exit (win or lose) — prevents churn re-entry after trailing stops and target hits; longer than loss cooldown because a winning exit signals the setup is exhausted
 _ALP_MAX_BULL_POSITIONS = int(os.getenv("ALPACA_MAX_BULL_POSITIONS", "5"))  # max simultaneous bull/long positions (up to 5 of 6 slots)
 _ALP_MAX_BEAR_POSITIONS = int(os.getenv("ALPACA_MAX_BEAR_POSITIONS", "5"))  # max simultaneous bear/short positions (up to 5 of 6 slots)
 
@@ -6189,9 +6190,10 @@ _alp_lock         = threading.Lock()
 _alp_order_lock   = threading.Lock()   # serializes position-check → place to prevent over-filling
 _alp_breakeven_set = set()   # syms whose stop has been moved to trailing stop — prevents double-moves
 _alp_loss_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last losing exit per symbol
+_alp_exit_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last ANY exit (win OR lose); prevents churn re-entry after trailing stops / target hits
 _alp_bear_session_locked = set()  # bear ETFs locked for the session after a TimeExit loss on a BULLISH tape
 _alp_daily_trade_count = {}  # { sym: [date_str, count] } — prevent same-ticker churn (TECS 5x on May 12)
-_ALP_MAX_TRADES_PER_SYM_DAY = int(os.getenv("ALPACA_MAX_TRADES_PER_SYM_DAY", "6"))  # max entries same sym/day — raised 3→6: 9-ticker universe with 10-min dedup and 15-min cooldown can produce valid re-entries; 6 allows morning + midday + afternoon setups per ticker without opening the door to uncontrolled churn
+_ALP_MAX_TRADES_PER_SYM_DAY = int(os.getenv("ALPACA_MAX_TRADES_PER_SYM_DAY", "4"))  # max entries same sym/day — lowered 6→4: exit cooldown (30 min) is now the primary churn brake; daily cap is a hard backstop. 4 allows morning + midday + afternoon setups per ticker
 _alp_time_exit_prev_positions = {}  # { sym: {pnl_pct: float} } — previous cycle snapshot for bracket-stop detection
 
 # ── State Persistence (survives SIGKILL worker restarts) ──────────────────────
@@ -6207,6 +6209,7 @@ def _save_alp_state():
             state = {
                 "last_traded":        dict(_alp_last_traded),
                 "loss_cooldown":      dict(_alp_loss_cooldown),
+                "exit_cooldown":      dict(_alp_exit_cooldown),
                 "daily_trade_count":  {k: list(v) for k, v in _alp_daily_trade_count.items()},
                 "saved_at":           time.time(),
             }
@@ -6226,14 +6229,16 @@ def _load_alp_state():
         if age > 86400:
             print("[State] State file older than 24h — ignoring")
             return
-        count_lt = count_lc = 0
+        count_lt = count_lc = count_ec = 0
         for k, v in state.get("last_traded", {}).items():
             _alp_last_traded[k] = v;  count_lt += 1
         for k, v in state.get("loss_cooldown", {}).items():
             _alp_loss_cooldown[k] = v;  count_lc += 1
+        for k, v in state.get("exit_cooldown", {}).items():
+            _alp_exit_cooldown[k] = v;  count_ec += 1
         for k, v in state.get("daily_trade_count", {}).items():
             _alp_daily_trade_count[k] = list(v)
-        print(f"[State] ✅ Restored {count_lt} dedup entries + {count_lc} cooldowns (age={age/60:.0f}m)")
+        print(f"[State] ✅ Restored {count_lt} dedup + {count_lc} loss cooldowns + {count_ec} exit cooldowns (age={age/60:.0f}m)")
     except Exception as e:
         print(f"[State] Warning loading state: {e}")
 
@@ -7330,7 +7335,11 @@ def _alp_time_exit_loop():
                     else:
                         with _alp_lock:
                             _alp_last_traded.pop(_gone_sym, None)
+                            _alp_exit_cooldown[_gone_sym] = now_ts
                         _save_alp_state()
+                        print(f"[BracketStop] 🏆 {_gone_sym} bracket TARGET hit "
+                              f"(was {_gone_info.get('pnl_pct',0):.2f}%) — "
+                              f"{_ALP_EXIT_COOLDOWN_MINS}m exit cooldown set")
             # Update tracker for next cycle
             _alp_time_exit_prev_positions.clear()
             for _p in positions:
@@ -7484,8 +7493,9 @@ def _alp_time_exit_loop():
                         _alp_last_traded.pop(sym, None)
                         _alp_breakeven_set.discard(sym)
                         _alp_loss_cooldown[sym] = time.time()
+                        _alp_exit_cooldown[sym] = time.time()
                     _save_alp_state()
-                    print(f"[Cooldown] ❄️  {sym} — loss cooldown started ({_ALP_LOSS_COOLDOWN_MINS}m block)")
+                    print(f"[Cooldown] ❄️  {sym} — loss cooldown started ({_ALP_LOSS_COOLDOWN_MINS}m block) + exit cooldown ({_ALP_EXIT_COOLDOWN_MINS}m block)")
                     # Session-lock bear ETFs that lose while the tape is BULLISH.
                     # If SQQQ/SPXS can't make money on a bullish day, don't keep trying.
                     # Lock lifts automatically when breadth drops to NEUTRAL/BEARISH.
@@ -7510,9 +7520,12 @@ def _alp_time_exit_loop():
                     with _alp_lock:
                         _alp_last_traded.pop(sym, None)
                         _alp_breakeven_set.discard(sym)
+                        _alp_exit_cooldown[sym] = time.time()
                         if not is_winner:
                             _alp_loss_cooldown[sym] = time.time()
                             print(f"[Cooldown] ❄️  {sym} — loss cooldown started at hard max ({_ALP_LOSS_COOLDOWN_MINS}m block)")
+                        else:
+                            print(f"[Cooldown] 🏁 {sym} — exit cooldown started at hard max ({_ALP_EXIT_COOLDOWN_MINS}m block)")
                     _save_alp_state()
         except Exception as e:
             print(f"[TimeExit] Loop error: {e}")
@@ -7617,6 +7630,20 @@ def _alp_execute_signal(res: dict):
         if secs_elapsed < cooldown_secs:
             mins_left = int((cooldown_secs - secs_elapsed) / 60) + 1
             print(f"[Alpaca] {sym} — SKIPPED: loss cooldown active ({mins_left}m remaining)")
+            return
+
+    # After ANY exit (win or lose), block re-entry for _ALP_EXIT_COOLDOWN_MINS.
+    # This is the primary churn brake — prevents immediate re-entry after trailing
+    # stop hits, target fills, or time exits. Loss cooldown above may also apply;
+    # exit cooldown is checked separately so both conditions are visible in logs.
+    with _alp_lock:
+        exit_ts = _alp_exit_cooldown.get(sym, 0)
+    if exit_ts:
+        secs_elapsed = time.time() - exit_ts
+        exit_cooldown_secs = _ALP_EXIT_COOLDOWN_MINS * 60
+        if secs_elapsed < exit_cooldown_secs:
+            mins_left = int((exit_cooldown_secs - secs_elapsed) / 60) + 1
+            print(f"[Alpaca] {sym} — SKIPPED: exit cooldown active ({mins_left}m remaining, any-exit rest)")
             return
 
     # Bear ETF session lock — if SQQQ/SPXS lost on a BULLISH tape, block for the
