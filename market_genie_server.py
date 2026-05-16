@@ -5731,6 +5731,33 @@ _megacap_state = {
 }
 _megacap_lock = threading.Lock()
 
+
+# ── TLT (20-Year Treasury ETF) Rate Pressure Engine ──────────────────────────
+# Rising TLT = falling yields = easier financial conditions = risk-on for tech.
+# Falling TLT = rising yields = pressure on rate-sensitive stocks like TQQQ/SOXL.
+# Polled every 3 minutes alongside futures. Threshold: ±0.3% change is meaningful.
+_tlt_state = {
+    "chg":        0.0,   # % change from prior close (positive = yields falling = bullish tech)
+    "last_price": 0.0,
+    "updated_at": 0,
+}
+_tlt_lock = threading.Lock()
+
+
+# ── Options Put/Call Ratio Engine ─────────────────────────────────────────────
+# QQQ near-term options P/C ratio fetched from yfinance options chain.
+# High P/C (>1.2) = heavy put buying = genuine fear / distribution day.
+# Low P/C (<0.7) = heavy call buying = complacent / risk-on.
+# Polled every 10 minutes (options volume builds slowly in early session).
+_pc_state = {
+    "ratio":      1.0,   # put volume / call volume on QQQ nearest expiry
+    "put_vol":    0.0,
+    "call_vol":   0.0,
+    "updated_at": 0,
+}
+_pc_lock = threading.Lock()
+
+
 # ── Cross-Pair Confirmation State ─────────────────────────────────────────────
 # Tracks recent signals so that when TQQQ + SPXL (or SQQQ + SPXS) both fire
 # the same direction within _CROSS_PAIR_WINDOW seconds, the second signal gets
@@ -5815,6 +5842,72 @@ def _megacap_poll_loop():
 
 threading.Thread(target=_megacap_poll_loop, daemon=True, name="megacap-feed").start()
 print("[MegaCap] Mega-cap momentum thread started (NVDA/AAPL/MSFT/AMZN/META polled every 2 min)")
+
+
+def _tlt_pc_poll_loop():
+    """
+    Poll TLT (Treasury ETF) and QQQ options P/C ratio every 3 minutes.
+    TLT uses fast_info (same pattern as NQ/ES futures).
+    P/C uses the nearest-expiry QQQ options chain — volume builds through the session
+    so early readings (before ~10 AM) are less reliable; we flag low-volume cases.
+    """
+    import yfinance as yf
+    _PC_FETCH_INTERVAL = 600   # options chain is slower/heavier — every 10 min
+    _last_pc_fetch = 0.0
+
+    while True:
+        try:
+            # ── TLT ──────────────────────────────────────────────────────────
+            try:
+                fi       = yf.Ticker("TLT").fast_info
+                cur      = float(fi.get("last_price") or fi.get("lastPrice") or 0)
+                prev     = float(fi.get("previous_close") or fi.get("previousClose") or 0)
+                if cur > 0 and prev > 0:
+                    chg = (cur - prev) / prev * 100
+                    with _tlt_lock:
+                        _tlt_state["chg"]        = round(chg, 3)
+                        _tlt_state["last_price"] = round(cur, 2)
+                        _tlt_state["updated_at"] = time.time()
+                    bond_icon = "📈" if chg > 0.3 else "📉" if chg < -0.3 else "➡"
+                    print(f"[TLT] ${cur:.2f} ({chg:+.2f}%) {bond_icon}")
+            except Exception as _te:
+                print(f"[TLT] fetch error: {_te}")
+
+            # ── QQQ P/C Ratio ─────────────────────────────────────────────────
+            now = time.time()
+            if now - _last_pc_fetch >= _PC_FETCH_INTERVAL:
+                try:
+                    tkr  = yf.Ticker("QQQ")
+                    exps = tkr.options
+                    if exps:
+                        chain    = tkr.option_chain(exps[0])   # nearest expiry
+                        put_vol  = float(chain.puts["volume"].fillna(0).sum())
+                        call_vol = float(chain.calls["volume"].fillna(0).sum())
+                        if call_vol >= 500:   # need meaningful volume to trust the ratio
+                            ratio = round(put_vol / call_vol, 3)
+                            with _pc_lock:
+                                _pc_state["ratio"]      = ratio
+                                _pc_state["put_vol"]    = put_vol
+                                _pc_state["call_vol"]   = call_vol
+                                _pc_state["updated_at"] = time.time()
+                            fear_icon = "😱" if ratio > 1.2 else "😎" if ratio < 0.7 else "😐"
+                            print(f"[PC] QQQ P/C={ratio:.2f} {fear_icon} "
+                                  f"(puts={put_vol:.0f} calls={call_vol:.0f})")
+                        else:
+                            print(f"[PC] skipped — low volume ({call_vol:.0f} calls, "
+                                  f"market may not be open yet)")
+                    _last_pc_fetch = now
+                except Exception as _pce:
+                    print(f"[PC] fetch error: {_pce}")
+                    _last_pc_fetch = now   # don't retry immediately on error
+
+        except Exception as e:
+            print(f"[TLT/PC] Loop error: {e}")
+        time.sleep(180)   # TLT every 3 min; P/C checked inside at 10-min cadence
+
+
+threading.Thread(target=_tlt_pc_poll_loop, daemon=True, name="tlt-pc-feed").start()
+print("[TLT/PC] Treasury + P/C ratio thread started (TLT every 3 min, P/C every 10 min)")
 
 
 # ── Dynamic Confidence Floors ─────────────────────────────────────────────────
@@ -7825,6 +7918,40 @@ def _alp_execute_signal(res: dict):
             print(f"[MegaCap] {sym} — score={_mc_score:+.2f}% qqq_leads={_qqq_leads} spy_leads={_spy_leads} "
                   f"dir={direction} → eff_conf {_mc_adj_total:+d} → {eff_conf:.1f}")
 
+    # ── TLT Rate Pressure Adjustment ─────────────────────────────────────────
+    # Rising TLT (falling yields) = tailwind for TQQQ/SOXL.
+    # Falling TLT (rising yields) = headwind for rate-sensitive tech ETFs.
+    # Adjustment: ±4 pts for >0.5% moves, ±2 pts for >0.3% moves.
+    # Inverse ETFs (SQQQ/SPXS/SOXS) get the mirror adjustment.
+    _tlt_adj = 0
+    if sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE):
+        with _tlt_lock:
+            _tlt_chg     = _tlt_state.get("chg", 0.0)
+            _tlt_updated = _tlt_state.get("updated_at", 0)
+        if time.time() - _tlt_updated < 600:   # fresh within 10 min
+            # For inverse ETFs: bearish on underlying = bull signal, so flip
+            _tlt_mkt_dir = ("bear" if direction == "bull" else "bull") if sym in ("SQQQ", "SPXS", "SOXS") else direction
+            if _tlt_chg > 0.5 and _tlt_mkt_dir == "bull":      # yields falling hard, bullish
+                _tlt_adj = 4
+            elif _tlt_chg > 0.3 and _tlt_mkt_dir == "bull":
+                _tlt_adj = 2
+            elif _tlt_chg < -0.5 and _tlt_mkt_dir == "bull":   # yields rising hard, bearish tech
+                _tlt_adj = -4
+            elif _tlt_chg < -0.3 and _tlt_mkt_dir == "bull":
+                _tlt_adj = -2
+            elif _tlt_chg < -0.5 and _tlt_mkt_dir == "bear":   # bearish ETF + rising yields = confirm
+                _tlt_adj = 4
+            elif _tlt_chg < -0.3 and _tlt_mkt_dir == "bear":
+                _tlt_adj = 2
+            elif _tlt_chg > 0.5 and _tlt_mkt_dir == "bear":    # yields falling = bad for bear ETF
+                _tlt_adj = -4
+            elif _tlt_chg > 0.3 and _tlt_mkt_dir == "bear":
+                _tlt_adj = -2
+            if _tlt_adj != 0:
+                eff_conf += _tlt_adj
+                print(f"[TLT] {sym} — TLT={_tlt_chg:+.2f}% dir={direction} "
+                      f"→ eff_conf {_tlt_adj:+d} → {eff_conf:.1f}")
+
     # ── Cross-Pair Confirmation ───────────────────────────────────────────────
     # TQQQ + SPXL firing the same direction within 5 min = both Nasdaq AND S&P
     # futures vehicles agree → broad market conviction → +5 eff_conf on second signal.
@@ -7971,15 +8098,32 @@ def _alp_execute_signal(res: dict):
             _es_bp = _futures_state.get("es_chg", 0.0)
             _fut_fresh_bp = _futures_state.get("updated_at", 0)
         _futures_confirm_bear = (_nq_bp < -0.3 or _es_bp < -0.3) and (time.time() - _fut_fresh_bp < 600)
+        with _pc_lock:
+            _pc_ratio    = _pc_state.get("ratio", 1.0)
+            _pc_updated  = _pc_state.get("updated_at", 0)
+        _pc_fear       = _pc_ratio > 1.2 and (time.time() - _pc_updated < 3600)
+        with _tlt_lock:
+            _tlt_chg_bp  = _tlt_state.get("chg", 0.0)
+            _tlt_updated_bp = _tlt_state.get("updated_at", 0)
+        _tlt_bearish   = _tlt_chg_bp < -0.3 and (time.time() - _tlt_updated_bp < 600)
         if ba == 1 and eff_conf >= 92:
             if _futures_confirm_bear:
                 print(f"[RegimeGate] {sym} — SKIPPED: BEARISH tape (breadth={breadth_score:.0f}) "
                       f"AND futures confirming bearish (NQ={_nq_bp:+.2f}% ES={_es_bp:+.2f}%) — "
                       f"bypass blocked: both signals agree this is a real bearish regime, not a lag")
                 return
+            if _pc_fear and _tlt_bearish:
+                print(f"[RegimeGate] {sym} — SKIPPED: BEARISH tape (breadth={breadth_score:.0f}) "
+                      f"AND P/C={_pc_ratio:.2f}>1.2 (genuine fear) "
+                      f"AND TLT={_tlt_chg_bp:+.2f}% (yields rising) — "
+                      f"bypass blocked: options market + rates confirm real bear regime")
+                return
+            _bypass_confirms = []
+            if not _futures_confirm_bear: _bypass_confirms.append(f"NQ={_nq_bp:+.2f}%/ES={_es_bp:+.2f}% flat-pos")
+            if not _pc_fear:              _bypass_confirms.append(f"P/C={_pc_ratio:.2f}<1.2")
+            if not _tlt_bearish:         _bypass_confirms.append(f"TLT={_tlt_chg_bp:+.2f}%>-0.3%")
             print(f"[RegimeGate] {sym} — BEARISH tape bypass: ba=1 + eff_conf={eff_conf:.1f}≥92 "
-                  f"+ futures not confirming bearish (NQ={_nq_bp:+.2f}% ES={_es_bp:+.2f}%) ✓ "
-                  f"(breadth lagging, genuine divergence)")
+                  f"✓ ({', '.join(_bypass_confirms)})")
         else:
             print(f"[RegimeGate] {sym} — SKIPPED: BEARISH tape (breadth={breadth_score:.0f}), "
                   f"bull ETF not allowed (needs ba=1 + eff_conf≥92 to override, "
@@ -8775,6 +8919,17 @@ def api_debug_signals():
             "spy_leads": _megacap_state.get("spy_leads", False),
             "components": _megacap_state.get("components", {}),
             "updated_at": _megacap_state.get("updated_at", 0),
+        },
+        "tlt": {
+            "chg":        round(_tlt_state.get("chg", 0.0), 3),
+            "last_price": round(_tlt_state.get("last_price", 0.0), 2),
+            "updated_at": _tlt_state.get("updated_at", 0),
+        },
+        "pc_ratio": {
+            "ratio":      round(_pc_state.get("ratio", 1.0), 3),
+            "put_vol":    _pc_state.get("put_vol", 0.0),
+            "call_vol":   _pc_state.get("call_vol", 0.0),
+            "updated_at": _pc_state.get("updated_at", 0),
         },
         "open_positions":      len(_alp_get_open_positions()),
         "top_candidates": [{
