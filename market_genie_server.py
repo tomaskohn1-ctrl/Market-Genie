@@ -5795,75 +5795,124 @@ _gex_lock = threading.Lock()
 
 
 def _compute_gex_for(sym):
-    """Compute net dealer GEX for sym from Massive/Polygon v3 options snapshot.
+    """Compute net dealer GEX for sym using yfinance options chains (free, no Massive plan needed).
+    Pulls the 3 nearest expiry dates, sums gamma × OI across all strikes.
     Returns dict with total_bn, label, call_wall, put_wall, spot — or None on failure."""
-    data = massive_get(f"/v3/snapshot/options/{sym}",
-                       {"limit": "250", "sort": "open_interest", "order": "desc"})
-    if not data or not data.get("results"):
-        return None
+    try:
+        ticker = yf.Ticker(sym)
 
-    results    = data["results"]
-    spot       = 0.0
-    total_gex  = 0.0
-    strike_gex = {}   # {strike: net_gex_dollars}
-
-    for contract in results:
-        # Spot price — use underlying_asset.price from any contract
+        # Get spot price via fast_info (fastest path, avoids full .info call)
+        spot = 0.0
+        try:
+            spot = float(ticker.fast_info.get("lastPrice") or ticker.fast_info.get("last_price") or 0)
+        except Exception:
+            pass
         if spot <= 0:
-            ua = contract.get("underlying_asset", {})
-            spot = float(ua.get("price", 0) or 0)
+            try:
+                spot = float(ticker.fast_info["last_price"])
+            except Exception:
+                pass
 
-        details  = contract.get("details", {})
-        greeks   = contract.get("greeks", {})
-        gamma    = float(greeks.get("gamma", 0) or 0)
-        oi       = float(contract.get("open_interest", 0) or 0)
-        opt_type = details.get("contract_type", "").lower()
-        strike   = float(details.get("strike_price", 0) or 0)
+        # Get available expiry dates — use nearest 3 to capture most OI
+        try:
+            expirations = ticker.options  # tuple of date strings "YYYY-MM-DD"
+        except Exception:
+            return None
+        if not expirations:
+            return None
 
-        if gamma <= 0 or oi <= 0 or strike <= 0 or spot <= 0:
-            continue
+        # Focus on nearest 3 expiries (where >90% of gamma exposure lives)
+        near_expiries = expirations[:3]
 
-        gex = gamma * oi * 100 * spot * spot * 0.01
-        if opt_type == "put":
-            gex *= -1
+        total_gex  = 0.0
+        strike_gex = {}   # {strike: net_gex_dollars}
+        got_spot_from_chain = False
 
-        total_gex += gex
-        strike_gex[strike] = strike_gex.get(strike, 0.0) + gex
+        for exp in near_expiries:
+            try:
+                chain = ticker.option_chain(exp)
+            except Exception:
+                continue
 
-    if spot <= 0 or not strike_gex:
+            for df, opt_type in ((chain.calls, "call"), (chain.puts, "put")):
+                if df is None or df.empty:
+                    continue
+                for _, row in df.iterrows():
+                    gamma  = float(row.get("gamma", 0) or 0)
+                    oi     = float(row.get("openInterest", 0) or 0)
+                    strike = float(row.get("strike", 0) or 0)
+
+                    # yfinance sometimes has spot embedded as lastPrice in chain
+                    if spot <= 0 and not got_spot_from_chain:
+                        lp = float(row.get("lastPrice", 0) or 0)
+                        if lp > 0 and strike > 0:
+                            # approximate: pick mid of nearby ITM/OTM strikes later
+                            pass
+
+                    if gamma <= 0 or oi <= 0 or strike <= 0:
+                        continue
+                    if spot <= 0:
+                        continue
+
+                    gex = gamma * oi * 100 * spot * spot * 0.01
+                    if opt_type == "put":
+                        gex *= -1
+
+                    total_gex += gex
+                    strike_gex[strike] = strike_gex.get(strike, 0.0) + gex
+
+        if spot <= 0 or not strike_gex:
+            return None
+
+        # Find call wall (strike above spot with highest positive GEX)
+        # and put wall (strike below spot with most negative GEX)
+        call_wall = put_wall = 0.0
+        max_cw = max_pw = 0.0
+        for st, gx in strike_gex.items():
+            if st > spot and gx > max_cw:
+                max_cw = gx;  call_wall = st
+            elif st < spot and gx < max_pw:
+                max_pw = gx;  put_wall = st
+
+        total_bn = total_gex / 1e9
+        if total_bn > 1.0:
+            label = "positive"      # dealers long gamma → mean-reverting tape
+        elif total_bn < -0.5:
+            label = "negative"      # dealers short gamma → momentum-amplifying tape
+        else:
+            label = "neutral"
+
+        return {
+            "total_bn":  round(total_bn, 3),
+            "label":     label,
+            "call_wall": call_wall,
+            "put_wall":  put_wall,
+            "spot":      spot,
+        }
+
+    except Exception as e:
+        print(f"[GEX] _compute_gex_for({sym}) error: {e}")
         return None
-
-    # Find call wall (highest positive GEX strike above spot)
-    # and put wall (most negative GEX strike below spot)
-    call_wall = put_wall = 0.0
-    max_cw = max_pw = 0.0
-    for st, gx in strike_gex.items():
-        if st > spot and gx > max_cw:
-            max_cw = gx;  call_wall = st
-        elif st < spot and gx < max_pw:
-            max_pw = gx;  put_wall = st
-
-    total_bn = total_gex / 1e9
-    if total_bn > 1.0:
-        label = "positive"      # dealers long gamma, mean-reverting
-    elif total_bn < -0.5:
-        label = "negative"      # dealers short gamma, momentum-amplifying
-    else:
-        label = "neutral"
-
-    return {
-        "total_bn":  round(total_bn, 3),
-        "label":     label,
-        "call_wall": call_wall,
-        "put_wall":  put_wall,
-        "spot":      spot,
-    }
 
 
 def _gex_poll_loop():
-    """Poll GEX for SPY and QQQ every 15 minutes during market hours."""
+    """Poll GEX for SPY and QQQ every 15 minutes during market hours (via yfinance)."""
+    # Initial delay: stagger startup so yfinance auth crumb is established
+    time.sleep(30)
     while True:
         try:
+            # Skip outside market hours — options chain fetch is slow, no value on weekends
+            _now_et = datetime.now(tz=None)
+            # Use a simple UTC offset approximation (ET = UTC-4 in summer, UTC-5 in winter)
+            # This keeps it dependency-free; worst case we run one extra fetch
+            _utc_hour = datetime.utcnow().hour
+            _et_hour  = (_utc_hour - 4) % 24   # EDT approximation
+            _dow      = datetime.utcnow().weekday()   # 0=Mon … 6=Sun
+            _market_open = (_dow < 5) and (9 <= _et_hour <= 16)
+            if not _market_open:
+                time.sleep(300)   # sleep 5 min and recheck on weekends/evenings
+                continue
+
             for sym in ("SPY", "QQQ"):
                 try:
                     res = _compute_gex_for(sym)
@@ -5875,9 +5924,10 @@ def _gex_poll_loop():
                               f"call_wall=${res['call_wall']:.0f} put_wall=${res['put_wall']:.0f} "
                               f"spot=${res['spot']:.2f}")
                     else:
-                        print(f"[GEX] {sym} — no data (check Massive options plan)")
+                        print(f"[GEX] {sym} — no data returned from yfinance options chain")
                 except Exception as _ge:
                     print(f"[GEX] {sym} error: {_ge}")
+                time.sleep(5)   # small gap between SPY and QQQ fetches
         except Exception as e:
             print(f"[GEX] Loop error: {e}")
         time.sleep(900)   # every 15 minutes
