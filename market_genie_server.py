@@ -5758,6 +5758,135 @@ _pc_state = {
 _pc_lock = threading.Lock()
 
 
+# ── Gamma Exposure (GEX) Engine ───────────────────────────────────────────────
+# GEX measures net dealer hedging pressure: how much dollar-hedging dealers must do
+# when price moves 1%. Positive GEX = dealers are long gamma = they buy dips and
+# sell rips = counter-cyclical = mean-reversion, bad for momentum trades.
+# Negative GEX = dealers are short gamma = they buy rallies and sell declines =
+# pro-cyclical = amplifies moves = GREAT for 3× ETF directional trades.
+#
+# Formula (SpotGamma convention):
+#   call_gex = +gamma × OI × 100 × spot² × 0.01
+#   put_gex  = -gamma × OI × 100 × spot² × 0.01
+#   total_gex = sum(call_gex + put_gex) across all strikes/expirations
+#
+# Computed for SPY and QQQ using the Massive/Polygon v3 options snapshot endpoint
+# (same endpoint as massive_options_flow, just extracting gamma this time).
+# Polled every 15 minutes — GEX changes slowly through the session.
+_gex_state = {
+    "spy": {
+        "total_bn": 0.0,    # total GEX in $Billions (positive = dealers long gamma)
+        "label":    "neutral",   # "positive" | "neutral" | "negative"
+        "call_wall": 0.0,   # strike with highest call GEX above spot (ceiling)
+        "put_wall":  0.0,   # strike with highest put GEX below spot (floor)
+        "spot":      0.0,
+        "updated_at": 0,
+    },
+    "qqq": {
+        "total_bn": 0.0,
+        "label":    "neutral",
+        "call_wall": 0.0,
+        "put_wall":  0.0,
+        "spot":      0.0,
+        "updated_at": 0,
+    },
+}
+_gex_lock = threading.Lock()
+
+
+def _compute_gex_for(sym):
+    """Compute net dealer GEX for sym from Massive/Polygon v3 options snapshot.
+    Returns dict with total_bn, label, call_wall, put_wall, spot — or None on failure."""
+    data = massive_get(f"/v3/snapshot/options/{sym}",
+                       {"limit": "250", "sort": "open_interest", "order": "desc"})
+    if not data or not data.get("results"):
+        return None
+
+    results    = data["results"]
+    spot       = 0.0
+    total_gex  = 0.0
+    strike_gex = {}   # {strike: net_gex_dollars}
+
+    for contract in results:
+        # Spot price — use underlying_asset.price from any contract
+        if spot <= 0:
+            ua = contract.get("underlying_asset", {})
+            spot = float(ua.get("price", 0) or 0)
+
+        details  = contract.get("details", {})
+        greeks   = contract.get("greeks", {})
+        gamma    = float(greeks.get("gamma", 0) or 0)
+        oi       = float(contract.get("open_interest", 0) or 0)
+        opt_type = details.get("contract_type", "").lower()
+        strike   = float(details.get("strike_price", 0) or 0)
+
+        if gamma <= 0 or oi <= 0 or strike <= 0 or spot <= 0:
+            continue
+
+        gex = gamma * oi * 100 * spot * spot * 0.01
+        if opt_type == "put":
+            gex *= -1
+
+        total_gex += gex
+        strike_gex[strike] = strike_gex.get(strike, 0.0) + gex
+
+    if spot <= 0 or not strike_gex:
+        return None
+
+    # Find call wall (highest positive GEX strike above spot)
+    # and put wall (most negative GEX strike below spot)
+    call_wall = put_wall = 0.0
+    max_cw = max_pw = 0.0
+    for st, gx in strike_gex.items():
+        if st > spot and gx > max_cw:
+            max_cw = gx;  call_wall = st
+        elif st < spot and gx < max_pw:
+            max_pw = gx;  put_wall = st
+
+    total_bn = total_gex / 1e9
+    if total_bn > 1.0:
+        label = "positive"      # dealers long gamma, mean-reverting
+    elif total_bn < -0.5:
+        label = "negative"      # dealers short gamma, momentum-amplifying
+    else:
+        label = "neutral"
+
+    return {
+        "total_bn":  round(total_bn, 3),
+        "label":     label,
+        "call_wall": call_wall,
+        "put_wall":  put_wall,
+        "spot":      spot,
+    }
+
+
+def _gex_poll_loop():
+    """Poll GEX for SPY and QQQ every 15 minutes during market hours."""
+    while True:
+        try:
+            for sym in ("SPY", "QQQ"):
+                try:
+                    res = _compute_gex_for(sym)
+                    if res:
+                        with _gex_lock:
+                            _gex_state[sym.lower()].update({**res, "updated_at": time.time()})
+                        gex_icon = "🟢" if res["label"] == "positive" else "🔴" if res["label"] == "negative" else "⚪"
+                        print(f"[GEX] {sym} {gex_icon} total={res['total_bn']:+.2f}B ({res['label']}) "
+                              f"call_wall=${res['call_wall']:.0f} put_wall=${res['put_wall']:.0f} "
+                              f"spot=${res['spot']:.2f}")
+                    else:
+                        print(f"[GEX] {sym} — no data (check Massive options plan)")
+                except Exception as _ge:
+                    print(f"[GEX] {sym} error: {_ge}")
+        except Exception as e:
+            print(f"[GEX] Loop error: {e}")
+        time.sleep(900)   # every 15 minutes
+
+
+threading.Thread(target=_gex_poll_loop, daemon=True, name="gex-feed").start()
+print("[GEX] Dealer gamma exposure thread started (SPY+QQQ every 15 min)")
+
+
 # ── NYSE TICK Index Engine ─────────────────────────────────────────────────────
 # NYSE TICK = number of NYSE stocks on an uptick minus those on a downtick.
 # Range roughly −1500 to +1500. A single reading is noise; a 3-bar average is signal.
@@ -8043,6 +8172,61 @@ def _alp_execute_signal(res: dict):
                 print(f"[TICK] {sym} — TICK={_tick_val:+.0f} ({_tick_label}) dir={direction} "
                       f"→ eff_conf {_tick_adj:+d} → {eff_conf:.1f}")
 
+    # ── Dealer GEX Adjustment ─────────────────────────────────────────────────
+    # Negative GEX = dealers short gamma → they must buy when market falls, sell when
+    # it rises → amplifies moves → great for 3× ETF momentum trades (+3 pts).
+    # Positive GEX = dealers long gamma → they fight moves (mean-reversion regime)
+    # → bad for momentum ETFs (−2 pts).
+    # Call Wall: heavy call OI strike above spot → acts as ceiling for bulls (−2 pts).
+    # Put Wall: heavy put OI strike below spot → acts as floor / support for bulls (+2 pts).
+    _gex_key = "spy" if sym in ("SPY", "SPXL", "SPXS") else "qqq" if sym in ("QQQ", "TQQQ", "SQQQ") else None
+    if _gex_key is None and sym in ("SOXL", "SOXS", "IWM"):
+        _gex_key = "spy"   # use SPY regime for broad-market semis / small cap
+    if _gex_key:
+        with _gex_lock:
+            _gex_snap = dict(_gex_state[_gex_key])
+        _gex_age = time.time() - _gex_snap.get("updated_at", 0)
+        if _gex_age < 1200:   # only trust if refreshed within last 20 min
+            _gex_label   = _gex_snap.get("label", "neutral")
+            _gex_total   = _gex_snap.get("total_bn", 0.0)
+            _gex_spot    = _gex_snap.get("spot", 0.0)
+            _gex_cwall   = _gex_snap.get("call_wall", 0.0)
+            _gex_pwall   = _gex_snap.get("put_wall", 0.0)
+            _gex_adj     = 0
+            _gex_notes   = []
+
+            # Regime tilt: negative GEX → dealers amplify, positive → dealers dampen
+            if _gex_label == "negative":
+                # Dealers short gamma: momentum environment — good for leveraged ETFs
+                if direction == "bull":
+                    _gex_adj += 3
+                    _gex_notes.append("neg GEX(bull)+3")
+                else:
+                    _gex_adj += 2
+                    _gex_notes.append("neg GEX(bear)+2")
+            elif _gex_label == "positive":
+                # Dealers long gamma: mean-reversion environment — bad for momentum
+                _gex_adj -= 2
+                _gex_notes.append("pos GEX -2")
+
+            # Call wall / put wall proximity adjustments (only for bull ETFs)
+            if direction == "bull" and _gex_spot > 0:
+                if _gex_cwall > 0:
+                    _dist_cwall = (_gex_cwall - _gex_spot) / _gex_spot
+                    if 0 < _dist_cwall < 0.005:   # call wall within 0.5% above
+                        _gex_adj -= 2
+                        _gex_notes.append(f"call wall@{_gex_cwall:.1f} -2")
+                if _gex_pwall > 0:
+                    _dist_pwall = (_gex_spot - _gex_pwall) / _gex_spot
+                    if 0 < _dist_pwall < 0.005:   # put wall within 0.5% below
+                        _gex_adj += 2
+                        _gex_notes.append(f"put wall@{_gex_pwall:.1f} +2")
+
+            if _gex_adj != 0:
+                eff_conf += _gex_adj
+                print(f"[GEX] {sym} — {_gex_key.upper()} GEX={_gex_total:+.2f}B ({_gex_label}) "
+                      f"spot={_gex_spot:.2f} → eff_conf {_gex_adj:+d} ({', '.join(_gex_notes)}) → {eff_conf:.1f}")
+
     # ── Cross-Pair Confirmation ───────────────────────────────────────────────
     # TQQQ + SPXL firing the same direction within 5 min = both Nasdaq AND S&P
     # futures vehicles agree → broad market conviction → +5 eff_conf on second signal.
@@ -8202,6 +8386,12 @@ def _alp_execute_signal(res: dict):
             _tick_label_bp   = _tick_state.get("label", "neutral")
             _tick_updated_bp = _tick_state.get("updated_at", 0)
         _tick_distribution = (_tick_label_bp == "distribution") and (time.time() - _tick_updated_bp < 300)
+        # GEX bearish confirmation: negative GEX means dealers amplify moves — real bear signal
+        _gex_bp_key = "spy"   # use SPY GEX for regime gate (broadest market gauge)
+        with _gex_lock:
+            _gex_bp_snap = dict(_gex_state[_gex_bp_key])
+        _gex_bp_age    = time.time() - _gex_bp_snap.get("updated_at", 0)
+        _gex_negative  = (_gex_bp_snap.get("label", "neutral") == "negative") and (_gex_bp_age < 1200)
         if ba == 1 and eff_conf >= 92:
             if _futures_confirm_bear:
                 print(f"[RegimeGate] {sym} — SKIPPED: BEARISH tape (breadth={breadth_score:.0f}) "
@@ -8220,11 +8410,20 @@ def _alp_execute_signal(res: dict):
                       f"AND TLT={_tlt_chg_bp:+.2f}% (yields rising) — "
                       f"bypass blocked: NYSE selling pressure + rates confirm real bear regime")
                 return
+            if _gex_negative and _futures_confirm_bear is False and _pc_fear:
+                # Negative GEX (amplified moves) + genuine fear (P/C > 1.2) = dealers AND options market
+                # both signaling bearish amplification — bypass is too risky even without futures confirm
+                print(f"[RegimeGate] {sym} — SKIPPED: BEARISH tape (breadth={breadth_score:.0f}) "
+                      f"AND GEX={_gex_bp_snap.get('total_bn',0.0):+.2f}B (negative, dealers amplify) "
+                      f"AND P/C={_pc_ratio:.2f}>1.2 (genuine fear) — "
+                      f"bypass blocked: dealer positioning + options fear confirm real bear regime")
+                return
             _bypass_confirms = []
             if not _futures_confirm_bear:   _bypass_confirms.append(f"NQ={_nq_bp:+.2f}%/ES={_es_bp:+.2f}% flat-pos")
             if not _pc_fear:                _bypass_confirms.append(f"P/C={_pc_ratio:.2f}<1.2")
             if not _tlt_bearish:            _bypass_confirms.append(f"TLT={_tlt_chg_bp:+.2f}%>-0.3%")
             if not _tick_distribution:      _bypass_confirms.append(f"TICK={_tick_val_bp:+.0f} ok")
+            if not _gex_negative:           _bypass_confirms.append(f"GEX={_gex_bp_snap.get('total_bn',0.0):+.2f}B ok")
             print(f"[RegimeGate] {sym} — BEARISH tape bypass: ba=1 + eff_conf={eff_conf:.1f}≥92 "
                   f"✓ ({', '.join(_bypass_confirms)})")
         else:
@@ -9039,6 +9238,24 @@ def api_debug_signals():
             "raw":        round(_tick_state.get("raw", 0.0), 1),
             "label":      _tick_state.get("label", "neutral"),
             "updated_at": _tick_state.get("updated_at", 0),
+        },
+        "gex": {
+            "spy": {
+                "total_bn":  round(_gex_state["spy"].get("total_bn", 0.0), 2),
+                "label":     _gex_state["spy"].get("label", "neutral"),
+                "call_wall": round(_gex_state["spy"].get("call_wall", 0.0), 2),
+                "put_wall":  round(_gex_state["spy"].get("put_wall", 0.0), 2),
+                "spot":      round(_gex_state["spy"].get("spot", 0.0), 2),
+                "updated_at": _gex_state["spy"].get("updated_at", 0),
+            },
+            "qqq": {
+                "total_bn":  round(_gex_state["qqq"].get("total_bn", 0.0), 2),
+                "label":     _gex_state["qqq"].get("label", "neutral"),
+                "call_wall": round(_gex_state["qqq"].get("call_wall", 0.0), 2),
+                "put_wall":  round(_gex_state["qqq"].get("put_wall", 0.0), 2),
+                "spot":      round(_gex_state["qqq"].get("spot", 0.0), 2),
+                "updated_at": _gex_state["qqq"].get("updated_at", 0),
+            },
         },
         "open_positions":      len(_alp_get_open_positions()),
         "top_candidates": [{
