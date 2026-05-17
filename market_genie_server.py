@@ -5758,6 +5758,157 @@ _pc_state = {
 _pc_lock = threading.Lock()
 
 
+# ── Half-Kelly Dynamic Position Sizing ───────────────────────────────────────
+# Thorp / Ernie Chan Half-Kelly: optimal bet fraction = (p×b - q) / b, halved.
+#   p = empirical win rate for this confidence band
+#   b = avg_win_pct / avg_loss_pct  (reward-to-risk ratio from real trade data)
+#   q = 1 - p
+#   Half-Kelly fraction = max(0, f*) / 2
+#
+# Applied as a multiplier on top of _ALP_POSITION_SIZE_USD (which VIX already
+# scales). Bands are sized from historical resolved trades in winrate.db:
+#   < 10 resolved trades in a band → fall back to static tier multiplier
+#   ≥ 10 trades → use live Half-Kelly from the DB
+#
+# Hard caps: position never goes below $10K or above $35K regardless of Kelly.
+# Refreshed every 30 minutes from winrate.db so it adapts as data accumulates.
+#
+# Static fallback tiers (used until enough data builds up):
+#   eff_conf 72–79  → 0.75× ($15K on $20K base)
+#   eff_conf 80–89  → 1.00× ($20K base)
+#   eff_conf 90–99  → 1.25× ($25K)
+#   eff_conf 100+   → 1.50× ($30K, max before hard cap)
+# ─────────────────────────────────────────────────────────────────────────────
+_KELLY_MIN_TRADES   = 10       # minimum resolved trades per band before using live Kelly
+_KELLY_HARD_MIN_USD = 10_000   # never go below $10K regardless of Kelly fraction
+_KELLY_HARD_MAX_USD = 35_000   # never go above $35K regardless of Kelly fraction
+
+# Confidence bands: (label, lo_inclusive, hi_exclusive)
+_KELLY_BANDS = [
+    ("72–79",  72,  80),
+    ("80–89",  80,  90),
+    ("90–99",  90, 100),
+    ("100+",  100, 999),
+]
+
+# Static fallback multipliers per band (used when not enough live data)
+_KELLY_STATIC_MULT = {
+    "72–79": 0.75,
+    "80–89": 1.00,
+    "90–99": 1.25,
+    "100+":  1.50,
+}
+
+# Live Half-Kelly state: { band_label: {"multiplier": float, "trades": int,
+#                                        "win_rate": float, "kelly_f": float} }
+_kelly_state = {b[0]: {"multiplier": _KELLY_STATIC_MULT[b[0]], "trades": 0,
+                        "win_rate": 0.0, "kelly_f": 0.0}
+                for b in _KELLY_BANDS}
+_kelly_lock  = threading.Lock()
+
+
+def _refresh_kelly_from_db():
+    """Query winrate.db, compute Half-Kelly per confidence band, update _kelly_state."""
+    try:
+        with sqlite3.connect(_WR_DB_PATH, timeout=5) as con:
+            rows = con.execute(
+                "SELECT confidence, outcome, pct_move FROM signals "
+                "WHERE outcome IN ('WIN','LOSS') AND confidence IS NOT NULL "
+                "AND pct_move IS NOT NULL"
+            ).fetchall()
+    except Exception as e:
+        print(f"[Kelly] DB read error: {e}")
+        return
+
+    if not rows:
+        return   # no resolved trades yet — keep static fallback
+
+    for label, lo, hi in _KELLY_BANDS:
+        band_rows = [r for r in rows if lo <= r[0] < hi]
+        n = len(band_rows)
+        if n < _KELLY_MIN_TRADES:
+            # Not enough data — keep current (static) multiplier
+            with _kelly_lock:
+                _kelly_state[label]["trades"] = n
+            continue
+
+        wins   = [r for r in band_rows if r[1] == "WIN"]
+        losses = [r for r in band_rows if r[1] == "LOSS"]
+        p      = len(wins) / n                          # empirical win rate
+        q      = 1.0 - p
+
+        avg_win  = (sum(abs(r[2]) for r in wins)  / len(wins))  if wins   else 0.0
+        avg_loss = (sum(abs(r[2]) for r in losses) / len(losses)) if losses else 0.0
+
+        if avg_loss <= 0 or avg_win <= 0:
+            continue
+
+        b      = avg_win / avg_loss                     # reward-to-risk ratio
+        kelly  = (p * b - q) / b                        # full Kelly fraction
+        half_k = max(0.0, kelly / 2.0)                  # Half-Kelly, floored at 0
+
+        # Convert fraction to a position multiplier relative to the static base.
+        # Neutral reference: p=0.50, b=1.33 (2% win / 1.5% loss) → kelly≈0.13,
+        # half_kelly≈0.065 — we anchor this to 1.0× and scale proportionally.
+        _NEUTRAL_HALF_K = 0.065                         # half-Kelly at neutral edge
+        if _NEUTRAL_HALF_K > 0:
+            multiplier = half_k / _NEUTRAL_HALF_K
+        else:
+            multiplier = 1.0
+
+        # Clamp multiplier to [0.5×, 1.75×] so live data can't produce extreme sizes
+        multiplier = min(max(multiplier, 0.50), 1.75)
+
+        with _kelly_lock:
+            _kelly_state[label] = {
+                "multiplier": round(multiplier, 3),
+                "trades":     n,
+                "win_rate":   round(p, 3),
+                "kelly_f":    round(half_k, 4),
+            }
+        print(f"[Kelly] Band {label}: n={n} WR={p:.1%} b={b:.2f} "
+              f"half-k={half_k:.4f} → size×{multiplier:.2f}")
+
+
+def _kelly_poll_loop():
+    """Refresh Half-Kelly sizing every 30 minutes."""
+    time.sleep(60)   # let winrate DB initialise before first read
+    while True:
+        try:
+            _refresh_kelly_from_db()
+        except Exception as e:
+            print(f"[Kelly] Poll error: {e}")
+        time.sleep(1800)   # 30-minute refresh
+
+
+threading.Thread(target=_kelly_poll_loop, daemon=True, name="kelly-sizer").start()
+print("[Kelly] Half-Kelly dynamic sizer started (30-min refresh from winrate.db)")
+
+
+def _kelly_position_usd(eff_conf: float, base_usd: float) -> float:
+    """Return Half-Kelly adjusted position size in USD.
+    eff_conf  — effective confidence score for this signal
+    base_usd  — starting position size (already VIX-adjusted)
+    Returns value clamped to [KELLY_HARD_MIN_USD, KELLY_HARD_MAX_USD]."""
+    label = "72–79"   # default band
+    for band_label, lo, hi in _KELLY_BANDS:
+        if lo <= eff_conf < hi:
+            label = band_label
+            break
+
+    with _kelly_lock:
+        snap = dict(_kelly_state.get(label, {}))
+
+    mult   = snap.get("multiplier", 1.0)
+    sized  = base_usd * mult
+    capped = min(max(sized, _KELLY_HARD_MIN_USD), _KELLY_HARD_MAX_USD)
+
+    src = "live" if snap.get("trades", 0) >= _KELLY_MIN_TRADES else "static"
+    print(f"[Kelly] eff_conf={eff_conf:.0f} band={label} "
+          f"×{mult:.2f} ({src}) → ${base_usd:,.0f} → ${capped:,.0f}")
+    return capped
+
+
 # ── Gamma Exposure (GEX) Engine ───────────────────────────────────────────────
 # GEX measures net dealer hedging pressure: how much dollar-hedging dealers must do
 # when price moves 1%. Positive GEX = dealers are long gamma = they buy dips and
@@ -7132,6 +7283,12 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
         elif _vix_sz < 15:
             _pos_usd *= 1.10   # +10% — calm trend environment, size up slightly
             print(f"[VIX] {sym} position increased to ${_pos_usd:,.0f} (VIX={_vix_sz:.1f}<15, +10%)")
+
+    # ── Half-Kelly dynamic sizing ─────────────────────────────────────────────
+    # Applies after VIX adjustment — Kelly scales the VIX-adjusted base, not the
+    # raw _ALP_POSITION_SIZE_USD, so the two risk controls compound correctly.
+    # (VIX reduces in high-vol; Kelly scales up high-confidence entries on top.)
+    _pos_usd = _kelly_position_usd(eff_conf, _pos_usd)
 
     qty = max(1, int(_pos_usd / price)) if price > 0 else 1
 
@@ -9306,6 +9463,17 @@ def api_debug_signals():
                 "spot":      round(_gex_state["qqq"].get("spot", 0.0), 2),
                 "updated_at": _gex_state["qqq"].get("updated_at", 0),
             },
+        },
+        "kelly": {
+            band: {
+                "multiplier": snap["multiplier"],
+                "trades":     snap["trades"],
+                "win_rate":   snap["win_rate"],
+                "kelly_f":    snap["kelly_f"],
+                "source":     "live" if snap["trades"] >= _KELLY_MIN_TRADES else "static",
+            }
+            for band, snap in (lambda s: s)(_kelly_state)
+            # read without lock for status snapshot (eventual consistency is fine here)
         },
         "open_positions":      len(_alp_get_open_positions()),
         "top_candidates": [{
