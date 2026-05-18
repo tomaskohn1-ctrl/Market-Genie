@@ -301,10 +301,13 @@ def fh_get(path, params=None):
 
 # ── Massive helpers ────────────────────────────────────────────────────────────
 # Auth: apiKey as query param (NOT Bearer header). API version: v2.
+_massive_403_paths = {}   # { path: last_log_ts } — rate-limit 403 noise per endpoint
+
 def massive_get(path, params=None):
     """Call Massive.com REST API v2. Returns parsed JSON or None.
     Retries once on read timeout. Semaphore caps concurrent requests at 4
-    to prevent timeout bursts when seed + prediction + scanner all fire at once."""
+    to prevent timeout bursts when seed + prediction + scanner all fire at once.
+    403 errors are logged at most once per 30 min per path to avoid log spam."""
     if not MASSIVE_KEY:
         return None
     p = params or {}
@@ -314,7 +317,10 @@ def massive_get(path, params=None):
             try:
                 r = requests.get(f"{MASSIVE_BASE}{path}", params=p, timeout=8)
                 if r.status_code == 403:
-                    print(f"[Massive] 403 on {path} — endpoint not in current plan")
+                    _now_403 = time.time()
+                    if _now_403 - _massive_403_paths.get(path, 0) > 1800:
+                        print(f"[Massive] 403 on {path} — endpoint not in current plan")
+                        _massive_403_paths[path] = _now_403
                     return None
                 r.raise_for_status()
                 return r.json()
@@ -6198,10 +6204,12 @@ def _tlt_pc_tick_poll_loop():
     - TICK: Massive/Polygon I:TICK 1-min bars, smoothed over last 3 bars (buying pressure)
     """
     import yfinance as yf
-    _PC_FETCH_INTERVAL   = 600   # options chain is heavier — every 10 min
-    _TICK_FETCH_INTERVAL = 120   # TICK every 2 min — fast-moving intraday signal
-    _last_pc_fetch   = 0.0
-    _last_tick_fetch = 0.0
+    _PC_FETCH_INTERVAL    = 600   # options chain is heavier — every 10 min
+    _TICK_FETCH_INTERVAL  = 120   # TICK every 2 min — fast-moving intraday signal
+    _TICK_ERR_LOG_INTERVAL = 1800  # only log TICK unavailable once per 30 min (suppress noise)
+    _last_pc_fetch    = 0.0
+    _last_tick_fetch  = 0.0
+    _last_tick_err_log = 0.0
 
     while True:
         try:
@@ -6262,11 +6270,17 @@ def _tlt_pc_tick_poll_loop():
                         tick_icon = "🟢" if label == "accumulation" else "🔴" if label == "distribution" else "⚪"
                         print(f"[TICK] {tick_icon} value={tick_v:+.0f} ({label})")
                     else:
-                        print("[TICK] unavailable — both v3 snapshot and v2 aggs returned no data "
-                              "(check Massive plan for indices access)")
+                        # Rate-limit this message — prints once per 30 min so it
+                        # doesn't flood the log while TICK remains unavailable.
+                        if now - _last_tick_err_log >= _TICK_ERR_LOG_INTERVAL:
+                            print("[TICK] unavailable — Massive plan doesn't include indices "
+                                  "(I:TICK requires Indices Starter). Suppressing further alerts.")
+                            _last_tick_err_log = now
                     _last_tick_fetch = now
                 except Exception as _tke:
-                    print(f"[TICK] fetch error: {_tke}")
+                    if now - _last_tick_err_log >= _TICK_ERR_LOG_INTERVAL:
+                        print(f"[TICK] fetch error: {_tke}")
+                        _last_tick_err_log = now
                     _last_tick_fetch = now
 
             # ── QQQ P/C Ratio ─────────────────────────────────────────────────
