@@ -6808,6 +6808,75 @@ _ALP_PROFIT_GUARD_PEAK    = float(os.getenv("ALPACA_PROFIT_GUARD_PEAK",  "200"))
 _ALP_PROFIT_GUARD_DROP    = float(os.getenv("ALPACA_PROFIT_GUARD_DROP",  "400"))  # $ drawdown from peak that triggers close-all
 _ALP_PROFIT_GUARD_PAUSE   = int(os.getenv("ALPACA_PROFIT_GUARD_PAUSE",    "20"))  # minutes to pause new entries after guard fires
 
+# ── AI-Trader TradeSync ───────────────────────────────────────────────────────
+# Publishes Market Genie's paper trades to ai4trade.ai so they appear on the
+# leaderboard and can be copy-traded by followers.  Completely optional — if
+# AI_TRADER_TOKEN is blank the sync is silently skipped.
+_AIT_BASE     = "https://api.ai4trade.ai"
+_AIT_TOKEN    = os.getenv("AI_TRADER_TOKEN", "")     # set in Railway Variables
+_AIT_AGENT    = os.getenv("AI_TRADER_AGENT", "MarketGenie")
+
+def _ait_push(action: str, sym: str, price: float, qty: int, content: str = ""):
+    """Fire-and-forget: publish one real-time signal to AI-Trader in a daemon thread.
+    action: 'buy' | 'sell' | 'short' | 'cover'
+    Never raises — failure is logged but never blocks trading logic."""
+    global _AIT_TOKEN
+    if not _AIT_TOKEN:
+        return
+
+    def _post():
+        global _AIT_TOKEN
+        try:
+            r = requests.post(
+                f"{_AIT_BASE}/api/signals/realtime",
+                headers={"X-Claw-Token": _AIT_TOKEN, "Content-Type": "application/json"},
+                json={"action": action, "symbol": sym, "price": price,
+                      "quantity": qty, "content": content},
+                timeout=6
+            )
+            if r.status_code == 200:
+                d = r.json()
+                print(f"[AITrader] ✅ {action.upper()} {sym} @${price:.2f} pushed "
+                      f"(signal_id={d.get('signal_id','?')}, "
+                      f"followers={d.get('follower_count', 0)})")
+            else:
+                print(f"[AITrader] ⚠️  {action.upper()} {sym} HTTP {r.status_code}: {r.text[:120]}")
+        except Exception as _e:
+            print(f"[AITrader] push error ({action} {sym}): {_e}")
+
+    threading.Thread(target=_post, daemon=True, name=f"AITrader-{action}-{sym}").start()
+
+
+def _ait_register_if_needed():
+    """Auto-register on AI-Trader and print the token to Railway logs if none set."""
+    global _AIT_TOKEN
+    if _AIT_TOKEN:
+        print(f"[AITrader] Token configured — trade sync active as '{_AIT_AGENT}'")
+        return
+    try:
+        r = requests.post(
+            f"{_AIT_BASE}/api/claw/agents/selfRegister",
+            headers={"Content-Type": "application/json"},
+            json={"name": _AIT_AGENT},
+            timeout=8
+        )
+        if r.status_code == 200:
+            data  = r.json()
+            token = data.get("token") or data.get("claw_token") or data.get("api_key", "")
+            if token:
+                _AIT_TOKEN = token
+                print(f"[AITrader] ✅ Auto-registered as '{_AIT_AGENT}' "
+                      f"— add AI_TRADER_TOKEN={token} to Railway Variables to persist")
+            else:
+                print(f"[AITrader] Registration OK but no token in response: {r.text[:200]}")
+        else:
+            print(f"[AITrader] Registration skipped (HTTP {r.status_code}) — "
+                  f"set AI_TRADER_TOKEN manually to enable trade sync")
+    except Exception as _re:
+        print(f"[AITrader] Registration error: {_re}")
+
+threading.Thread(target=_ait_register_if_needed, daemon=True, name="AITrader-register").start()
+
 # ── Alpaca Data API — real-time batch quote cache ─────────────────────────────
 # Uses the same API keys already in _ALPACA_KEY / _ALPACA_SECRET.
 # Background thread pre-fetches the entire scanner universe every 12 seconds
@@ -7609,6 +7678,13 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
                   f"fill=${fill_price:.2f} | stop=${stop_px} | target=${target_px} "
                   f"| oco_id={oco_resp.get('id','?')[:8]}")
 
+            # ── AI-Trader entry sync ──────────────────────────────────────────
+            _ait_action = "buy" if direction == "bull" else "short"
+            _ait_note   = (f"Alpha Engine {direction.upper()} | conf={eff_conf:.0f}% | "
+                           f"regime={_breadth_state.get('regime','?')} | "
+                           f"stop=${stop_px} target=${target_px}")
+            _ait_push(_ait_action, sym, fill_price, fill_qty, _ait_note)
+
             # Store fill price + increment daily trade count
             with _alp_lock:
                 if sym in _alp_last_traded:
@@ -7755,10 +7831,29 @@ def _alp_close_position(sym: str, side: str):
 
     try:
         # Close the position via DELETE /v2/positions/{sym}
+        # Fetch current price + P&L for AI-Trader sync before closing
+        _ait_close_price = 0.0
+        _ait_close_qty   = 1
+        _ait_close_pnl   = ""
+        try:
+            _pos_r = requests.get(f"{_ALPACA_BASE_URL}/v2/positions/{sym}",
+                                  headers=_alp_headers(), timeout=4)
+            if _pos_r.status_code == 200:
+                _pd = _pos_r.json()
+                _ait_close_price = float(_pd.get("current_price") or 0)
+                _ait_close_qty   = abs(int(float(_pd.get("qty", 1))))
+                _ait_close_pnl   = f"P&L={float(_pd.get('unrealized_plpc',0))*100:+.2f}%"
+        except Exception:
+            pass
+
         r = requests.delete(f"{_ALPACA_BASE_URL}/v2/positions/{sym}",
                             headers=_alp_headers(), timeout=10)
         if r.status_code in (200, 201, 204):
             print(f"[TimeExit] ✅ {sym} closed at market (time-based exit)")
+            # ── AI-Trader exit sync ───────────────────────────────────────────
+            _ait_exit_action = "sell" if side == "long" else "cover"
+            _ait_push(_ait_exit_action, sym, _ait_close_price, _ait_close_qty,
+                      f"TimeExit {_ait_close_pnl}")
         else:
             print(f"[TimeExit] ❌ {sym} close failed HTTP {r.status_code}: {r.text[:200]}")
     except Exception as e:
@@ -7883,21 +7978,37 @@ def _alp_time_exit_loop():
             current_syms = {p["symbol"] for p in positions}
             for _gone_sym, _gone_info in list(_alp_time_exit_prev_positions.items()):
                 if _gone_sym not in current_syms:
-                    if _gone_info.get("pnl_pct", 0) < 0:
+                    _gone_pnl_pct = _gone_info.get("pnl_pct", 0)
+                    if _gone_pnl_pct < 0:
                         with _alp_lock:
                             _alp_loss_cooldown[_gone_sym] = now_ts
                         _save_alp_state()
                         print(f"[BracketStop] ❄️  {_gone_sym} bracket stop detected "
-                              f"(was {_gone_info.get('pnl_pct',0):.2f}%) — "
+                              f"(was {_gone_pnl_pct:.2f}%) — "
                               f"{_ALP_LOSS_COOLDOWN_MINS}m cooldown set")
+                        # ── AI-Trader bracket-stop sync ───────────────────────
+                        with _alp_lock:
+                            _gone_entry = _alp_last_traded.get(_gone_sym, {})
+                        _gone_side = _gone_entry.get("dir", "bull")
+                        _gone_fill = _gone_entry.get("fill", 0.0)
+                        _ait_push("sell" if _gone_side == "bull" else "cover",
+                                  _gone_sym, _gone_fill, 1,
+                                  f"BracketStop P&L≈{_gone_pnl_pct:+.2f}%")
                     else:
                         with _alp_lock:
+                            _gone_entry2 = _alp_last_traded.get(_gone_sym, {})
                             _alp_last_traded.pop(_gone_sym, None)
                             _alp_exit_cooldown[_gone_sym] = now_ts
                         _save_alp_state()
                         print(f"[BracketStop] 🏆 {_gone_sym} bracket TARGET hit "
-                              f"(was {_gone_info.get('pnl_pct',0):.2f}%) — "
+                              f"(was {_gone_pnl_pct:.2f}%) — "
                               f"{_ALP_EXIT_COOLDOWN_MINS}m exit cooldown set")
+                        # ── AI-Trader target-hit sync ─────────────────────────
+                        _gone_side2 = _gone_entry2.get("dir", "bull")
+                        _gone_fill2 = _gone_entry2.get("fill", 0.0)
+                        _ait_push("sell" if _gone_side2 == "bull" else "cover",
+                                  _gone_sym, _gone_fill2, 1,
+                                  f"TargetHit P&L≈{_gone_pnl_pct:+.2f}%")
             # Update tracker for next cycle
             _alp_time_exit_prev_positions.clear()
             for _p in positions:
