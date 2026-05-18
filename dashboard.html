@@ -5004,6 +5004,12 @@ function renderPredictions() {
       const entryFmt  = entryPx.toFixed(2);
       const rr        = (tgtPct / stopPct).toFixed(1);
       const tgtLabel  = isStrong ? '+2%' : '+1%';
+      // Drift warning: show if signal was generated at a different price (>1% away)
+      const scanPx    = r.scan_price || entryPx;
+      const driftPct  = Math.abs((entryPx - scanPx) / scanPx * 100);
+      const driftWarn = driftPct > 1.0
+        ? `<span title="Signal generated at $${scanPx.toFixed(2)} — price has moved ${driftPct.toFixed(1)}% since scan" style="font-size:8px;font-weight:800;color:#ff9100;background:rgba(255,145,0,0.12);border:1px solid rgba(255,145,0,0.4);padding:1px 5px;border-radius:3px;letter-spacing:0.3px">⚠ MOVED ${driftPct.toFixed(1)}%</span>`
+        : '';
       const isEliteOrPrime = tier === 'ELITE' || tier === 'PRIME';
       const forceBtn = isEliteOrPrime
         ? `<button onclick="event.stopPropagation();forceAlpacaTrade('${r.sym}',this)"
@@ -5017,6 +5023,7 @@ function renderPredictions() {
             <span style="color:#ff4455">Stop</span><span style="color:#ff4455;font-weight:700">$${stopFmt}</span><span style="color:var(--muted);font-size:9px">-0.5%</span>
             <span style="color:#00e676">Target</span><span style="color:#00e676;font-weight:700">$${tgtFmt}</span><span style="color:var(--muted);font-size:9px">${tgtLabel}</span>
             <span style="color:#ffd740;font-size:9px;font-weight:700">R:R ${rr}x</span>
+            ${driftWarn}
             ${forceBtn}
           </div>
         </div>`;

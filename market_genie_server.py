@@ -5022,6 +5022,19 @@ def predict_scan():
     for r in results:
         r.pop("_ts", None)
 
+    # ── Refresh stale scan prices with live cache ─────────────────────────────
+    # Predictions are stored at scan time (up to 15 min old). The displayed
+    # Entry/Stop/Target are calculated from r.price in the dashboard, so a stale
+    # price produces wrong levels (e.g. target already passed, stop too tight).
+    # Overwrite price with the most recent tick from _alp_snap_cache if available.
+    with _alp_snap_lock:
+        _snap_copy = {s: d.get("c") for s, d in _alp_snap_cache.items() if d.get("c")}
+    for r in results:
+        live = _snap_copy.get(r.get("sym", ""))
+        if live and live > 0:
+            r["scan_price"] = r.get("price", live)   # preserve original for drift display
+            r["price"] = round(float(live), 2)
+
     # Sort: both_agree first (88.4% WR), then confidence desc, then streak desc
     # both_agree=0 is a 50/50 coin flip per the win-rate data — deprioritise completely
     tier_order = {"ELITE": 0, "PRIME": 1, "SOLID": 2, None: 3}
