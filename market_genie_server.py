@@ -8535,23 +8535,33 @@ def _alp_execute_signal(res: dict):
             _qqq_chg = _breadth_state.get("qqq_chg", 0.0)
         _tape_bearish = _spy_chg <= -0.2 and _qqq_chg <= -0.2
         _tape_bullish = _spy_chg >=  0.2 and _qqq_chg >=  0.2
-        # Bypass A: ba=1 + eff_conf ≥ 82 — but MUST be directionally aligned with tape.
-        # If SPY/QQQ are both negative, only bear ETFs can use this bypass (and vice versa).
-        # Prevents bull ETFs from entering via Bypass A while the tape is clearly falling.
+        # SPY-only bullish: IWM and SPY track S&P, not Nasdaq — QQQ not required.
+        # Use a slightly higher eff_conf bar (72) since only one benchmark confirms.
+        _spy_bullish  = _spy_chg >=  0.2   # SPY alone positive
+        _spy_bearish  = _spy_chg <= -0.2   # SPY alone negative
+        # Bypass A: ba=1 + eff_conf ≥ 80 — lowered from 82 (TQQQ was hitting 80-81 repeatedly).
+        # MUST be directionally aligned with tape (no bull entry if tape clearly falling).
         _ba_dir_ok = (
             (sym in _ETF_BEAR_UNIVERSE and not _tape_bullish) or
             (sym in _ETF_BULL_UNIVERSE and not _tape_bearish)
         )
-        _neutral_ba_bypass    = (ba == 1 and eff_conf >= 82 and _ba_dir_ok)
+        _neutral_ba_bypass    = (ba == 1 and eff_conf >= 80 and _ba_dir_ok)
         _neutral_elite_bypass = eff_conf >= 90
+        # Bypass C (directional tape): breadth lags price by 5-10 min.
+        # Standard: SPY AND QQQ both ≥ 0.2% → full tape confirmation.
+        # SPY-only: IWM and SPY instruments accept SPY ≥ 0.2% alone (these track S&P, not NDX).
         _neutral_dir_bypass   = (
             (sym in _ETF_BEAR_UNIVERSE and _tape_bearish and ba == 1 and eff_conf >= 68) or
-            (sym in _ETF_BULL_UNIVERSE and _tape_bullish and ba == 1 and eff_conf >= 68)
+            (sym in _ETF_BULL_UNIVERSE and _tape_bullish and ba == 1 and eff_conf >= 68) or
+            (sym in ("IWM", "SPY", "SPXL", "SPXS") and _spy_bullish and
+             sym in _ETF_BULL_UNIVERSE and ba == 1 and eff_conf >= 72) or
+            (sym in ("IWM", "SPY", "SPXL", "SPXS") and _spy_bearish and
+             sym in _ETF_BEAR_UNIVERSE and ba == 1 and eff_conf >= 72)
         )
         if not _neutral_ba_bypass and not _neutral_elite_bypass and not _neutral_dir_bypass:
             print(f"[RegimeGate] {sym} — SKIPPED: NEUTRAL tape (breadth={breadth_score:.0f}, "
                   f"SPY={_spy_chg:+.2f}% QQQ={_qqq_chg:+.2f}%), "
-                  f"ETF requires regime or (ba=1+eff_conf≥82) or eff_conf≥90 or "
+                  f"ETF requires regime or (ba=1+eff_conf≥80) or eff_conf≥90 or "
                   f"(directional tape ba=1+eff_conf≥68) — got ba={ba} eff_conf={eff_conf:.1f}")
             return
         if _neutral_dir_bypass and not _neutral_ba_bypass and not _neutral_elite_bypass:
@@ -8559,7 +8569,7 @@ def _alp_execute_signal(res: dict):
             print(f"[RegimeGate] {sym} — NEUTRAL bypassed: directional tape ({_dir_tag}) "
                   f"ba=1 + eff_conf={eff_conf:.1f}≥68 ✓")
         else:
-            _bypass_reason = f"ba=1 + eff_conf={eff_conf:.1f}≥82" if _neutral_ba_bypass else f"ELITE eff_conf={eff_conf:.1f}≥90"
+            _bypass_reason = f"ba=1 + eff_conf={eff_conf:.1f}≥80" if _neutral_ba_bypass else f"ELITE eff_conf={eff_conf:.1f}≥90"
             print(f"[RegimeGate] {sym} — NEUTRAL tape bypassed: {_bypass_reason} ✓")
     if breadth_score > 65 and sym in _ETF_BEAR_UNIVERSE:
         # Elite bypass: both models agree AND eff_conf ≥ 95 → models are very strongly
