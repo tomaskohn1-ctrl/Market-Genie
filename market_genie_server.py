@@ -8162,7 +8162,19 @@ def _alp_execute_signal(res: dict):
         exit_ts = _alp_exit_cooldown.get(sym, 0)
     if exit_ts:
         secs_elapsed = time.time() - exit_ts
-        exit_cooldown_secs = _ALP_EXIT_COOLDOWN_MINS * 60
+        # ── Regime-aware exit cooldown ────────────────────────────────────────
+        # In a confirmed BEARISH tape with high-conviction bear ETF signal,
+        # shorten the cooldown from 30→15 min. Rationale: on strong trending
+        # bear days (SOXL 100 eff_conf, breadth ≤35) the setup is genuinely
+        # refreshed after 15 min — 30 min lockout wastes clean afternoon moves.
+        _exit_regime = _breadth_state.get("regime", "NEUTRAL")
+        _is_bear_etf = sym in _ETF_BEAR_UNIVERSE
+        if _exit_regime == "BEARISH" and _is_bear_etf and eff_conf >= 80:
+            exit_cooldown_secs = 15 * 60  # 15 min for high-conviction bear in BEARISH tape
+            _cd_label = "15m (regime-fast)"
+        else:
+            exit_cooldown_secs = _ALP_EXIT_COOLDOWN_MINS * 60
+            _cd_label = f"{_ALP_EXIT_COOLDOWN_MINS}m"
         if secs_elapsed < exit_cooldown_secs:
             mins_left = int((exit_cooldown_secs - secs_elapsed) / 60) + 1
             print(f"[Alpaca] {sym} — SKIPPED: exit cooldown active ({mins_left}m remaining, any-exit rest)")
