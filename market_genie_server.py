@@ -6760,15 +6760,17 @@ _load_alp_state()   # restore on every worker start
 
 # ── Portfolio High-Water Mark Profit Guard ────────────────────────────────────
 # If session P&L peaks above $200 and then drops more than $300 from that peak,
-# close all positions and pause new entries for 30 min.
+# close all positions and pause new entries for 20 min.
 # Prevents "gave back all gains" days: had $400+ profit, ended -$608.
+# Tuned May 18 2026: pause 30→20 min (more runway before 12:30 dead zone);
+# drop threshold $300→$400 (less hair-trigger on normal intraday swings).
 _alp_session_start_equity = None   # equity at session start (first loop run)
 _alp_session_peak_pnl     = 0.0    # highest session P&L seen today
 _alp_profit_guard_fired   = False  # True after guard fires (one-shot per session)
 _alp_profit_guard_until   = 0.0    # timestamp: block new entries until this time
 _ALP_PROFIT_GUARD_PEAK    = float(os.getenv("ALPACA_PROFIT_GUARD_PEAK",  "200"))  # min peak before guard activates
-_ALP_PROFIT_GUARD_DROP    = float(os.getenv("ALPACA_PROFIT_GUARD_DROP",  "300"))  # $ drawdown from peak that triggers close-all
-_ALP_PROFIT_GUARD_PAUSE   = int(os.getenv("ALPACA_PROFIT_GUARD_PAUSE",    "30"))  # minutes to pause new entries after guard fires
+_ALP_PROFIT_GUARD_DROP    = float(os.getenv("ALPACA_PROFIT_GUARD_DROP",  "400"))  # $ drawdown from peak that triggers close-all
+_ALP_PROFIT_GUARD_PAUSE   = int(os.getenv("ALPACA_PROFIT_GUARD_PAUSE",    "20"))  # minutes to pause new entries after guard fires
 
 # ── Alpaca Data API — real-time batch quote cache ─────────────────────────────
 # Uses the same API keys already in _ALPACA_KEY / _ALPACA_SECRET.
