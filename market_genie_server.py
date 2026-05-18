@@ -5967,19 +5967,32 @@ _gex_lock = threading.Lock()
 def _compute_gex_for(sym):
     """Compute net dealer GEX for sym using yfinance options chains (free, no Massive plan needed).
     Pulls the 3 nearest expiry dates, sums gamma × OI across all strikes.
-    Returns dict with total_bn, label, call_wall, put_wall, spot — or None on failure."""
+    Returns dict with total_bn, label, call_wall, put_wall, spot — or None on failure.
+
+    Two key robustness improvements over the naive approach:
+    1. Spot price pulled from _alp_snap_cache (live WebSocket) first — fast_info.get() does
+       not exist on the FastInfo object and silently returns None, leaving spot=0.
+    2. When yfinance omits gamma greeks (common during market hours), Black-Scholes gamma
+       is estimated from impliedVolatility + time-to-expiry, which yfinance does return.
+    """
+    import math as _math
     try:
+        # --- Spot price: live snap cache first, then yfinance attribute access ---
+        spot = 0.0
+        with _alp_snap_lock:
+            _snap_entry = _alp_snap_cache.get(sym, {})
+        _snap_price = _snap_entry.get("c") if _snap_entry else None
+        if _snap_price and float(_snap_price) > 0:
+            spot = float(_snap_price)
+
         ticker = yf.Ticker(sym)
 
-        # Get spot price via fast_info (fastest path, avoids full .info call)
-        spot = 0.0
-        try:
-            spot = float(ticker.fast_info.get("lastPrice") or ticker.fast_info.get("last_price") or 0)
-        except Exception:
-            pass
         if spot <= 0:
+            # fast_info is a FastInfo object — use getattr, not .get()
             try:
-                spot = float(ticker.fast_info["last_price"])
+                fi = ticker.fast_info
+                spot = float(getattr(fi, "last_price", None) or
+                             getattr(fi, "lastPrice",  None) or 0)
             except Exception:
                 pass
 
@@ -5996,32 +6009,52 @@ def _compute_gex_for(sym):
 
         total_gex  = 0.0
         strike_gex = {}   # {strike: net_gex_dollars}
-        got_spot_from_chain = False
+        _today = datetime.now().date()
 
+        def _bs_gamma(S, K, T, iv):
+            """Black-Scholes gamma: N'(d1) / (S × iv × √T). Returns 0 on bad inputs."""
+            if S <= 0 or K <= 0 or T <= 0 or iv <= 0:
+                return 0.0
+            try:
+                d1 = (_math.log(S / K) + 0.5 * iv * iv * T) / (iv * _math.sqrt(T))
+                nd1 = _math.exp(-0.5 * d1 * d1) / _math.sqrt(2 * _math.pi)
+                return nd1 / (S * iv * _math.sqrt(T))
+            except Exception:
+                return 0.0
+
+        rows_used = 0
         for exp in near_expiries:
             try:
                 chain = ticker.option_chain(exp)
             except Exception:
                 continue
 
+            # T = time to expiry in years (floor at 1 day to avoid divide-by-zero)
+            try:
+                exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
+                T = max((exp_date - _today).days, 1) / 365.0
+            except Exception:
+                T = 7 / 365.0   # fallback: 1 week
+
             for df, opt_type in ((chain.calls, "call"), (chain.puts, "put")):
                 if df is None or df.empty:
                     continue
                 for _, row in df.iterrows():
-                    gamma  = float(row.get("gamma", 0) or 0)
                     oi     = float(row.get("openInterest", 0) or 0)
-                    strike = float(row.get("strike", 0) or 0)
-
-                    # yfinance sometimes has spot embedded as lastPrice in chain
-                    if spot <= 0 and not got_spot_from_chain:
-                        lp = float(row.get("lastPrice", 0) or 0)
-                        if lp > 0 and strike > 0:
-                            # approximate: pick mid of nearby ITM/OTM strikes later
-                            pass
-
-                    if gamma <= 0 or oi <= 0 or strike <= 0:
+                    strike = float(row.get("strike",       0) or 0)
+                    if oi <= 0 or strike <= 0:
                         continue
                     if spot <= 0:
+                        continue
+
+                    # Try chain-provided gamma first; fall back to BS estimate from IV
+                    gamma = float(row.get("gamma", 0) or 0)
+                    if gamma <= 0:
+                        iv = float(row.get("impliedVolatility", 0) or 0)
+                        if iv > 0:
+                            gamma = _bs_gamma(spot, strike, T, iv)
+
+                    if gamma <= 0:
                         continue
 
                     gex = gamma * oi * 100 * spot * spot * 0.01
@@ -6030,8 +6063,10 @@ def _compute_gex_for(sym):
 
                     total_gex += gex
                     strike_gex[strike] = strike_gex.get(strike, 0.0) + gex
+                    rows_used += 1
 
         if spot <= 0 or not strike_gex:
+            print(f"[GEX] {sym} — no usable data (spot={spot:.2f}, strikes={len(strike_gex)}, rows={rows_used})")
             return None
 
         # Find call wall (strike above spot with highest positive GEX)
@@ -6052,6 +6087,7 @@ def _compute_gex_for(sym):
         else:
             label = "neutral"
 
+        print(f"[GEX] {sym} computed OK — spot={spot:.2f} rows={rows_used} total={total_bn:+.3f}B ({label})")
         return {
             "total_bn":  round(total_bn, 3),
             "label":     label,
