@@ -8198,6 +8198,12 @@ def _alp_execute_signal(res: dict):
             _now_inv = time.time()
             with _cross_pair_lock:
                 _cross_pair_signals[sym] = {"dir": "bull", "conf": conf, "at": _now_inv, "inv": True}
+                # ── Semis-lead spill: when SOXL bear signal is high-conviction (≥80),
+                # semis are leading a broad market decline. Tag a secondary hint so
+                # SPXS and SQQQ can pick up a +5 correlation boost when they fire.
+                if sym == "SOXL" and conf >= 80:
+                    _cross_pair_signals["SOXL_lead"] = {"dir": "bull", "conf": conf, "at": _now_inv, "inv": True, "lead": True}
+                    print(f"[ETFDir] SOXL — semis-lead spillover tagged (eff_conf={conf:.1f}) → SPXS/SQQQ eligible for +5")
             print(f"[ETFDir] {sym} — bear translated → cross-pair hint for {_inv_mirror} (eff_conf={conf:.1f})")
         print(f"[ETFDir] {sym} — SKIPPED: ETF universe only allows long entries "
               f"(direction=bear would short {sym}; use {_pair} for bear exposure)")
@@ -8485,6 +8491,18 @@ def _alp_execute_signal(res: dict):
             eff_conf += _CROSS_PAIR_BOOST
             print(f"[CrossPair] ✅ {sym}+{_cp_mirror} inverse-pair confirms {direction.upper()} "
                   f"({_cp_lag2}s apart) → eff_conf +{_CROSS_PAIR_BOOST} → {eff_conf:.1f}")
+        # ── Semis-lead spill boost for SPXS / SQQQ ───────────────────────────
+        # When semis (SOXL) are leading the market lower with high conviction,
+        # the broad tape typically follows. Give SPXS and SQQQ a +5 boost when
+        # SOXL has a recent strong bear signal (conf ≥ 80) within the window.
+        if sym in ("SPXS", "SQQQ") and direction == "bull":
+            _soxl_lead = _cross_pair_signals.get("SOXL_lead")
+            if (_soxl_lead and _soxl_lead.get("lead") and
+                    _now_cp - _soxl_lead["at"] <= _CROSS_PAIR_WINDOW):
+                _sl_lag = int(_now_cp - _soxl_lead["at"])
+                eff_conf += _CROSS_PAIR_BOOST
+                print(f"[SemisLead] ✅ SOXL bear leading → {sym} +{_CROSS_PAIR_BOOST} "
+                      f"(SOXL conf={_soxl_lead['conf']:.1f}, {_sl_lag}s ago) → eff_conf={eff_conf:.1f}")
 
     # ── Regime ETF Boost ──────────────────────────────────────────────────────
     # Leveraged ETFs aligned with the current breadth regime get a confidence
