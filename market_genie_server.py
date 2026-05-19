@@ -9430,57 +9430,77 @@ def api_breadth():
 @app.route("/api/alpaca/force/<sym>", methods=["POST"])
 def api_alpaca_force(sym):
     """
-    Manually fire a bracket order for any live Alpha Engine signal, bypassing the
-    30-minute dedup. All other gates still apply (market hours, position cap,
-    confidence threshold, both_agree). Returns a JSON status dict.
-
-    Use from the dashboard 'Trade Now' button on ELITE signal rows.
+    Manually fire a bracket order for a live Alpha Engine signal.
+    Goes DIRECTLY to _alp_place_bracket — bypasses all soft gates
+    (dedup, drift, regime, ETF-dir, streak, both_agree, dead zones).
+    Only hard stops enforced: market closed, Alpaca keys missing.
     """
     sym = sym.upper().strip()
     if not sym:
         return jsonify({"ok": False, "reason": "missing symbol"}), 400
 
-    # Must have a current result in _predict_results
+    if not _us_market_open():
+        return jsonify({"ok": False, "reason": "Market is closed"}), 400
+
+    if not _ALPACA_KEY or not _ALPACA_SECRET:
+        return jsonify({"ok": False, "reason": "Alpaca keys not configured"}), 400
+
+    # Pull current signal from scanner results to get direction + confidence
     with _predict_lock:
-        res = dict(_predict_results.get(sym, {}))
+        sig = dict(_predict_results.get(sym, {}))
 
-    if not res:
-        return jsonify({"ok": False, "reason": f"{sym} not in live scanner results — wait for next bucket"}), 404
+    if not sig:
+        return jsonify({"ok": False, "reason": f"{sym} not in scanner results — wait for next bucket scan"}), 404
 
-    # Clear BOTH dedup layers so the force bypasses the 30-min cooldown
+    direction = (sig.get("consensus_dir") or sig.get("direction") or "").lower()
+    if direction not in ("bull", "bear"):
+        return jsonify({"ok": False, "reason": f"No valid direction for {sym} (got '{direction}')"}), 400
+
+    conf      = float(sig.get("confidence", 0))
+    eff_conf  = float(sig.get("eff_conf", conf))
+    is_strong = abs(float(sig.get("kronos_pct") or 0)) >= 1.0
+
+    # Clear dedup so re-entry works cleanly
     with _wr_lock:
         _wr_last_logged.pop(sym, None)
     with _alp_lock:
         _alp_last_traded.pop(sym, None)
 
-    # Inject force flag — bypasses drift gate, exec-disabled gate, and WR logger gates
-    res["_forced"] = True
+    # Get live price from Alpaca snapshot cache; fall back to signal price
+    price = 0.0
+    with _alp_snap_lock:
+        _snap = _alp_snap_cache.get(sym, {})
+    if _snap:
+        price = float(_snap.get("c") or _snap.get("ap") or _snap.get("bp") or 0)
+    if price <= 0:
+        price = float(sig.get("last_price") or sig.get("price") or 0)
 
-    fired = {"status": None, "reason": None}
+    if price <= 0:
+        return jsonify({"ok": False, "reason": f"Cannot determine live price for {sym}"}), 400
 
-    def _do_fire():
-        try:
-            # Call _alp_execute_signal DIRECTLY — bypasses _wr_log_signal's DB dedup,
-            # spread gate, and streak gate which were silently swallowing manual clicks.
-            # Win rate logging happens separately after a successful order fill.
-            _alp_execute_signal(res)
-            fired["status"] = "fired"
-        except Exception as e:
-            fired["status"] = f"error: {e}"
-            fired["reason"] = str(e)
+    print(f"[ForceOrder] {sym} {direction.upper()} conf={eff_conf:.1f} price=${price:.2f} "
+          f"strong={is_strong} — bypassing all soft gates (manual Trade Now)")
 
-    _do_fire()
+    try:
+        ok = _alp_place_bracket(sym, direction, price, is_strong, eff_conf=eff_conf)
+    except Exception as e:
+        print(f"[ForceOrder] {sym} — exception: {e}")
+        return jsonify({"ok": False, "reason": f"Order error: {e}"}), 500
 
-    direction = (res.get("consensus_dir") or res.get("direction") or "").upper()
-    conf      = res.get("confidence", 0)
-    tier      = res.get("alpha_tier") or "—"
+    if ok:
+        # Record in dedup so position monitor tracks it
+        with _alp_lock:
+            _alp_last_traded[sym] = {"dir": direction, "ts": time.time(), "fill": price}
+
+    direction_lbl = direction.upper()
+    tier          = sig.get("alpha_tier") or "—"
     return jsonify({
-        "ok":        fired["status"] == "fired",
+        "ok":        bool(ok),
         "sym":       sym,
-        "direction": direction,
+        "direction": direction_lbl,
         "conf":      conf,
         "tier":      tier,
-        "status":    fired["status"],
+        "status":    "fired" if ok else "rejected by Alpaca — check Railway logs",
     })
 
 
