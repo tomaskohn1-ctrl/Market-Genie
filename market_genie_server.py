@@ -7413,7 +7413,10 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
     #     chasing moves when DirCap held a signal while price ran (e.g. LABU $186→$190)
     #   counter move   (price went against):  1.5% — hard stop, direction failed
     # Stocks: symmetric 1%.
-    if signal_price > 0:
+    if signal_price > 0 and not res.get("_forced"):
+        # Drift gate: skip if price moved too far since signal was generated.
+        # BYPASSED for manual Trade Now clicks (_forced=True) — the user already
+        # sees the current price and is making an informed decision to enter.
         _pct_move = (price - signal_price) / signal_price  # + = price went up
         _is_etf   = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
         if _is_etf:
@@ -8243,7 +8246,8 @@ def _alp_execute_signal(res: dict):
     """
     sym = res.get("sym", "UNKNOWN")
 
-    if not _ALP_ENABLED:
+    _is_forced = res.get("_forced", False)
+    if not _ALP_ENABLED and not _is_forced:
         print(f"[Alpaca] {sym} — SKIPPED: executor disabled (ALPACA_EXEC_ENABLED=false)")
         return
     if not _us_market_open():
