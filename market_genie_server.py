@@ -146,54 +146,53 @@ def broadcast_push(title: str, body: str, url: str = "/", tag: str = "alert") ->
 SCANNER_UNIVERSE = [
     # ── Index & Broad ETFs ──────────────────────────────────────────────────
     "SPY","QQQ","IWM","DIA","VXX","UVXY",
-    # ── Mega Cap ────────────────────────────────────────────────────────────
+    # ── Mega Cap (ADV ≥ 5M; price ceiling removed — ADV gate handles fills) ─
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","JPM","V",
-    "MA","UNH","XOM","WMT","LLY","JNJ","PG","HD","COST","NFLX",
-    "BAC","ORCL","CRM","CVX","MRK","ABBV","TMO","ACN","ADBE","TXN",
+    "UNH","XOM","WMT","JNJ","PG","NFLX",
+    "BAC","ORCL","CRM","CVX","MRK","ABBV","ACN","ADBE","TXN",
     # ── Semiconductors ──────────────────────────────────────────────────────
-    "AMD","INTC","QCOM","MU","AMAT","LRCX","KLAC","MRVL","ARM","SMCI",
-    "ASML","TSM","ON","CDNS","SNPS","CRDO","MCHP","MPWR",
+    "AMD","INTC","QCOM","MU","AMAT","LRCX","MRVL","ARM","SMCI",
+    "TSM","ON","CRDO","MCHP",
     # ── AI / Cloud / SaaS ───────────────────────────────────────────────────
-    "PLTR","SNOW","DDOG","NET","CRWD","PANW","ZS","AI","PATH",
-    "TWLO","HUBS","MDB","S","GTLB","DOCN",
+    "PLTR","SNOW","DDOG","NET","CRWD","PANW","AI","PATH",
+    "HUBS","S","GTLB","DOCN",
+    # ── AI / Emerging Tech (new) ─────────────────────────────────────────────
+    "APP","NBIS","ALAB",
     # ── Consumer Tech / Platforms ───────────────────────────────────────────
     "SHOP","UBER","LYFT","DASH","ABNB","RDDT","RBLX","SNAP","PINS",
-    "ROKU","ZM","DOCU","BILL","PTON","SPOT","TTD",
+    "ZM","DOCU","PTON","TTD",
     # ── Fintech / Payments ──────────────────────────────────────────────────
     "COIN","HOOD","PYPL","AFRM","SOFI","NU",
     # ── Bitcoin / Crypto Proxies ────────────────────────────────────────────
     "MSTR","MARA","RIOT","CLSK","HUT","IREN","CIFR","BTBT",
     # ── EV / Auto ───────────────────────────────────────────────────────────
-    "RIVN","LCID","F","GM","NIO","XPEV","LI",
+    "RIVN","LCID","F","GM","NIO","XPEV",
     # ── China ADRs ──────────────────────────────────────────────────────────
-    "BABA","JD","PDD","BIDU","KWEB",
+    "BABA","JD","PDD","KWEB",
     # ── Meme / High Short Interest ──────────────────────────────────────────
-    "GME","AMC","BBAI","DJT","SOUN","HIMS",
+    "GME","AMC","BBAI","SOUN","HIMS",
     # ── Quantum / Space / Emerging Tech ────────────────────────────────────
     "IONQ","QUBT","RGTI","LUNR","RKLB","SPCE","JOBY",
     # ── Sector ETFs ─────────────────────────────────────────────────────────
     "XLF","XLE","XLK","XLV","XLI","XLY","XLP","XLRE","XLB",
-    "ARKK","GDX","GDXJ","ITB","IBB",
+    "ARKK","GDX","GDXJ",
     # ── Leveraged / Inverse ETFs ────────────────────────────────────────────
     "SOXL","TQQQ","SQQQ","SPXL","SPXS","TNA","TZA",
-    "LABU","LABD","FNGU","FNGD","BULZ","BERZ",
+    "LABD","FNGU",
     # ── Commodities & Bonds ─────────────────────────────────────────────────
     "GLD","SLV","USO","UNG","TLT","HYG","PDBC",
     # ── Energy ──────────────────────────────────────────────────────────────
-    "OXY","DVN","HAL","SLB","RIG","FSLR","ENPH","SEDG","NEE","CEG",
+    "OXY","DVN","HAL","SLB","RIG","ENPH","SEDG","NEE","CEG",
     # ── Healthcare / Biotech ────────────────────────────────────────────────
-    "MRNA","BNTX","NVAX","AMGN","GILD","BIIB","REGN","VRTX",
-    "SRPT","HALO","NTLA","BEAM","EDIT","CRSP",
+    "MRNA","NVAX","GILD","NTLA",
     # ── Consumer / Retail / Gaming ──────────────────────────────────────────
-    "LULU","NKE","TGT","DKNG","PENN","MGM","WYNN","LVS",
+    "NKE","TGT","DKNG","PENN","MGM","LVS",
     # ── Finance / Banks ─────────────────────────────────────────────────────
-    "GS","MS","WFC","C","AXP","BRK-B","USB","SCHW",
+    "MS","WFC","C","USB","SCHW",
     # ── Airlines / Travel ───────────────────────────────────────────────────
-    "AAL","DAL","UAL","BA","CCL","NCLH","RCL",
+    "AAL","DAL","UAL","BA","CCL","NCLH",
     # ── Telecom / Media ─────────────────────────────────────────────────────
-    "T","VZ","NFLX","DIS","WBD",
-    # ── Cannabis ────────────────────────────────────────────────────────────
-    "TLRY",
+    "T","VZ","DIS","WBD",
 ]
 # Deduplicate while preserving order
 _seen_u = set()
@@ -8518,17 +8517,12 @@ def _alp_execute_signal(res: dict):
         print(f"[Alpaca] {sym} — SKIPPED: bad sym or direction='{direction}'")
         return
 
-    # ── Hard gates: price ceiling + ADV floor ────────────────────────────────
-    # $300 ceiling: stocks above $300 have wide dollar-spreads and Alpaca fill
-    # quality degrades sharply (KLAC at $1,720 had $26 spread on paper). ETFs
-    # are exempt — they're all under $300 anyway.
+    # ── Hard gate: 5M ADV floor ───────────────────────────────────────────────
+    # Thin-float names below 5M average daily volume have erratic fills and
+    # often no short borrow. Price ceiling removed — ADV alone is the right
+    # filter (AMD at $419/38M ADV fills cleanly; KLAC at $1,746/0.98M ADV does not).
+    # avg_volume fetched in _predict_one via yfinance fast_info. ETFs exempt.
     _is_etf_hard = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
-    if price > 300 and not _is_etf_hard:
-        print(f"[PriceGate] {sym} — SKIPPED: price ${price:.2f} > $300 ceiling (wide spread risk)")
-        return
-    # 5M ADV floor: thin-float names below 5M average daily volume have erratic
-    # fills and often no short borrow. avg_volume is fetched in _predict_one via
-    # yfinance fast_info.three_month_average_volume. ETFs exempt.
     _avg_vol = int(res.get("avg_volume", 0) or 0)
     if _avg_vol > 0 and _avg_vol < 5_000_000 and not _is_etf_hard:
         print(f"[ADVGate] {sym} — SKIPPED: avg daily vol {_avg_vol:,} < 5M minimum (thin float)")
@@ -9636,13 +9630,11 @@ def api_alpaca_force(sym):
     if price < 5.0:
         return jsonify({"ok": False, "reason": f"{sym} at ${price:.2f} is below $5 minimum — Alpaca cannot short penny stocks"}), 400
 
-    # Block high-priced stocks above $300 — wide dollar-spreads, erratic fills
+    # Block thin-float stocks below 5M avg daily volume — poor fills, no borrow
+    # (Price ceiling removed: ADV alone is the right filter — AMD at $419/38M ADV
+    # fills cleanly; KLAC at $1,746/0.98M ADV is blocked by ADV gate anyway.)
     _avg_vol_force = int(sig.get("avg_volume", 0) or 0)
     _is_etf_force  = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
-    if price > 300.0 and not _is_etf_force:
-        return jsonify({"ok": False, "reason": f"{sym} at ${price:.2f} is above $300 maximum — use a liquid ETF for high-priced exposure"}), 400
-
-    # Block thin-float stocks below 5M avg daily volume
     if _avg_vol_force > 0 and _avg_vol_force < 5_000_000 and not _is_etf_force:
         return jsonify({"ok": False, "reason": f"{sym} avg daily volume {_avg_vol_force:,} is below 5M minimum — poor fills and no short borrow"}), 400
 
