@@ -6822,6 +6822,85 @@ _ALP_EXIT_COOLDOWN_MINS = int(os.getenv("ALPACA_EXIT_COOLDOWN_MINS", "30"))  # m
 _ALP_MAX_BULL_POSITIONS = int(os.getenv("ALPACA_MAX_BULL_POSITIONS", "5"))  # max simultaneous bull/long positions (up to 5 of 6 slots)
 _ALP_MAX_BEAR_POSITIONS = int(os.getenv("ALPACA_MAX_BEAR_POSITIONS", "5"))  # max simultaneous bear/short positions (up to 5 of 6 slots)
 
+# ── Sector concentration map ──────────────────────────────────────────────────
+# Prevents the engine from piling all 6 slots into one sector (e.g. 4 semis).
+# ETFs have their own sector tags so SOXL+TQQQ don't both count as "semis".
+# Unlisted syms get no sector → no sector cap applies (they're uncorrelated enough).
+_ALP_MAX_PER_SECTOR = int(os.getenv("ALPACA_MAX_PER_SECTOR", "2"))  # max open positions per sector
+
+_SECTOR_MAP: dict[str, str] = {
+    # Semiconductors — high intra-sector correlation; cap at 2
+    "NVDA":"semis","AMD":"semis","INTC":"semis","QCOM":"semis","MU":"semis",
+    "AMAT":"semis","LRCX":"semis","MRVL":"semis","ARM":"semis","SMCI":"semis",
+    "TSM":"semis","ON":"semis","CRDO":"semis","MCHP":"semis","AVGO":"semis",
+    "TXN":"semis","SOXL":"semis_etf","SOXS":"semis_etf",
+    # Mega-cap tech
+    "AAPL":"mega_tech","MSFT":"mega_tech","GOOGL":"mega_tech","META":"mega_tech",
+    "AMZN":"mega_tech","NFLX":"mega_tech","ADBE":"mega_tech",
+    "ORCL":"mega_tech","CRM":"mega_tech","ACN":"mega_tech",
+    # AI / Cloud / SaaS
+    "PLTR":"saas","SNOW":"saas","DDOG":"saas","NET":"saas","CRWD":"saas",
+    "PANW":"saas","AI":"saas","PATH":"saas","HUBS":"saas","S":"saas",
+    "GTLB":"saas","DOCN":"saas","NOW":"saas","ZS":"saas","MDB":"saas",
+    "OKTA":"saas","APP":"saas","NBIS":"saas","ALAB":"saas","RXRX":"saas",
+    # Consumer tech / platforms
+    "SHOP":"consumer_tech","UBER":"consumer_tech","LYFT":"consumer_tech",
+    "DASH":"consumer_tech","ABNB":"consumer_tech","RDDT":"consumer_tech",
+    "RBLX":"consumer_tech","SNAP":"consumer_tech","PINS":"consumer_tech",
+    "ZM":"consumer_tech","DOCU":"consumer_tech","PTON":"consumer_tech",
+    "TTD":"consumer_tech","CHWY":"consumer_tech",
+    # Fintech / payments
+    "COIN":"fintech","HOOD":"fintech","PYPL":"fintech","AFRM":"fintech",
+    "SOFI":"fintech","NU":"fintech","SQ":"fintech","MELI":"fintech",
+    # Crypto / Bitcoin proxies — all move with BTC
+    "MSTR":"crypto","MARA":"crypto","RIOT":"crypto","CLSK":"crypto",
+    "HUT":"crypto","IREN":"crypto","CIFR":"crypto","BTBT":"crypto",
+    "IBIT":"crypto","BITO":"crypto",
+    # EV / Auto
+    "RIVN":"ev","LCID":"ev","F":"ev","GM":"ev","NIO":"ev","XPEV":"ev",
+    "TSLA":"ev","TSLL":"ev",
+    # China ADRs
+    "BABA":"china","JD":"china","PDD":"china","KWEB":"china",
+    # Biotech / Pharma
+    "MRNA":"biotech","NVAX":"biotech","GILD":"biotech","NTLA":"biotech",
+    "PFE":"biotech","BMY":"biotech","XBI":"biotech",
+    "LABU":"biotech_etf","LABD":"biotech_etf",
+    # Finance / Banks
+    "JPM":"finance","BAC":"finance","WFC":"finance","C":"finance",
+    "USB":"finance","SCHW":"finance","MS":"finance","GS":"finance",
+    "V":"finance","FAS":"finance_etf","FAZ":"finance_etf",
+    # Energy
+    "XOM":"energy","CVX":"energy","OXY":"energy","DVN":"energy",
+    "HAL":"energy","SLB":"energy","RIG":"energy","ENPH":"energy",
+    "SEDG":"energy","NEE":"energy",
+    # Airlines / Travel
+    "AAL":"travel","DAL":"travel","UAL":"travel","BA":"travel",
+    "CCL":"travel","NCLH":"travel",
+    # Telecom / Media
+    "T":"telecom","VZ":"telecom","DIS":"telecom","WBD":"telecom",
+    # Space / eVTOL / Emerging
+    "IONQ":"emerging","QUBT":"emerging","RGTI":"emerging","LUNR":"emerging",
+    "RKLB":"emerging","SPCE":"emerging","JOBY":"emerging","ASTS":"emerging",
+    "ACHR":"emerging",
+    # Meme / high-short — already correlated with sentiment, not each other
+    "GME":"meme","AMC":"meme","BBAI":"meme","SOUN":"meme","HIMS":"meme",
+    # Consumer / Retail / Gaming
+    "NKE":"consumer","TGT":"consumer","DKNG":"consumer","PENN":"consumer",
+    "MGM":"consumer","LVS":"consumer",
+    # Broad index ETFs — each is its own sector (no cap)
+    "SPY":"spy","QQQ":"qqq","IWM":"iwm","DIA":"dia",
+    # Vol ETFs
+    "VXX":"vol_etf","UVXY":"vol_etf",
+    # Broad leveraged
+    "TQQQ":"qqq_lev","SQQQ":"qqq_lev","SPXL":"spy_lev","SPXS":"spy_lev",
+    "TNA":"iwm_lev","TZA":"iwm_lev","FNGU":"fngu",
+    # Commodities / Bonds
+    "GLD":"gold","SLV":"silver","USO":"oil","UNG":"gas",
+    "TLT":"bonds","HYG":"bonds","PDBC":"commodities",
+    # China ETF
+    "KWEB":"china",
+}
+
 _alp_last_traded  = {}   # { sym: {"dir": str, "ts": float, "fill": float} }
 _alp_lock         = threading.Lock()
 _alp_order_lock   = threading.Lock()   # serializes position-check → place to prevent over-filling
@@ -8683,9 +8762,15 @@ def _alp_execute_signal(res: dict):
     _dollar_adv    = _avg_vol * _last_px   # estimated daily dollar volume
     _passes_shares = _avg_vol >= 5_000_000
     _passes_dollar = _dollar_adv >= 500_000_000   # $500M/day floor
-    if _avg_vol > 0 and not _passes_shares and not _passes_dollar and not _is_etf_hard:
-        print(f"[ADVGate] {sym} — SKIPPED: avg daily vol {_avg_vol:,} shares / "
-              f"${_dollar_adv/1e6:.0f}M < minimums (5M shares or $500M/day)")
+    # BUG FIX: old gate used `if _avg_vol > 0` which silently passed stocks
+    # where yfinance returned 0 (missing data). MCHP entered with 0 volume data.
+    # New behaviour: 0 avg_volume = no data = block (fail-safe). ETFs exempt.
+    if not _is_etf_hard and not _passes_shares and not _passes_dollar:
+        if _avg_vol == 0:
+            print(f"[ADVGate] {sym} — SKIPPED: avg_volume=0 (no yfinance data, fail-safe block)")
+        else:
+            print(f"[ADVGate] {sym} — SKIPPED: avg daily vol {_avg_vol:,} shares / "
+                  f"${_dollar_adv/1e6:.0f}M < minimums (5M shares or $500M/day)")
         return
 
     # ── Social Sentiment Boost ────────────────────────────────────────────────
@@ -9667,6 +9752,26 @@ def _alp_execute_signal(res: dict):
                                   f"positions profitable, no preemption (slots full)")
                 except Exception as e:
                     print(f"[ELITE] preemption error: {e}")
+
+            # ── Sector concentration gate ────────────────────────────────────────
+            # Prevents piling all 6 slots into one correlated sector (e.g. 4 semis).
+            # Reads open positions from _alp_last_traded (our tracker, not Alpaca API)
+            # to avoid an extra network call. ETF-specific sectors (semis_etf, etc.)
+            # are counted separately from their underlying stock sector.
+            _sym_sector = _SECTOR_MAP.get(sym)
+            if _sym_sector:
+                with _alp_lock:
+                    _sector_count = sum(
+                        1 for _s in _alp_last_traded
+                        if _SECTOR_MAP.get(_s) == _sym_sector
+                    )
+                if _sector_count >= _ALP_MAX_PER_SECTOR:
+                    print(f"[SectorGate] {sym} — SKIPPED: '{_sym_sector}' sector already "
+                          f"has {_sector_count}/{_ALP_MAX_PER_SECTOR} open positions — "
+                          f"portfolio diversification limit reached")
+                    with _alp_lock:
+                        _alp_last_traded.pop(sym, None)
+                    return
 
             if total_exposure >= _ALP_MAX_POSITIONS:
                 print(f"[Alpaca] {sym} — SKIPPED: max positions reached ({total_exposure}/{_ALP_MAX_POSITIONS})")
