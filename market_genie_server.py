@@ -9462,25 +9462,42 @@ def api_alpaca_force(sym):
     eff_conf  = float(sig.get("eff_conf", conf))
     is_strong = abs(float(sig.get("kronos_pct") or 0)) >= 1.0
 
+    # Accept optional custom limit price from POST body
+    body = request.get_json(force=True, silent=True) or {}
+    custom_price = 0.0
+    try:
+        custom_price = float(body.get("limit_price", 0) or 0)
+    except (TypeError, ValueError):
+        custom_price = 0.0
+
     # Clear dedup so re-entry works cleanly
     with _wr_lock:
         _wr_last_logged.pop(sym, None)
     with _alp_lock:
         _alp_last_traded.pop(sym, None)
 
-    # Get live price from Alpaca snapshot cache; fall back to signal price
-    price = 0.0
-    with _alp_snap_lock:
-        _snap = _alp_snap_cache.get(sym, {})
-    if _snap:
-        price = float(_snap.get("c") or _snap.get("ap") or _snap.get("bp") or 0)
-    if price <= 0:
-        price = float(sig.get("last_price") or sig.get("price") or 0)
+    # Determine entry price: custom limit > Alpaca snapshot cache > signal price
+    if custom_price > 0:
+        price = custom_price
+        price_source = f"custom limit ${price:.2f}"
+    else:
+        price = 0.0
+        with _alp_snap_lock:
+            _snap = _alp_snap_cache.get(sym, {})
+        if _snap:
+            price = float(_snap.get("c") or _snap.get("ap") or _snap.get("bp") or 0)
+        if price <= 0:
+            price = float(sig.get("last_price") or sig.get("price") or 0)
+        price_source = f"auto mid ${price:.2f}"
 
     if price <= 0:
         return jsonify({"ok": False, "reason": f"Cannot determine live price for {sym}"}), 400
 
-    print(f"[ForceOrder] {sym} {direction.upper()} conf={eff_conf:.1f} price=${price:.2f} "
+    # Block penny stocks — Alpaca cannot short stocks under $5
+    if price < 5.0:
+        return jsonify({"ok": False, "reason": f"{sym} at ${price:.2f} is below $5 minimum — Alpaca cannot short penny stocks"}), 400
+
+    print(f"[ForceOrder] {sym} {direction.upper()} conf={eff_conf:.1f} price={price_source} "
           f"strong={is_strong} — bypassing all soft gates (manual Trade Now)")
 
     try:

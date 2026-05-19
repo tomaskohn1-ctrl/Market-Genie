@@ -5012,9 +5012,9 @@ function renderPredictions() {
         : '';
       const isEliteOrPrime = tier === 'ELITE' || tier === 'PRIME';
       const forceBtn = isEliteOrPrime
-        ? `<button onclick="event.stopPropagation();forceAlpacaTrade('${r.sym}',this)"
+        ? `<button onclick="event.stopPropagation();forceAlpacaTrade('${r.sym}',this,${entryPx})"
             style="padding:3px 10px;font-size:9px;font-weight:700;border-radius:4px;border:1px solid rgba(255,215,0,0.5);background:rgba(255,215,0,0.12);color:#ffd700;cursor:pointer;transition:all 0.15s;letter-spacing:0.3px;white-space:nowrap"
-            title="Force-fire this signal to Alpaca now — bypasses dedup, all other gates still apply">⚡ Trade Now</button>`
+            title="Set your limit price then fire to Alpaca — bypasses dedup &amp; drift gates">⚡ Trade Now</button>`
         : '';
       tradeBox = `
         <div style="margin-top:6px;padding:5px 8px;background:rgba(255,255,255,0.04);border-radius:5px;border:1px solid rgba(255,255,255,0.07);font-family:'JetBrains Mono',monospace;font-size:10px">
@@ -5432,14 +5432,33 @@ async function loadBreadthRegime() {
   } catch(e) { /* silent */ }
 }
 
-async function forceAlpacaTrade(sym, btn) {
+async function forceAlpacaTrade(sym, btn, suggestedPrice) {
   if (!SERVER_MODE) return;
+
+  // ── Ask for limit price before firing ──────────────────────────────────────
+  const defaultPx = suggestedPrice ? suggestedPrice.toFixed(2) : '';
+  const inputPx = window.prompt(
+    `Trade Now: ${sym}\n\nEnter your limit price (leave blank to use live mid-price):`,
+    defaultPx
+  );
+  if (inputPx === null) return;  // user cancelled
+  const limitPrice = inputPx.trim() ? parseFloat(inputPx.trim()) : null;
+  if (limitPrice !== null && (isNaN(limitPrice) || limitPrice <= 0)) {
+    alert('Invalid price. Please enter a positive number.');
+    return;
+  }
+
   const orig = btn.textContent;
   btn.textContent = '…';
   btn.disabled = true;
   btn.style.opacity = '0.5';
   try {
-    const r = await fetch(`/api/alpaca/force/${sym}`, { method: 'POST' });
+    const body = limitPrice ? JSON.stringify({ limit_price: limitPrice }) : '{}';
+    const r = await fetch(`/api/alpaca/force/${sym}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body
+    });
     const d = await r.json();
     if (d.ok) {
       btn.textContent = '✅ Sent!';
