@@ -9453,17 +9453,21 @@ def api_alpaca_force(sym):
     with _alp_lock:
         _alp_last_traded.pop(sym, None)
 
-    # Inject force flag so we can see it in logs
+    # Inject force flag — bypasses drift gate, exec-disabled gate, and WR logger gates
     res["_forced"] = True
 
-    fired = {"status": None}
+    fired = {"status": None, "reason": None}
 
     def _do_fire():
         try:
-            _wr_log_signal(res)
+            # Call _alp_execute_signal DIRECTLY — bypasses _wr_log_signal's DB dedup,
+            # spread gate, and streak gate which were silently swallowing manual clicks.
+            # Win rate logging happens separately after a successful order fill.
+            _alp_execute_signal(res)
             fired["status"] = "fired"
         except Exception as e:
             fired["status"] = f"error: {e}"
+            fired["reason"] = str(e)
 
     _do_fire()
 
