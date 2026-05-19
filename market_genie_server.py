@@ -7353,11 +7353,13 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
                 else:
                     _spread_cap = _ALP_MAX_SPREAD_PCT  # default 0.2%
                 _spread_dollar = ask_px - bid_px
-                _spread_ok = (spread_pct <= _spread_cap) or (_spread_dollar <= 0.02)
+                _spread_ok = (spread_pct <= _spread_cap) or (_spread_dollar <= 0.02) or forced
                 if ask_px > 0 and bid_px > 0 and not _spread_ok:
                     print(f"[Alpaca] {sym} — SKIPPED: spread {spread_pct:.3f}% "
                           f"> {_spread_cap}% max (${_spread_dollar:.3f} wide)")
                     return False
+                if forced and spread_pct > _spread_cap:
+                    print(f"[Alpaca] {sym} — spread {spread_pct:.3f}% bypassed (manual Trade Now — Alpaca quote may be stale, using limit order at signal price)")
                 if _spread_dollar <= 0.02 and spread_pct > _spread_cap:
                     print(f"[Alpaca] {sym} — spread {spread_pct:.3f}% bypassed: min-tick spread ${_spread_dollar:.2f} ✓")
                 if _is_etf_sym and _spread_cap > _ALP_MAX_SPREAD_PCT and spread_pct > _ALP_MAX_SPREAD_PCT and _spread_ok:
@@ -7369,7 +7371,7 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
                 # of the stop, the trade needs a 125%+ move just to break even.
                 # E.g. NUGT: spread $0.67 / stop $2.85 (1.5% of $190) = 23.5% ✓
                 #            spread $1.00 / stop $2.85                 = 35.1% ✗
-                if _spread_ok and ask_px > 0 and bid_px > 0 and price > 0:
+                if _spread_ok and ask_px > 0 and bid_px > 0 and price > 0 and not forced:
                     _stop_pct_here = _ALP_ETF_STOP_PCT if _is_etf_sym else _ALP_STOP_PCT
                     _stop_dollar   = price * _stop_pct_here
                     _spread_ratio  = _spread_dollar / _stop_dollar if _stop_dollar > 0 else 0
