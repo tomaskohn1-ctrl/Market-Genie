@@ -150,45 +150,59 @@ SCANNER_UNIVERSE = [
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","JPM","V",
     "UNH","XOM","WMT","JNJ","PG","NFLX",
     "BAC","ORCL","CRM","CVX","MRK","ABBV","ACN","ADBE","TXN",
+    # ── Finance / Banks (expanded — GS added; directional on macro news) ───
+    "GS","MS","WFC","C","USB","SCHW",
     # ── Semiconductors ──────────────────────────────────────────────────────
     "AMD","INTC","QCOM","MU","AMAT","LRCX","MRVL","ARM","SMCI",
     "TSM","ON","CRDO","MCHP",
     # ── AI / Cloud / SaaS ───────────────────────────────────────────────────
     "PLTR","SNOW","DDOG","NET","CRWD","PANW","AI","PATH",
     "HUBS","S","GTLB","DOCN",
-    # ── AI / Emerging Tech (new) ─────────────────────────────────────────────
-    "APP","NBIS","ALAB",
+    # ── Enterprise SaaS (new) — NOW 43M ADV, ZS 5M ADV, MDB 5M ADV ─────────
+    "NOW","ZS","MDB","OKTA",
+    # ── AI / Emerging Tech ───────────────────────────────────────────────────
+    "APP","NBIS","ALAB","RXRX",
     # ── Consumer Tech / Platforms ───────────────────────────────────────────
     "SHOP","UBER","LYFT","DASH","ABNB","RDDT","RBLX","SNAP","PINS",
-    "ZM","DOCU","PTON","TTD",
+    "ZM","DOCU","PTON","TTD","CHWY",
     # ── Fintech / Payments ──────────────────────────────────────────────────
-    "COIN","HOOD","PYPL","AFRM","SOFI","NU",
-    # ── Bitcoin / Crypto Proxies ────────────────────────────────────────────
-    "MSTR","MARA","RIOT","CLSK","HUT","IREN","CIFR","BTBT",
+    "COIN","HOOD","PYPL","AFRM","SOFI","NU","SQ","MELI",
+    # ── Bitcoin / Crypto ETFs & Proxies ─────────────────────────────────────
+    # IBIT = BlackRock Bitcoin ETF (~45M ADV) — primary institutional BTC proxy
+    # BITO = Bitcoin futures ETF (~10M ADV)
+    "IBIT","BITO","MSTR","MARA","RIOT","CLSK","HUT","IREN","CIFR","BTBT",
     # ── EV / Auto ───────────────────────────────────────────────────────────
     "RIVN","LCID","F","GM","NIO","XPEV",
     # ── China ADRs ──────────────────────────────────────────────────────────
     "BABA","JD","PDD","KWEB",
     # ── Meme / High Short Interest ──────────────────────────────────────────
     "GME","AMC","BBAI","SOUN","HIMS",
-    # ── Quantum / Space / Emerging Tech ────────────────────────────────────
-    "IONQ","QUBT","RGTI","LUNR","RKLB","SPCE","JOBY",
+    # ── Quantum / Space / eVTOL / Emerging Tech ─────────────────────────────
+    # ASTS = AST SpaceMobile (~12M ADV, trending); ACHR = Archer eVTOL
+    "IONQ","QUBT","RGTI","LUNR","RKLB","SPCE","JOBY","ASTS","ACHR",
     # ── Sector ETFs ─────────────────────────────────────────────────────────
     "XLF","XLE","XLK","XLV","XLI","XLY","XLP","XLRE","XLB",
     "ARKK","GDX","GDXJ",
-    # ── Leveraged / Inverse ETFs ────────────────────────────────────────────
-    "SOXL","TQQQ","SQQQ","SPXL","SPXS","TNA","TZA",
-    "LABD","FNGU",
+    # ── Biotech ETF (new) — XBI ~10M ADV, cleaner biotech exposure ──────────
+    "XBI",
+    # ── Leveraged / Inverse ETFs ─────────────────────────────────────────────
+    # Pairs: SOXL/SOXS, LABU/LABD, FAS/FAZ, TQQQ/SQQQ, SPXL/SPXS, TNA/TZA
+    # Single-stock: TSLL (2x TSLA ~12M ADV), NVDL (2x NVDA ~6M ADV)
+    "SOXL","SOXS",
+    "LABU","LABD",
+    "FAS","FAZ",
+    "TQQQ","SQQQ","SPXL","SPXS","TNA","TZA",
+    "TSLL","NVDL","FNGU",
     # ── Commodities & Bonds ─────────────────────────────────────────────────
     "GLD","SLV","USO","UNG","TLT","HYG","PDBC",
     # ── Energy ──────────────────────────────────────────────────────────────
     "OXY","DVN","HAL","SLB","RIG","ENPH","SEDG","NEE","CEG",
-    # ── Healthcare / Biotech ────────────────────────────────────────────────
-    "MRNA","NVAX","GILD","NTLA",
+    # ── Healthcare / Biotech / Pharma ───────────────────────────────────────
+    # PFE = Pfizer (~35M ADV, constant drug catalyst news)
+    # BMY = Bristol-Myers (~20M ADV)
+    "PFE","BMY","MRNA","NVAX","GILD","NTLA",
     # ── Consumer / Retail / Gaming ──────────────────────────────────────────
     "NKE","TGT","DKNG","PENN","MGM","LVS",
-    # ── Finance / Banks ─────────────────────────────────────────────────────
-    "MS","WFC","C","USB","SCHW",
     # ── Airlines / Travel ───────────────────────────────────────────────────
     "AAL","DAL","UAL","BA","CCL","NCLH",
     # ── Telecom / Media ─────────────────────────────────────────────────────
