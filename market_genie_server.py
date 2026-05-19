@@ -9636,6 +9636,16 @@ def api_alpaca_force(sym):
     if price < 5.0:
         return jsonify({"ok": False, "reason": f"{sym} at ${price:.2f} is below $5 minimum — Alpaca cannot short penny stocks"}), 400
 
+    # Block high-priced stocks above $300 — wide dollar-spreads, erratic fills
+    _avg_vol_force = int(sig.get("avg_volume", 0) or 0)
+    _is_etf_force  = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
+    if price > 300.0 and not _is_etf_force:
+        return jsonify({"ok": False, "reason": f"{sym} at ${price:.2f} is above $300 maximum — use a liquid ETF for high-priced exposure"}), 400
+
+    # Block thin-float stocks below 5M avg daily volume
+    if _avg_vol_force > 0 and _avg_vol_force < 5_000_000 and not _is_etf_force:
+        return jsonify({"ok": False, "reason": f"{sym} avg daily volume {_avg_vol_force:,} is below 5M minimum — poor fills and no short borrow"}), 400
+
     print(f"[ForceOrder] {sym} {direction.upper()} conf={eff_conf:.1f} price={price_source} "
           f"strong={is_strong} — bypassing all soft gates (manual Trade Now)")
 
