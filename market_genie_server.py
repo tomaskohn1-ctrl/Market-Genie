@@ -5620,12 +5620,27 @@ _vix_state = {
 }
 _vix_lock = threading.Lock()
 
+# ── VXX Daily Change Tracker ──────────────────────────────────────────────────
+# VXX (VIX Short-Term Futures ETF) is a real-time fear gauge.
+# When VXX spikes early in session it signals broad hedging/panic — an
+# environment where bull leveraged ETF entries face high early-drawdown risk.
+_vxx_state = {
+    "pct_chg":    0.0,    # today's % change from prior close (positive = more fear)
+    "updated_at": 0,
+}
+_vxx_lock = threading.Lock()
+
+# Tunable thresholds (override via Railway Variables)
+_FUTURES_BULL_BLOCK_PCT = float(os.getenv("FUTURES_BULL_BLOCK_PCT", "-0.7"))  # NQ below this blocks bull 3x ETFs
+_VXX_BULL_BLOCK_PCT     = float(os.getenv("VXX_BULL_BLOCK_PCT",     "2.0"))   # VXX above this % blocks bull 3x ETFs
+
 
 def _vix_poll_loop():
-    """Background thread: poll ^VIX every 3 minutes and update _vix_state."""
+    """Background thread: poll ^VIX and VXX every 3 minutes."""
     import yfinance as yf
     while True:
         try:
+            # ── VIX level + trend ─────────────────────────────────────────────
             hist = yf.Ticker("^VIX").history(period="2d", interval="5m")
             if len(hist) >= 2:
                 current = float(hist["Close"].iloc[-1])
@@ -5645,11 +5660,28 @@ def _vix_poll_loop():
                       f"({'📉' if trend == 'falling' else '📈' if trend == 'rising' else '➡'})")
         except Exception as e:
             print(f"[VIX] Poll error: {e}")
+
+        try:
+            # ── VXX daily % change ────────────────────────────────────────────
+            vxx_fi   = yf.Ticker("VXX").fast_info
+            vxx_px   = float(getattr(vxx_fi, "last_price",    None) or 0)
+            vxx_prev = float(getattr(vxx_fi, "previous_close", None) or
+                             getattr(vxx_fi, "regularMarketPreviousClose", None) or 0)
+            if vxx_px > 0 and vxx_prev > 0:
+                vxx_pct = (vxx_px - vxx_prev) / vxx_prev * 100
+                with _vxx_lock:
+                    _vxx_state["pct_chg"]    = vxx_pct
+                    _vxx_state["updated_at"] = time.time()
+                _vxx_icon = "📈" if vxx_pct > 1.0 else "📉" if vxx_pct < -1.0 else "➡"
+                print(f"[VXX] ${vxx_px:.2f} ({vxx_pct:+.2f}%) {_vxx_icon}")
+        except Exception as e:
+            print(f"[VXX] Poll error: {e}")
+
         time.sleep(180)  # every 3 minutes
 
 
 threading.Thread(target=_vix_poll_loop, daemon=True, name="vix-feed").start()
-print("[VIX] Live feed thread started (^VIX polled every 3 min)")
+print("[VIX] Live feed thread started (^VIX + VXX polled every 3 min)")
 
 
 # ── NQ / ES Futures Bias Engine ───────────────────────────────────────────────
@@ -8279,6 +8311,37 @@ def _alp_execute_signal(res: dict):
                       f"requires both_agree=1 — ba={_ba_for_vix}")
                 return
             print(f"[VIX] {sym} — elevated VIX={_vix_now:.1f} cleared: ba=1 ✓")
+
+    # ── Futures headwind gate — block bull 3× ETF entries in falling futures ──
+    # When NQ futures are down ≥ 0.7%, the broad market has confirmed downward
+    # momentum. Bull entries on TQQQ/SPXL/SOXL into a falling-futures tape have
+    # a high rate of initial drawdown even when Kronos is bullish — the macro
+    # pressure overrides the short-term model call.
+    # Bear ETFs and unleveraged ETFs (QQQ/SPY/IWM) are exempt: bears benefit
+    # from the falling tape, and 1× ETFs have tighter stops that survive chop.
+    _BULL_3X = frozenset(["TQQQ", "SPXL", "SOXL"])
+    if sym in _BULL_3X and direction == "bull":
+        with _futures_lock:
+            _nq_now     = _futures_state.get("nq_chg", 0.0)
+            _fut_fresh  = time.time() - _futures_state.get("updated_at", 0) < 600
+        if _fut_fresh and _nq_now < _FUTURES_BULL_BLOCK_PCT:
+            print(f"[FuturesGate] {sym} — SKIPPED: NQ={_nq_now:+.2f}% < {_FUTURES_BULL_BLOCK_PCT}% "
+                  f"(falling futures headwind — bull 3× ETF blocked)")
+            return
+
+    # ── VXX spike gate — block bull 3× ETF entries when fear is spiking ──────
+    # VXX rising ≥ 2% from prior close signals active hedging / panic buying.
+    # In this environment, leveraged bull ETFs face immediate stop-hit risk as
+    # market makers widen spreads and order flow tilts bearish.
+    # Same exemption as futures gate: bear ETFs and unleveraged ETFs are fine.
+    if sym in _BULL_3X and direction == "bull":
+        with _vxx_lock:
+            _vxx_now   = _vxx_state.get("pct_chg", 0.0)
+            _vxx_fresh = time.time() - _vxx_state.get("updated_at", 0) < 600
+        if _vxx_fresh and _vxx_now >= _VXX_BULL_BLOCK_PCT:
+            print(f"[VXXGate] {sym} — SKIPPED: VXX={_vxx_now:+.2f}% >= {_VXX_BULL_BLOCK_PCT}% "
+                  f"(fear spike — bull 3× ETF blocked)")
+            return
 
     # ── Per-symbol loss cooldown ──────────────────────────────────────────────
     # ── Profit Guard pause — no new entries while guard is active ────────────
