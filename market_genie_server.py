@@ -6526,6 +6526,42 @@ def _get_social_conf_boost(sym: str) -> int:
     return 0
 
 
+# ── Same-Day News Catalyst Cache (Finnhub) ───────────────────────────────────
+# Checked once per signal per ticker, cached 15 min so we don't hammer Finnhub.
+# Returns True if there is at least one news article for sym today.
+_news_catalyst_cache: dict = {}   # sym → (has_news: bool, ts: float)
+_NEWS_CATALYST_TTL   = 900        # 15 min — news doesn't change second-to-second
+
+
+def _get_news_catalyst(sym: str) -> bool:
+    """Return True if Finnhub shows same-day news for sym (15-min cached)."""
+    if not FINNHUB_KEY:
+        return False
+    now = time.time()
+    cached_val = _news_catalyst_cache.get(sym)
+    if cached_val:
+        result, ts = cached_val
+        if now - ts < _NEWS_CATALYST_TTL:
+            return result
+    try:
+        from datetime import datetime as _dt
+        today = _dt.utcnow().strftime("%Y-%m-%d")
+        r = requests.get(
+            "https://finnhub.io/api/v1/company-news",
+            params={"symbol": sym, "from": today, "to": today, "token": FINNHUB_KEY},
+            timeout=4,
+        )
+        if r.status_code == 200:
+            articles = r.json()
+            has_news = isinstance(articles, list) and len(articles) > 0
+        else:
+            has_news = False
+    except Exception:
+        has_news = False
+    _news_catalyst_cache[sym] = (has_news, now)
+    return has_news
+
+
 def _breadth_fetch_intraday_chg(sym: str) -> float:
     """Return intraday % change for sym using Finnhub quote. Returns 0.0 on failure."""
     if not FINNHUB_KEY:
@@ -7115,6 +7151,24 @@ def _get_tech_snapshot(sym: str) -> dict:
         avg_vol  = sum(vols[:-1]) / max(len(vols) - 1, 1)
         vol_ratio = round(vols[-1] / avg_vol, 2) if avg_vol > 0 else 1.0
 
+        # ATR expansion ratio: recent 5-bar ATR vs session-average ATR.
+        # atr_ratio > 1.0 means volatility is expanding (larger moves) — good for day trading.
+        # True Range = max(High-Low, |High-PrevClose|, |Low-PrevClose|)
+        atr_ratio = 1.0
+        try:
+            tr_list = []
+            for i in range(1, len(bars)):
+                h = bars[i].get("h", bars[i]["c"])
+                l = bars[i].get("l", bars[i]["c"])
+                prev_c = bars[i - 1]["c"]
+                tr_list.append(max(h - l, abs(h - prev_c), abs(l - prev_c)))
+            if len(tr_list) >= 6:
+                recent_atr = sum(tr_list[-5:]) / 5
+                avg_atr    = sum(tr_list)      / len(tr_list)
+                atr_ratio  = round(recent_atr / avg_atr, 2) if avg_atr > 0 else 1.0
+        except Exception:
+            pass
+
         # Today's open: pull 1 daily bar — gives the official 9:30 open price.
         # Used for the day-range filter in _alp_execute_signal.
         day_open = 0.0
@@ -7137,6 +7191,7 @@ def _get_tech_snapshot(sym: str) -> dict:
             "ema34":     ema34,
             "ema50":     ema50,
             "vol_ratio": vol_ratio,
+            "atr_ratio": atr_ratio,
             "vwap":      vwap_b,
             "day_open":  day_open,
         }
@@ -8463,6 +8518,22 @@ def _alp_execute_signal(res: dict):
         print(f"[Alpaca] {sym} — SKIPPED: bad sym or direction='{direction}'")
         return
 
+    # ── Hard gates: price ceiling + ADV floor ────────────────────────────────
+    # $300 ceiling: stocks above $300 have wide dollar-spreads and Alpaca fill
+    # quality degrades sharply (KLAC at $1,720 had $26 spread on paper). ETFs
+    # are exempt — they're all under $300 anyway.
+    _is_etf_hard = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
+    if price > 300 and not _is_etf_hard:
+        print(f"[PriceGate] {sym} — SKIPPED: price ${price:.2f} > $300 ceiling (wide spread risk)")
+        return
+    # 5M ADV floor: thin-float names below 5M average daily volume have erratic
+    # fills and often no short borrow. avg_volume is fetched in _predict_one via
+    # yfinance fast_info.three_month_average_volume. ETFs exempt.
+    _avg_vol = int(res.get("avg_volume", 0) or 0)
+    if _avg_vol > 0 and _avg_vol < 5_000_000 and not _is_etf_hard:
+        print(f"[ADVGate] {sym} — SKIPPED: avg daily vol {_avg_vol:,} < 5M minimum (thin float)")
+        return
+
     # ── Social Sentiment Boost ────────────────────────────────────────────────
     # If this ticker is currently trending on Reddit (ApeWisdom velocity > 20),
     # add up to +8 conf pts as a crowd-confirmation bonus.
@@ -8475,6 +8546,74 @@ def _alp_execute_signal(res: dict):
         boost_tag = "⚡SPIKE" if social_boost >= _SOCIAL_BOOST_SPIKE else "🔥HOT"
         print(f"[SocialBoost] {sym} trending ({boost_tag}) — conf {conf:.1f} → {eff_conf:.1f} "
               f"(+{social_boost} pts)")
+
+    # ── RVOL Boost ────────────────────────────────────────────────────────────
+    # High relative volume = real institutional participation (not just model noise).
+    # vol_ratio from 5-min Alpaca tech snapshot; atr_ratio = recent ATR vs session avg.
+    # Both are 5-min cached — no extra API cost per call.
+    _snap_for_boost = _get_tech_snapshot(sym) or {}
+    _vol_r   = float(_snap_for_boost.get("vol_ratio",  0) or 0)
+    _atr_r   = float(_snap_for_boost.get("atr_ratio", 1.0) or 1.0)
+    _rvol_adj = 0
+    if _vol_r >= 5.0:
+        _rvol_adj = 9    # extreme crowd participation
+    elif _vol_r >= 3.0:
+        _rvol_adj = 6    # strong conviction volume
+    elif _vol_r >= 2.0:
+        _rvol_adj = 3    # above-average — worth noting
+    if _rvol_adj > 0:
+        eff_conf += _rvol_adj
+        print(f"[RVOL] {sym} — vol_ratio={_vol_r:.1f}x → eff_conf +{_rvol_adj} → {eff_conf:.1f}")
+
+    # ── Expanding ATR Boost ───────────────────────────────────────────────────
+    # atr_ratio > 1.0 means recent bars are moving more than the session average.
+    # Expanding ATR = wider intraday ranges = better chance of hitting target before stop.
+    _atr_adj = 0
+    if _atr_r >= 1.5:
+        _atr_adj = 5    # strongly expanding — high-energy tape
+    elif _atr_r >= 1.1:
+        _atr_adj = 3    # modestly expanding
+    if _atr_adj > 0:
+        eff_conf += _atr_adj
+        print(f"[ATR] {sym} — atr_ratio={_atr_r:.2f}x (expanding) → eff_conf +{_atr_adj} → {eff_conf:.1f}")
+
+    # ── Premarket Move Boost ──────────────────────────────────────────────────
+    # A >3% premarket move shows institutional conviction before the open.
+    # Only boosts when gap direction aligns with signal direction.
+    try:
+        _pm_cache = cached("premarket:gaps", ttl=0) or {}
+        _pm_list  = _pm_cache.get("gaps", []) if isinstance(_pm_cache, dict) else []
+        _pm_entry = next((g for g in _pm_list if g.get("sym") == sym), None)
+        if _pm_entry:
+            _pm_pct  = abs(float(_pm_entry.get("gap_pct", 0) or 0))
+            _pm_dir  = _pm_entry.get("direction", "")
+            _pm_ok   = (direction == "bull" and _pm_dir == "up") or \
+                       (direction == "bear" and _pm_dir == "down")
+            _pm_adj  = 0
+            if _pm_ok:
+                if _pm_pct >= 5.0:
+                    _pm_adj = 8
+                elif _pm_pct >= 3.0:
+                    _pm_adj = 5
+                elif _pm_pct >= 1.5:
+                    _pm_adj = 2
+            if _pm_adj > 0:
+                eff_conf += _pm_adj
+                print(f"[PremktMove] {sym} — gap {_pm_dir} {_pm_pct:.1f}% aligns with "
+                      f"{direction.upper()} → eff_conf +{_pm_adj} → {eff_conf:.1f}")
+    except Exception:
+        pass
+
+    # ── Same-Day News Catalyst ────────────────────────────────────────────────
+    # A confirmed news event explains the move and adds narrative conviction.
+    # Checked via Finnhub company-news (15-min cache). No penalty if unavailable.
+    if FINNHUB_KEY:
+        try:
+            if _get_news_catalyst(sym):
+                eff_conf += 5
+                print(f"[NewsCatalyst] {sym} — same-day news confirmed → eff_conf +5 → {eff_conf:.1f}")
+        except Exception:
+            pass
 
     # ── VIX confidence adjustment (focused pairs only) ────────────────────────
     # Calm falling VIX → trend environment → small boost; elevated VIX → penalty.
