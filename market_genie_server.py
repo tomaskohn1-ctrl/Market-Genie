@@ -4403,7 +4403,11 @@ _ETF_BEAR_UNIVERSE = frozenset([
 # They trade with-the-tape on BULLISH days; bear signals are blocked (ETFDir gate).
 _ETF_UNLEVERAGED = frozenset(["QQQ", "SPY", "IWM"])
 
-_PREDICT_WATCHLIST = sorted(_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
+# ── Prediction watchlist — full stock universe ────────────────────────────────
+# Expanded from 9 ETFs to full SCANNER_UNIVERSE so the Alpha Engine surfaces
+# elite setups across all liquid stocks, not just the leveraged ETF basket.
+# ETF auto-execution gates still apply; stocks will show as manual Trade Now signals.
+_PREDICT_WATCHLIST = list(SCANNER_UNIVERSE)
 
 # ── Paired ETF conflict map ───────────────────────────────────────────────────
 # Each entry: bull ETF ↔ bear ETF covering the same underlying index/sector.
@@ -4424,8 +4428,8 @@ _predict_bg_on    = False
 _predict_bg_lock  = threading.Lock()
 _predict_stats    = {"ts": 0, "model": "loading", "bucket": 0, "bucket_total": 0}
 _PREDICT_RESULT_TTL    = 900   # 15 min — covers 2+ full rotations; stale results auto-expire
-_PREDICT_BUCKET_SECS   = 10    # one bucket every 10s → full rotation ~20s (ETF universe is only 22 tickers)
-_PREDICT_NUM_BUCKETS   = 2     # 22 ETFs ÷ 2 = 11/bucket → full rotation every 20s (was 3.5 min with 283 stocks)
+_PREDICT_BUCKET_SECS   = 30    # one bucket every 30s → full rotation every ~5 min across 200 stocks
+_PREDICT_NUM_BUCKETS   = 10    # ~200 stocks ÷ 10 = 20/bucket → full rotation every ~5 min
 
 # ── Hot-ticker fast lane ──────────────────────────────────────────────────────
 # When a ticker reaches streak_count=1 (first confirmation) it is promoted to
@@ -6710,7 +6714,7 @@ _ALPACA_SECRET   = os.getenv("ALPACA_SECRET_KEY", "")
 _ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets").rstrip("/")
 
 # Execution settings (override via Railway Variables)
-_ALP_ENABLED          = os.getenv("ALPACA_EXEC_ENABLED", "true").lower() == "true"
+_ALP_ENABLED          = os.getenv("ALPACA_EXEC_ENABLED", "false").lower() == "true"  # default OFF — use Trade Now button for manual entry
 _ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "20000"))  # $20K per trade — raised 15K→20K for focused 4-pair strategy (fewer signals, higher quality)
 _ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "6"))         # max open at once — raised 5→6 to avoid missing high-conf signals when full
 _ALP_STOP_PCT         = float(os.getenv("ALPACA_STOP_PCT", "0.0075"))       # 0.75% stop loss — wider room for intraday noise (was 0.5%, too tight for $50-150 stocks)
