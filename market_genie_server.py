@@ -8319,8 +8319,10 @@ def _alp_execute_signal(res: dict):
     # pressure overrides the short-term model call.
     # Bear ETFs and unleveraged ETFs (QQQ/SPY/IWM) are exempt: bears benefit
     # from the falling tape, and 1× ETFs have tighter stops that survive chop.
+    # NOTE: use res.get("direction") here — 'direction' local var is extracted later
     _BULL_3X = frozenset(["TQQQ", "SPXL", "SOXL"])
-    if sym in _BULL_3X and direction == "bull":
+    _sig_dir  = res.get("direction", "")
+    if sym in _BULL_3X and _sig_dir == "bull":
         with _futures_lock:
             _nq_now     = _futures_state.get("nq_chg", 0.0)
             _fut_fresh  = time.time() - _futures_state.get("updated_at", 0) < 600
@@ -8334,7 +8336,7 @@ def _alp_execute_signal(res: dict):
     # In this environment, leveraged bull ETFs face immediate stop-hit risk as
     # market makers widen spreads and order flow tilts bearish.
     # Same exemption as futures gate: bear ETFs and unleveraged ETFs are fine.
-    if sym in _BULL_3X and direction == "bull":
+    if sym in _BULL_3X and _sig_dir == "bull":
         with _vxx_lock:
             _vxx_now   = _vxx_state.get("pct_chg", 0.0)
             _vxx_fresh = time.time() - _vxx_state.get("updated_at", 0) < 600
