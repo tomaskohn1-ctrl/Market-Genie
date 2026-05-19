@@ -7260,7 +7260,7 @@ def _alp_count_open_orders():
     return 0
 
 
-def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, eff_conf: float = 72.0):
+def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, eff_conf: float = 72.0, forced: bool = False):
     """
     Two-phase order for accurate bracket placement:
       Phase 1: Submit market entry only.
@@ -7413,9 +7413,9 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
     #     chasing moves when DirCap held a signal while price ran (e.g. LABU $186→$190)
     #   counter move   (price went against):  1.5% — hard stop, direction failed
     # Stocks: symmetric 1%.
-    if signal_price > 0 and not res.get("_forced"):
+    if signal_price > 0 and not forced:
         # Drift gate: skip if price moved too far since signal was generated.
-        # BYPASSED for manual Trade Now clicks (_forced=True) — the user already
+        # BYPASSED for manual Trade Now clicks (forced=True) — the user already
         # sees the current price and is making an informed decision to enter.
         _pct_move = (price - signal_price) / signal_price  # + = price went up
         _is_etf   = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
@@ -9482,7 +9482,7 @@ def api_alpaca_force(sym):
           f"strong={is_strong} — bypassing all soft gates (manual Trade Now)")
 
     try:
-        ok = _alp_place_bracket(sym, direction, price, is_strong, eff_conf=eff_conf)
+        ok = _alp_place_bracket(sym, direction, price, is_strong, eff_conf=eff_conf, forced=True)
     except Exception as e:
         print(f"[ForceOrder] {sym} — exception: {e}")
         return jsonify({"ok": False, "reason": f"Order error: {e}"}), 500
