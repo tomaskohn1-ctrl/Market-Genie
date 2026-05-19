@@ -150,7 +150,8 @@ SCANNER_UNIVERSE = [
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","JPM","V",
     "UNH","XOM","WMT","JNJ","PG","NFLX",
     "BAC","ORCL","CRM","CVX","MRK","ABBV","ACN","ADBE","TXN",
-    # ── Finance / Banks (expanded — GS added; directional on macro news) ───
+    # ── Finance / Banks ──────────────────────────────────────────────────────
+    # GS: ~2.2M share ADV × ~$550 = ~$1.2B/day → passes dollar-ADV gate
     "GS","MS","WFC","C","USB","SCHW",
     # ── Semiconductors ──────────────────────────────────────────────────────
     "AMD","INTC","QCOM","MU","AMAT","LRCX","MRVL","ARM","SMCI",
@@ -196,7 +197,8 @@ SCANNER_UNIVERSE = [
     # ── Commodities & Bonds ─────────────────────────────────────────────────
     "GLD","SLV","USO","UNG","TLT","HYG","PDBC",
     # ── Energy ──────────────────────────────────────────────────────────────
-    "OXY","DVN","HAL","SLB","RIG","ENPH","SEDG","NEE","CEG",
+    # CEG removed: ~3.1M share ADV, fails 5M gate
+    "OXY","DVN","HAL","SLB","RIG","ENPH","SEDG","NEE",
     # ── Healthcare / Biotech / Pharma ───────────────────────────────────────
     # PFE = Pfizer (~35M ADV, constant drug catalyst news)
     # BMY = Bristol-Myers (~20M ADV)
@@ -8669,15 +8671,21 @@ def _alp_execute_signal(res: dict):
         print(f"[Alpaca] {sym} — SKIPPED: bad sym or direction='{direction}'")
         return
 
-    # ── Hard gate: 5M ADV floor ───────────────────────────────────────────────
-    # Thin-float names below 5M average daily volume have erratic fills and
-    # often no short borrow. Price ceiling removed — ADV alone is the right
-    # filter (AMD at $419/38M ADV fills cleanly; KLAC at $1,746/0.98M ADV does not).
-    # avg_volume fetched in _predict_one via yfinance fast_info. ETFs exempt.
-    _is_etf_hard = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
-    _avg_vol = int(res.get("avg_volume", 0) or 0)
-    if _avg_vol > 0 and _avg_vol < 5_000_000 and not _is_etf_hard:
-        print(f"[ADVGate] {sym} — SKIPPED: avg daily vol {_avg_vol:,} < 5M minimum (thin float)")
+    # ── Hard gate: liquidity floor ────────────────────────────────────────────
+    # Passes if EITHER:
+    #   (a) share ADV ≥ 5M  — standard liquid names (AAPL, TSLA, MARA, etc.)
+    #   (b) dollar ADV ≥ $500M — high-priced institutional names whose share count
+    #       looks thin but whose dollar liquidity is deep (GS ~$550×2M = $1.1B/day).
+    # ETFs exempt from both checks — they have guaranteed creation/redemption liquidity.
+    _is_etf_hard  = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
+    _avg_vol       = int(res.get("avg_volume", 0) or 0)
+    _last_px       = float(res.get("last_price") or res.get("price") or 0)
+    _dollar_adv    = _avg_vol * _last_px   # estimated daily dollar volume
+    _passes_shares = _avg_vol >= 5_000_000
+    _passes_dollar = _dollar_adv >= 500_000_000   # $500M/day floor
+    if _avg_vol > 0 and not _passes_shares and not _passes_dollar and not _is_etf_hard:
+        print(f"[ADVGate] {sym} — SKIPPED: avg daily vol {_avg_vol:,} shares / "
+              f"${_dollar_adv/1e6:.0f}M < minimums (5M shares or $500M/day)")
         return
 
     # ── Social Sentiment Boost ────────────────────────────────────────────────
@@ -9785,10 +9793,17 @@ def api_alpaca_force(sym):
     # Block thin-float stocks below 5M avg daily volume — poor fills, no borrow
     # (Price ceiling removed: ADV alone is the right filter — AMD at $419/38M ADV
     # fills cleanly; KLAC at $1,746/0.98M ADV is blocked by ADV gate anyway.)
-    _avg_vol_force = int(sig.get("avg_volume", 0) or 0)
-    _is_etf_force  = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
-    if _avg_vol_force > 0 and _avg_vol_force < 5_000_000 and not _is_etf_force:
-        return jsonify({"ok": False, "reason": f"{sym} avg daily volume {_avg_vol_force:,} is below 5M minimum — poor fills and no short borrow"}), 400
+    _avg_vol_force  = int(sig.get("avg_volume", 0) or 0)
+    _is_etf_force   = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
+    _dollar_adv_force = _avg_vol_force * price
+    _passes_sh_force  = _avg_vol_force >= 5_000_000
+    _passes_dl_force  = _dollar_adv_force >= 500_000_000
+    if _avg_vol_force > 0 and not _passes_sh_force and not _passes_dl_force and not _is_etf_force:
+        return jsonify({"ok": False, "reason": (
+            f"{sym} avg daily volume {_avg_vol_force:,} shares / "
+            f"${_dollar_adv_force/1e6:.0f}M is below minimums (5M shares or $500M/day) — "
+            f"poor fills and no short borrow"
+        )}), 400
 
     print(f"[ForceOrder] {sym} {direction.upper()} conf={eff_conf:.1f} price={price_source} "
           f"strong={is_strong} — bypassing all soft gates (manual Trade Now)")
