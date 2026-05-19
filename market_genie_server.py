@@ -155,7 +155,7 @@ SCANNER_UNIVERSE = [
     "ASML","TSM","ON","CDNS","SNPS","CRDO","MCHP","MPWR",
     # ── AI / Cloud / SaaS ───────────────────────────────────────────────────
     "PLTR","SNOW","DDOG","NET","CRWD","PANW","ZS","AI","PATH",
-    "TWLO","HUBS","MDB","CFLT","S","GTLB","DOCN",
+    "TWLO","HUBS","MDB","S","GTLB","DOCN",
     # ── Consumer Tech / Platforms ───────────────────────────────────────────
     "SHOP","UBER","LYFT","DASH","ABNB","RDDT","RBLX","SNAP","PINS",
     "ROKU","ZM","DOCU","BILL","PTON","SPOT","TTD",
@@ -191,9 +191,9 @@ SCANNER_UNIVERSE = [
     # ── Airlines / Travel ───────────────────────────────────────────────────
     "AAL","DAL","UAL","BA","CCL","NCLH","RCL",
     # ── Telecom / Media ─────────────────────────────────────────────────────
-    "T","VZ","PARA","NFLX","DIS","WBD",
+    "T","VZ","NFLX","DIS","WBD",
     # ── Cannabis ────────────────────────────────────────────────────────────
-    "TLRY","SNDL","ACB",
+    "TLRY",
 ]
 # Deduplicate while preserving order
 _seen_u = set()
@@ -10604,7 +10604,7 @@ _SCALP_UNIVERSE = [
     # ── Growth / SaaS / Cloud ────────────────────────────────────────────
     "SHOP","SNOW","DDOG","NET","CRWD","OKTA","ZS","PANW","S",
     "BILL","HUBS","MDB","APP","TTD","ROKU","TWLO","VEEV","WDAY","NOW",
-    "INTU","ZM","DOCU","GTLB","CFLT","ESTC","BRZE","AMPL","TOST",
+    "INTU","ZM","DOCU","GTLB","ESTC","BRZE","AMPL","TOST",
     "PCTY","PAYC","NCNO","MNDY","CELH","CAVA","CART","ALTR","LPSN","APPF",
     # ── Financials ───────────────────────────────────────────────────────
     "JPM","BAC","GS","MS","C","WFC","BX","KKR","SCHW","AXP","COF",
@@ -10634,7 +10634,7 @@ _SCALP_UNIVERSE = [
     "ALNY","INCY","SAGE","NBIX","HRTX","DAWN","IRON",
     # ── Consumer / Retail / Media ────────────────────────────────────────
     "NFLX","DIS","UBER","LYFT","ABNB","DASH","SPOT","CHWY","ETSY",
-    "PARA","FOXA","WBD","CMCSA","T","VZ","TMUS","SIRI","CHTR",
+    "FOXA","WBD","CMCSA","T","VZ","TMUS","SIRI","CHTR",
     "WMT","COST","TGT","HD","LOW","MCD","SBUX","YUM","CMG","NKE",
     "LULU","ONON","TJX","ROST","BURL","ANF","AEO","URBN","GPS","BOOT",
     "DKNG","MGM","CZR","WYNN","LVS","PENN","NCLH","CCL","RCL","UAL",
