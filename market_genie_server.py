@@ -6577,6 +6577,124 @@ def _get_news_catalyst(sym: str) -> bool:
     return has_news
 
 
+_options_flow_cache: dict = {}   # sym → result_dict
+_OPTIONS_FLOW_TTL   = 600        # 10-minute cache — options activity is slow-moving
+
+
+def _get_options_flow(sym: str) -> dict:
+    """
+    Query Alpaca options snapshots for sym (0-60 DTE contracts only).
+    Aggregates call vs put volume and open interest, then scores unusual activity 0-10.
+
+    Scoring:
+      Put/call ratio < 0.25 → heavy call buying → +7 bull
+      Put/call ratio 0.25-0.50 → elevated calls → +4 bull
+      Put/call ratio > 4.0 → heavy put buying → +7 bear
+      Vol/OI ratio > 1.0 (contracts trading more than their open interest) → +4
+      Vol/OI ratio > 0.5 → +2
+
+    Returns dict with keys: direction, score, call_vol, put_vol, pc_ratio.
+    Returns {} on error or if options data is unavailable for this account tier.
+    Cached for 10 minutes per symbol.
+    """
+    now = time.time()
+    cached = _options_flow_cache.get(sym)
+    if cached and now - cached.get("ts", 0) < _OPTIONS_FLOW_TTL:
+        return cached
+
+    if not ALPACA_KEY or not ALPACA_SECRET:
+        return {}
+
+    try:
+        from datetime import datetime as _dt2, timedelta as _td2
+        today_str  = _dt2.utcnow().strftime("%Y-%m-%d")
+        cutoff_str = (_dt2.utcnow() + _td2(days=60)).strftime("%Y-%m-%d")
+
+        r = requests.get(
+            f"{_ALP_DATA_URL}/v1beta1/options/snapshots",
+            headers=_alp_headers(),
+            params={
+                "underlying_symbols": sym,
+                "expiration_date_gte": today_str,
+                "expiration_date_lte": cutoff_str,
+                "feed": "indicative",
+                "limit": 1000,
+            },
+            timeout=8,
+        )
+        if r.status_code != 200:
+            # 403 = no options data subscription; 404 = no options for this sym (ETF etc.)
+            # Both are expected — return empty and don't print noise.
+            return {}
+
+        snapshots = r.json().get("snapshots", {})
+        if not snapshots:
+            return {}
+
+        call_vol = call_oi = put_vol = put_oi = 0
+        for snap in snapshots.values():
+            bar = snap.get("dailyBar") or {}
+            vol = int(bar.get("v", 0) or 0)
+            oi  = int(snap.get("openInterest", 0) or 0)
+            # Determine call/put: use greeks delta (positive = call, negative = put)
+            delta = float((snap.get("greeks") or {}).get("delta", 0) or 0)
+            if delta >= 0:
+                call_vol += vol;  call_oi += oi
+            else:
+                put_vol  += vol;  put_oi  += oi
+
+        total_vol = call_vol + put_vol
+        if total_vol < 50:   # too thin — not enough data to signal
+            result = {"direction": None, "score": 0, "call_vol": call_vol,
+                      "put_vol": put_vol, "pc_ratio": 1.0, "ts": now}
+            _options_flow_cache[sym] = result
+            return result
+
+        pc_ratio  = round(put_vol / call_vol, 2) if call_vol > 0 else 99.0
+        score     = 0
+        direction = None
+
+        # Put/call ratio → direction and base score
+        if   pc_ratio < 0.25: score += 7; direction = "bull"   # aggressive call sweep
+        elif pc_ratio < 0.50: score += 4; direction = "bull"   # elevated call buying
+        elif pc_ratio < 0.75: score += 2; direction = "bull"   # mild call lean
+        elif pc_ratio > 4.00: score += 7; direction = "bear"   # aggressive put buying
+        elif pc_ratio > 2.00: score += 4; direction = "bear"   # elevated put buying
+        elif pc_ratio > 1.50: score += 2; direction = "bear"   # mild put lean
+
+        # Volume-to-OI ratio — measures HOW unusual the flow is for the direction
+        if direction == "bull" and call_oi > 0:
+            call_vol_oi = call_vol / call_oi
+            if   call_vol_oi > 1.0: score += 4   # contracts traded > 100% of OI today
+            elif call_vol_oi > 0.5: score += 2
+            elif call_vol_oi > 0.2: score += 1
+        if direction == "bear" and put_oi > 0:
+            put_vol_oi = put_vol / put_oi
+            if   put_vol_oi > 1.0: score += 4
+            elif put_vol_oi > 0.5: score += 2
+            elif put_vol_oi > 0.2: score += 1
+
+        score = min(score, 10)
+
+        result = {
+            "direction": direction,
+            "score":     score,
+            "call_vol":  call_vol,
+            "put_vol":   put_vol,
+            "pc_ratio":  pc_ratio,
+            "ts":        now,
+        }
+        _options_flow_cache[sym] = result
+        if score >= 3:
+            print(f"[OptionsFlow] {sym} — calls={call_vol:,} puts={put_vol:,} "
+                  f"P/C={pc_ratio:.2f} → {(direction or 'neutral').upper()} score={score}/10")
+        return result
+
+    except Exception as _of_err:
+        print(f"[OptionsFlow] {sym} fetch error: {_of_err}")
+        return {}
+
+
 def _breadth_fetch_intraday_chg(sym: str) -> float:
     """Return intraday % change for sym using Finnhub quote. Returns 0.0 on failure."""
     if not FINNHUB_KEY:
@@ -8853,6 +8971,31 @@ def _alp_execute_signal(res: dict):
                 print(f"[NewsCatalyst] {sym} — same-day news confirmed → eff_conf +5 → {eff_conf:.1f}")
         except Exception:
             pass
+
+    # ── Options Flow Confirmation ──────────────────────────────────────────────
+    # Unusual call buying confirms bull signals; unusual put buying confirms bear.
+    # Opposing high-conviction flow subtracts confidence. ETFs/no-options → {} silently.
+    try:
+        _opt = _get_options_flow(sym)
+        _opt_dir   = _opt.get("direction")
+        _opt_score = int(_opt.get("score", 0) or 0)
+        _opt_pc    = float(_opt.get("pc_ratio", 1.0) or 1.0)
+        _opt_cv    = int(_opt.get("call_vol", 0) or 0)
+        _opt_pv    = int(_opt.get("put_vol", 0) or 0)
+        if _opt_dir and _opt_score >= 3:
+            if _opt_dir == direction:
+                _opt_adj = min(_opt_score, 8)
+                eff_conf += _opt_adj
+                print(f"[OptionsFlow] ✅ {sym} — unusual {_opt_dir.upper()} flow "
+                      f"(calls={_opt_cv:,} puts={_opt_pv:,} P/C={_opt_pc:.2f} score={_opt_score}) "
+                      f"confirms signal → eff_conf +{_opt_adj} → {eff_conf:.1f}")
+            elif _opt_score >= 6:
+                eff_conf -= 5
+                print(f"[OptionsFlow] ⚠️  {sym} — OPPOSING {_opt_dir.upper()} flow "
+                      f"(P/C={_opt_pc:.2f} score={_opt_score}) "
+                      f"contradicts {direction.upper()} signal → eff_conf -5 → {eff_conf:.1f}")
+    except Exception as _opt_err:
+        pass
 
     # ── VIX confidence adjustment (focused pairs only) ────────────────────────
     # Calm falling VIX → trend environment → small boost; elevated VIX → penalty.
