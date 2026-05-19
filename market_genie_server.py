@@ -6809,7 +6809,9 @@ _ALP_MAX_BEAR_POSITIONS = int(os.getenv("ALPACA_MAX_BEAR_POSITIONS", "5"))  # ma
 _alp_last_traded  = {}   # { sym: {"dir": str, "ts": float, "fill": float} }
 _alp_lock         = threading.Lock()
 _alp_order_lock   = threading.Lock()   # serializes position-check → place to prevent over-filling
-_alp_breakeven_set = set()   # syms whose stop has been moved to trailing stop — prevents double-moves
+_alp_breakeven_set    = set()   # syms whose stop has been moved to trailing stop — prevents double-moves
+_alp_partial_taken    = set()   # syms where 50% has been closed at +1% (tiered take-profit)
+_alp_tight_trail_set  = set()   # syms whose trailing stop has been tightened to 0.2% (after +0.75%)
 _alp_loss_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last losing exit per symbol
 _alp_exit_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last ANY exit (win OR lose); prevents churn re-entry after trailing stops / target hits
 _alp_bear_session_locked = set()  # bear ETFs locked for the session after a TimeExit loss on a BULLISH tape
@@ -7784,7 +7786,9 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
             with _alp_lock:
                 if sym in _alp_last_traded:
                     _alp_last_traded[sym]["fill"] = fill_price
-                _alp_breakeven_set.discard(sym)   # reset breakeven flag for new trade
+                _alp_breakeven_set.discard(sym)      # reset breakeven flag for new trade
+                _alp_partial_taken.discard(sym)      # reset partial take-profit flag
+                _alp_tight_trail_set.discard(sym)    # reset tight trail flag
                 today_str2 = _get_et_now().date().isoformat()
                 prev = _alp_daily_trade_count.get(sym, [today_str2, 0])
                 if prev[0] != today_str2:
@@ -8028,6 +8032,8 @@ def _conviction_check(sym: str, direction: str, fill_price: float, fill_qty: int
             with _alp_lock:
                 _alp_last_traded.pop(sym, None)
                 _alp_breakeven_set.discard(sym)
+                _alp_partial_taken.discard(sym)
+                _alp_tight_trail_set.discard(sym)
         else:
             print(f"[ConvCheck] {sym} ✅ HOLDING — dir={current_dir.upper()} "
                   f"streak={current_streak} conf={current_conf:.1f}% "
@@ -8145,6 +8151,8 @@ def _alp_time_exit_loop():
                                 with _alp_lock:
                                     _alp_last_traded.pop(_gp["symbol"], None)
                                     _alp_breakeven_set.discard(_gp["symbol"])
+                                    _alp_partial_taken.discard(_gp["symbol"])
+                                    _alp_tight_trail_set.discard(_gp["symbol"])
                             _alp_profit_guard_fired = True
                             _alp_profit_guard_until = now_ts + _ALP_PROFIT_GUARD_PAUSE * 60
                             # No more position processing this cycle
@@ -8198,6 +8206,132 @@ def _alp_time_exit_loop():
                 unrealized_pct = float(pos.get("unrealized_plpc", 0)) * 100
                 is_winner      = unrealized_pct >= 0
                 fill_price     = entry_info.get("fill", 0.0)
+                entry_dir      = entry_info.get("dir", "bull")   # "bull" or "bear"
+                fill_qty_pos   = abs(int(float(pos.get("qty", 1))))
+                pos_side_now   = pos.get("side", "long")
+
+                # ══════════════════════════════════════════════════════════════
+                # SELLING STRATEGY 1 — Signal Reversal Exit
+                # ──────────────────────────────────────────────────────────────
+                # If Kronos+TFM have flipped to the opposite direction (streak≥2
+                # AND both_agree=1), the thesis is dead — close immediately
+                # rather than waiting for the time exit.
+                # Only fire if we have a meaningful position age (≥4 min) so we
+                # don't react to the opening-bar model noise right after entry.
+                # ══════════════════════════════════════════════════════════════
+                if age_mins >= 4:
+                    try:
+                        _live_sig = _predict_results.get(sym, {})
+                        _live_dir = _live_sig.get("direction", "")
+                        _live_ba  = int(_live_sig.get("both_agree", 0) or 0)
+                        _live_str = int(_live_sig.get("streak",     0) or 0)
+                        _reversed = (_live_dir and _live_dir != entry_dir
+                                     and _live_ba == 1 and _live_str >= 2)
+                        if _reversed:
+                            print(f"[ReversalExit] 🔄 {sym} — model flipped "
+                                  f"{entry_dir.upper()} → {_live_dir.upper()} "
+                                  f"(streak={_live_str}, both_agree) after "
+                                  f"{age_mins:.0f}m at {unrealized_pct:+.2f}% "
+                                  f"— closing position now")
+                            _alp_close_position(sym, pos_side_now)
+                            with _alp_lock:
+                                _alp_last_traded.pop(sym, None)
+                                _alp_breakeven_set.discard(sym)
+                                _alp_partial_taken.discard(sym)
+                                _alp_tight_trail_set.discard(sym)
+                                if unrealized_pct < 0:
+                                    _alp_loss_cooldown[sym] = time.time()
+                                else:
+                                    _alp_exit_cooldown[sym] = time.time()
+                            _save_alp_state()
+                            continue   # done with this position
+                    except Exception as _rev_err:
+                        print(f"[ReversalExit] ⚠️  {sym} reversal check error: {_rev_err}")
+
+                # ══════════════════════════════════════════════════════════════
+                # SELLING STRATEGY 2 — Tiered Take-Profit (50% at +1%)
+                # ──────────────────────────────────────────────────────────────
+                # When unrealized gain hits +1%, close half the position at market.
+                # This locks in a guaranteed partial profit while the remaining
+                # 50% continues to ride the trailing stop toward the bracket target.
+                # Tracks per-sym in _alp_partial_taken to avoid double-firing.
+                # ══════════════════════════════════════════════════════════════
+                if (unrealized_pct >= 1.0
+                        and sym not in _alp_partial_taken
+                        and fill_qty_pos >= 2):    # need ≥2 shares to split
+                    try:
+                        half_qty   = max(1, fill_qty_pos // 2)
+                        close_side = "sell" if pos_side_now == "long" else "buy"
+                        partial_order = {
+                            "symbol":        sym,
+                            "qty":           str(half_qty),
+                            "side":          close_side,
+                            "type":          "market",
+                            "time_in_force": "day",
+                        }
+                        pt_r = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
+                                             headers=_alp_headers(),
+                                             json=partial_order, timeout=8)
+                        if pt_r.status_code in (200, 201):
+                            with _alp_lock:
+                                _alp_partial_taken.add(sym)
+                            print(f"[TieredTP] 💰 {sym} — sold {half_qty}/{fill_qty_pos} shares "
+                                  f"at +{unrealized_pct:.2f}% (+1% tier hit) — "
+                                  f"remaining {fill_qty_pos - half_qty} shares ride to target")
+                        else:
+                            print(f"[TieredTP] ⚠️  {sym} partial close failed "
+                                  f"HTTP {pt_r.status_code}: {pt_r.text[:200]}")
+                    except Exception as _tp_err:
+                        print(f"[TieredTP] ⚠️  {sym} partial close exception: {_tp_err}")
+
+                # ══════════════════════════════════════════════════════════════
+                # SELLING STRATEGY 3 — Tighten Trailing Stop to 0.2% at +0.75%
+                # ──────────────────────────────────────────────────────────────
+                # Once up +0.75%, replace the 0.5% trailing stop with a tighter
+                # 0.2% trail. At this point the position has real runway — a
+                # tight trail protects the gain while still allowing minor pullbacks.
+                # Tracks per-sym in _alp_tight_trail_set to avoid re-tightening.
+                # NOTE: Only fires AFTER the initial trailing stop has been set
+                # (sym already in _alp_breakeven_set), so we don't tighten before
+                # the OCO has been cancelled.
+                # ══════════════════════════════════════════════════════════════
+                if (unrealized_pct >= 0.75
+                        and sym in _alp_breakeven_set          # initial trail already active
+                        and sym not in _alp_tight_trail_set
+                        and fill_price > 0):
+                    try:
+                        close_side = "sell" if pos_side_now == "long" else "buy"
+                        # Cancel current trailing stop, replace with tighter one
+                        requests.delete(
+                            f"{_ALPACA_BASE_URL}/v2/orders",
+                            headers=_alp_headers(),
+                            params={"symbol": sym},
+                            timeout=5
+                        )
+                        time.sleep(0.3)
+
+                        tight_trail_order = {
+                            "symbol":        sym,
+                            "qty":           str(fill_qty_pos),
+                            "side":          close_side,
+                            "type":          "trailing_stop",
+                            "time_in_force": "day",
+                            "trail_percent": "0.2",   # tight 0.2% trail
+                        }
+                        tt_r = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
+                                             headers=_alp_headers(),
+                                             json=tight_trail_order, timeout=8)
+                        if tt_r.status_code in (200, 201):
+                            with _alp_lock:
+                                _alp_tight_trail_set.add(sym)
+                            print(f"[TightTrail] 🎯 {sym} — trailing stop tightened to 0.2% "
+                                  f"at {unrealized_pct:+.2f}% gain (was 0.5%) — "
+                                  f"protecting profits tightly")
+                        else:
+                            print(f"[TightTrail] ⚠️  {sym} tighten failed "
+                                  f"HTTP {tt_r.status_code}: {tt_r.text[:200]}")
+                    except Exception as _tt_err:
+                        print(f"[TightTrail] ⚠️  {sym} tighten exception: {_tt_err}")
 
                 # ── TRAILING STOP (replaces old breakeven stop) ───────────────
                 # Once a position reaches +0.4% gain, cancel the OCO bracket
@@ -8256,6 +8390,8 @@ def _alp_time_exit_loop():
                     with _alp_lock:
                         _alp_last_traded.pop(sym, None)
                         _alp_breakeven_set.discard(sym)
+                        _alp_partial_taken.discard(sym)
+                        _alp_tight_trail_set.discard(sym)
                         _alp_loss_cooldown[sym] = time.time()
                         _alp_exit_cooldown[sym] = time.time()
                     _save_alp_state()
@@ -8284,6 +8420,8 @@ def _alp_time_exit_loop():
                     with _alp_lock:
                         _alp_last_traded.pop(sym, None)
                         _alp_breakeven_set.discard(sym)
+                        _alp_partial_taken.discard(sym)
+                        _alp_tight_trail_set.discard(sym)
                         _alp_exit_cooldown[sym] = time.time()
                         if not is_winner:
                             _alp_loss_cooldown[sym] = time.time()
@@ -9732,10 +9870,12 @@ def api_alpaca_close(sym):
             msg = f"{sym} closed at market"
             order_type = "market"
 
-        # Clear dedup + trailing-stop flag so system can re-enter cleanly
+        # Clear dedup + exit flags so system can re-enter cleanly
         with _alp_lock:
             _alp_last_traded.pop(sym, None)
             _alp_breakeven_set.discard(sym)
+            _alp_partial_taken.discard(sym)
+            _alp_tight_trail_set.discard(sym)
         print(f"[Manual] ✂ {msg}")
         return jsonify({"ok": True, "msg": msg, "order_type": order_type})
     except Exception as e:
