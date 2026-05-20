@@ -8871,6 +8871,26 @@ def _alp_execute_signal(res: dict):
                   f"(fear spike — bull 3× ETF blocked)")
             return
 
+    # ── Directional lock — BULLISH regime + rising futures = long-only ───────
+    # When the regime score is ≥ 70 (BULLISH) AND NQ futures are rising ≥ +0.3%,
+    # the macro tape is clearly bullish. Bear/short auto-entries in this environment
+    # fight the tape and historically drag down P&L. Lock to long-only.
+    # Manual Trade Now is still available if user wants to override.
+    # Bear ETF gap-down early entries (EarlyBear bypass) are exempt — they already
+    # have their own NQ gate and only fire on confirmed strong gap-down opens.
+    if _sig_dir == "bear" and not _is_forced:
+        with _breadth_lock:
+            _dl_score = _breadth_state.get("score", 50.0)
+        with _futures_lock:
+            _dl_nq = _futures_state.get("nq_chg", 0.0)
+            _dl_es = _futures_state.get("es_chg", 0.0)
+        _dl_bullish_regime  = _dl_score >= 70
+        _dl_rising_futures  = _dl_nq >= 0.3 or _dl_es >= 0.2
+        if _dl_bullish_regime and _dl_rising_futures:
+            print(f"[DirLock] {sym} BEAR — SKIPPED: regime={_dl_score:.0f} (BULLISH) "
+                  f"+ NQ={_dl_nq:+.2f}% ES={_dl_es:+.2f}% rising — long-only mode active")
+            return
+
     # ── Per-symbol loss cooldown ──────────────────────────────────────────────
     # ── Profit Guard pause — no new entries while guard is active ────────────
     if _alp_profit_guard_until and time.time() < _alp_profit_guard_until:
