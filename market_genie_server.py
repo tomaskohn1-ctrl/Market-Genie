@@ -7086,6 +7086,8 @@ _alp_partial_taken    = set()   # syms where 50% has been closed at +1% (tiered 
 _alp_tight_trail_set  = set()   # syms whose trailing stop has been tightened to 0.2% (after +0.75%)
 _alp_loss_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last losing exit per symbol
 _alp_exit_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last ANY exit (win OR lose); prevents churn re-entry after trailing stops / target hits
+_alp_tape_block_until = {}  # { sym: float(unix_ts) } — tape-blocked signals must wait 5 min before retrying; prevents firing the instant tape briefly improves
+_ALP_TAPE_BLOCK_SECS  = 300  # 5-minute cooldown after tape block — signal must re-qualify on a fresh scan, not fire on a one-cycle breadth flicker
 _alp_bear_session_locked = set()  # bear ETFs locked for the session after a TimeExit loss on a BULLISH tape
 _alp_daily_trade_count = {}  # { sym: [date_str, count] } — prevent same-ticker churn (TECS 5x on May 12)
 _ALP_MAX_TRADES_PER_SYM_DAY = int(os.getenv("ALPACA_MAX_TRADES_PER_SYM_DAY", "5"))  # max entries same sym/day — lowered 6→5: exit cooldown (30 min) is the primary churn brake; daily cap is a hard backstop for redeploy edge cases. 5 allows morning + midday + afternoon setups with room for one strong re-entry on trending days
@@ -9839,6 +9841,15 @@ def _alp_execute_signal(res: dict):
                 print(f"[TechGate] {sym} — SKIPPED: vol_ratio {vol_ratio:.2f}× < {_VOL_SURGE_MIN}× required")
                 return
 
+    # ── Tape-block cooldown — must re-qualify after tape blocked, not just fire on a flicker ──
+    # When a signal was tape-blocked, a 5-min cooldown is set. This prevents the signal
+    # from firing the instant the breadth ratio briefly dips below the threshold one cycle
+    # later (e.g. CHWY blocked at 74% bear, fires when it flickers to 67% bear).
+    # The signal is silently held; no log spam per cycle.
+    _tape_block_exp = _alp_tape_block_until.get(sym, 0)
+    if _tape_block_exp and time.time() < _tape_block_exp:
+        return  # silent — already logged when blocked; wait for full cooldown
+
     # ── Tape Alignment Filter ──────────────────────────────────────────────────
     # If 72%+ of signals this hour are running in one direction, don't fight the tape.
     # Today's data: 85% BEAR tape + BULL entries = the primary source of losses.
@@ -9847,15 +9858,19 @@ def _alp_execute_signal(res: dict):
         with _breadth_lock:
             bear_ratio = _breadth_state.get("bear_ratio", 0.5)
         if direction == "bull" and bear_ratio >= _TAPE_FILTER_THRESHOLD:
-            print(f"[Alpaca] {sym} — SKIPPED: tape {bear_ratio:.0%} BEAR (≥{_TAPE_FILTER_THRESHOLD:.0%} threshold) — no BULL entries")
+            print(f"[Alpaca] {sym} — SKIPPED: tape {bear_ratio:.0%} BEAR (≥{_TAPE_FILTER_THRESHOLD:.0%} threshold) — no BULL entries (5m cooldown set)")
+            _alp_tape_block_until[sym] = time.time() + _ALP_TAPE_BLOCK_SECS
             with _alp_lock:
                 _alp_last_traded.pop(sym, None)
             return
         if direction == "bear" and bear_ratio <= (1.0 - _TAPE_FILTER_THRESHOLD):
-            print(f"[Alpaca] {sym} — SKIPPED: tape {1-bear_ratio:.0%} BULL (≥{_TAPE_FILTER_THRESHOLD:.0%} threshold) — no BEAR entries")
+            print(f"[Alpaca] {sym} — SKIPPED: tape {1-bear_ratio:.0%} BULL (≥{_TAPE_FILTER_THRESHOLD:.0%} threshold) — no BEAR entries (5m cooldown set)")
+            _alp_tape_block_until[sym] = time.time() + _ALP_TAPE_BLOCK_SECS
             with _alp_lock:
                 _alp_last_traded.pop(sym, None)
             return
+        # Tape condition clear — remove any prior block
+        _alp_tape_block_until.pop(sym, None)
 
     now = time.time()
     with _alp_lock:
