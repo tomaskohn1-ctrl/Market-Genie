@@ -7153,7 +7153,8 @@ _alp_profit_guard_fired   = False  # True after guard fires (one-shot per sessio
 _alp_profit_guard_until   = 0.0    # timestamp: block new entries until this time
 _ALP_PROFIT_GUARD_PEAK    = float(os.getenv("ALPACA_PROFIT_GUARD_PEAK",  "200"))  # min peak before guard activates
 _ALP_PROFIT_GUARD_DROP    = float(os.getenv("ALPACA_PROFIT_GUARD_DROP",  "400"))  # $ drawdown from peak that triggers close-all
-_ALP_PROFIT_GUARD_PAUSE   = int(os.getenv("ALPACA_PROFIT_GUARD_PAUSE",    "20"))  # minutes to pause new entries after guard fires
+_ALP_PROFIT_GUARD_PAUSE   = int(os.getenv("ALPACA_PROFIT_GUARD_PAUSE",    "10"))  # minutes to pause new entries after guard fires
+_ALP_PROFIT_GUARD_NQ_SKIP = float(os.getenv("ALPACA_PROFIT_GUARD_NQ_SKIP", "0.5"))  # skip guard if NQ futures > this % (strong bull tape)
 
 # ── AI-Trader TradeSync ───────────────────────────────────────────────────────
 # Publishes Market Genie's paper trades to ai4trade.ai so they appear on the
@@ -8417,24 +8418,37 @@ def _alp_time_exit_loop():
                             if cur_pnl >= _ALP_PROFIT_GUARD_PEAK:
                                 print(f"[ProfitGuard] 📈 New session peak: ${cur_pnl:+.2f}")
                         # Fire guard if peak was meaningful and we've drawn down too much
+                        # NQ gate: skip if futures are strongly rising — dip is likely noise
+                        _pg_nq = _futures_state.get("nq_chg", 0.0)
+                        _pg_es = _futures_state.get("es_chg", 0.0)
+                        _pg_tape_strong = (
+                            _pg_nq >= _ALP_PROFIT_GUARD_NQ_SKIP or
+                            _pg_es >= _ALP_PROFIT_GUARD_NQ_SKIP * 0.6
+                        )
                         if (not _alp_profit_guard_fired
                                 and _alp_session_peak_pnl >= _ALP_PROFIT_GUARD_PEAK
                                 and cur_pnl < _alp_session_peak_pnl - _ALP_PROFIT_GUARD_DROP
                                 and positions):
-                            print(f"[ProfitGuard] 🛑 PROFIT GUARD FIRED — "
-                                  f"peak=${_alp_session_peak_pnl:+.2f} → now=${cur_pnl:+.2f} "
-                                  f"(gave back ${_alp_session_peak_pnl - cur_pnl:.0f}) "
-                                  f"— closing all {len(positions)} position(s), "
-                                  f"pausing entries {_ALP_PROFIT_GUARD_PAUSE}m")
-                            for _gp in positions:
-                                _alp_close_position(_gp["symbol"], _gp.get("side", "long"))
-                                with _alp_lock:
-                                    _alp_last_traded.pop(_gp["symbol"], None)
-                                    _alp_breakeven_set.discard(_gp["symbol"])
-                                    _alp_partial_taken.discard(_gp["symbol"])
-                                    _alp_tight_trail_set.discard(_gp["symbol"])
-                            _alp_profit_guard_fired = True
-                            _alp_profit_guard_until = now_ts + _ALP_PROFIT_GUARD_PAUSE * 60
+                            if _pg_tape_strong:
+                                print(f"[ProfitGuard] ⏭️  GUARD SUPPRESSED — "
+                                      f"peak=${_alp_session_peak_pnl:+.2f} → now=${cur_pnl:+.2f} "
+                                      f"(gave back ${_alp_session_peak_pnl - cur_pnl:.0f}) BUT "
+                                      f"NQ={_pg_nq:+.2f}% ES={_pg_es:+.2f}% — strong bull tape, holding positions")
+                            else:
+                                print(f"[ProfitGuard] 🛑 PROFIT GUARD FIRED — "
+                                      f"peak=${_alp_session_peak_pnl:+.2f} → now=${cur_pnl:+.2f} "
+                                      f"(gave back ${_alp_session_peak_pnl - cur_pnl:.0f}) "
+                                      f"NQ={_pg_nq:+.2f}% — tape not rising, closing all {len(positions)} position(s), "
+                                      f"pausing entries {_ALP_PROFIT_GUARD_PAUSE}m")
+                                for _gp in positions:
+                                    _alp_close_position(_gp["symbol"], _gp.get("side", "long"))
+                                    with _alp_lock:
+                                        _alp_last_traded.pop(_gp["symbol"], None)
+                                        _alp_breakeven_set.discard(_gp["symbol"])
+                                        _alp_partial_taken.discard(_gp["symbol"])
+                                        _alp_tight_trail_set.discard(_gp["symbol"])
+                                _alp_profit_guard_fired = True
+                                _alp_profit_guard_until = now_ts + _ALP_PROFIT_GUARD_PAUSE * 60
                             # No more position processing this cycle
                             positions = []
             except Exception as _pg_err:
