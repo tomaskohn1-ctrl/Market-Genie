@@ -167,7 +167,7 @@ SCANNER_UNIVERSE = [
     "SHOP","UBER","LYFT","DASH","ABNB","RDDT","RBLX","SNAP","PINS",
     "ZM","DOCU","PTON","TTD","CHWY",
     # ── Fintech / Payments ──────────────────────────────────────────────────
-    "COIN","HOOD","PYPL","AFRM","SOFI","NU","SQ","MELI",
+    "COIN","HOOD","PYPL","AFRM","SOFI","NU","MELI",  # SQ removed: yfinance returning delisted error
     # ── Bitcoin / Crypto ETFs & Proxies ─────────────────────────────────────
     # IBIT = BlackRock Bitcoin ETF (~45M ADV) — primary institutional BTC proxy
     # BITO = Bitcoin futures ETF (~10M ADV)
