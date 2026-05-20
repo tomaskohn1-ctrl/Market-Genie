@@ -5901,18 +5901,16 @@ _pc_lock = threading.Lock()
 #   < 10 resolved trades in a band → fall back to static tier multiplier
 #   ≥ 10 trades → use live Half-Kelly from the DB
 #
-# Hard caps: position never goes below $10K or above $35K regardless of Kelly.
+# Hard caps: position never goes below $60K or above $100K regardless of Kelly.
 # Refreshed every 30 minutes from winrate.db so it adapts as data accumulates.
 #
 # Static fallback tiers (used until enough data builds up):
-#   eff_conf 72–79  → 0.75× ($15K on $20K base)
-#   eff_conf 80–89  → 1.00× ($20K base)
-#   eff_conf 90–99  → 1.25× ($25K)
-#   eff_conf 100+   → 1.50× ($30K, max before hard cap)
+#   eff_conf 90–99  → 1.00× ($80K base)
+#   eff_conf 100+   → 1.25× ($100K, hard cap)
 # ─────────────────────────────────────────────────────────────────────────────
 _KELLY_MIN_TRADES   = 10       # minimum resolved trades per band before using live Kelly
-_KELLY_HARD_MIN_USD = 10_000   # never go below $10K regardless of Kelly fraction
-_KELLY_HARD_MAX_USD = 35_000   # never go above $35K regardless of Kelly fraction
+_KELLY_HARD_MIN_USD = 60_000   # never go below $60K regardless of Kelly fraction
+_KELLY_HARD_MAX_USD = 100_000  # never go above $100K regardless of Kelly fraction
 
 # Confidence bands: (label, lo_inclusive, hi_exclusive)
 _KELLY_BANDS = [
@@ -6945,8 +6943,8 @@ _ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.market
 
 # Execution settings (override via Railway Variables)
 _ALP_ENABLED          = os.getenv("ALPACA_EXEC_ENABLED", "false").lower() == "true"  # default OFF — use Trade Now button for manual entry
-_ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "20000"))  # $20K per trade — raised 15K→20K for focused 4-pair strategy (fewer signals, higher quality)
-_ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "6"))         # max open at once — raised 5→6 to avoid missing high-conf signals when full
+_ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "80000"))  # $80K per trade — concentrated single-position strategy (1 elite setup at a time)
+_ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "1"))         # 1 position at a time — concentrated conviction strategy
 _ALP_STOP_PCT         = float(os.getenv("ALPACA_STOP_PCT", "0.0075"))       # 0.75% stop loss — wider room for intraday noise (was 0.5%, too tight for $50-150 stocks)
 _ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.015"))      # 1.5% target — maintains 2:1 R:R with wider stop
 _ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.030"))# 3.0% for STRONG (was 2.0%)
@@ -6989,7 +6987,7 @@ _PAIR_TARGET_HIGH_PCT = float(os.getenv("PAIR_TARGET_HIGH_PCT", "0.025"))  # 2.5
 # R:R at 2.5%: 1.47:1 (TQQQ stop 1.7%), break-even WR = 40% — meaningfully better.
 # With new gates (both_agree, dead zones, blacklist, NEUTRAL block) win rate
 # should comfortably exceed 45%, making both tiers profitable.
-_ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "72"))             # min confidence floor — data shows 28% win rate at 65, breakeven needs 42%; 72 filters noise
+_ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "90"))             # min confidence floor — raised 72→90 for concentrated $80K single-position strategy; only elite setups
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
 _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "15.0"))        # min stock price — CLOV $2.62 (3 losses -$114), DJT $9.23, AI $9.25, SNAP $6.18 all under $10 and all losers today; $15 floor eliminates the worst noise
 _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.20"))   # max bid-ask spread % — raised 0.15→0.20 to capture near-miss large caps like AVGO ($0.82 wide at 0.19%); still blocks thin/bad-quote spreads
