@@ -4716,6 +4716,50 @@ def _predict_apply_streak(sym, res):
     else:
         res["alpha_tier"] = None       # both_agree=0 → 50% WR, not surfaced
         res["flip_progress"] = 0
+
+    # ── Futures-direction conflict check ──────────────────────────────────────
+    # Bear ETFs (SOXS, SQQQ, SPXS) going BULL when NQ futures are strongly
+    # positive = Kronos saw yesterday's down move and is projecting continuation,
+    # but the macro regime has flipped.  Same in reverse for bull ETFs.
+    # Threshold: ±0.3% NQ or ±0.2% ES → meaningful directional bias.
+    # Action: mark signal as conflicting so dashboard shows ⚠️ instead of tier.
+    # Does NOT suppress the signal — user can still act on it manually.
+    res["futures_conflict"] = False
+    _sym_res = res.get("sym", "")
+    _dir_res = (res.get("consensus_dir") or res.get("direction") or "").lower()
+    _is_bear_etf_res = _sym_res in ("SOXS", "SQQQ", "SPXS", "LABD", "TZA", "FAZ",
+                                     "DUST", "UVXY", "SDOW", "DRV", "SQQQ")
+    _is_bull_etf_res = _sym_res in ("SOXL", "TQQQ", "SPXL", "LABU", "TNA", "FAS",
+                                     "NUGT", "UPRO", "UDOW", "URE", "QQQ", "SPY",
+                                     "NVDL", "TSLL")
+    if _is_bear_etf_res or _is_bull_etf_res:
+        try:
+            with _futures_lock:
+                _nq_conf = _futures_state.get("nq_chg", 0.0)
+                _es_conf = _futures_state.get("es_chg", 0.0)
+            _nq_rising = _nq_conf > 0.3 or _es_conf > 0.2   # market going UP
+            _nq_falling = _nq_conf < -0.3 or _es_conf < -0.2  # market going DOWN
+            # Bear ETF BULL signal but market rising → conflict
+            if _is_bear_etf_res and _dir_res == "bull" and _nq_rising:
+                res["futures_conflict"] = True
+                res["futures_conflict_reason"] = f"NQ={_nq_conf:+.2f}% rising but {_sym_res} BULL (bear ETF)"
+                res["alpha_tier"] = None  # suppress tier badge
+                print(f"[FuturesConflict] ⚠️  {_sym_res} BULL suppressed — NQ={_nq_conf:+.2f}% rising (market recovery kills bear ETF bull)")
+            # Bull ETF BEAR signal but market rising → conflict
+            elif _is_bull_etf_res and _dir_res == "bear" and _nq_rising:
+                res["futures_conflict"] = True
+                res["futures_conflict_reason"] = f"NQ={_nq_conf:+.2f}% rising but {_sym_res} BEAR (bull ETF)"
+                res["alpha_tier"] = None
+                print(f"[FuturesConflict] ⚠️  {_sym_res} BEAR suppressed — NQ={_nq_conf:+.2f}% rising (market up, bull ETF shouldn't be BEAR)")
+            # Bear ETF BEAR signal but market falling → conflict (SOXS going down when semis also down?)
+            elif _is_bear_etf_res and _dir_res == "bear" and _nq_falling:
+                res["futures_conflict"] = True
+                res["futures_conflict_reason"] = f"NQ={_nq_conf:+.2f}% falling but {_sym_res} BEAR (should be BULL)"
+                res["alpha_tier"] = None
+                print(f"[FuturesConflict] ⚠️  {_sym_res} BEAR suppressed — NQ={_nq_conf:+.2f}% falling (bear ETF should be BULL when semis weak)")
+        except Exception:
+            pass
+
     return res
 
 

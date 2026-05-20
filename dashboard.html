@@ -4924,8 +4924,10 @@ function renderPredictions() {
   </div>`;
 
   function renderAlphaRow(r) {
-    const tier        = r.alpha_tier || 'SOLID';
-    const ts_         = tierStyle(tier);
+    const futuresConflict = r.futures_conflict === true;
+    const conflictReason  = r.futures_conflict_reason || 'Signal conflicts with futures direction';
+    const tier        = futuresConflict ? null : (r.alpha_tier || 'SOLID');
+    const ts_         = tier ? tierStyle(tier) : { clr: '#ff9800', bg: 'rgba(255,152,0,0.12)', border: 'rgba(255,152,0,0.4)', label: '⚠️ CONFLICT', title: conflictReason, rowBg: 'rgba(255,152,0,0.03)', leftBorder: '#ff9800' };
     const dir         = (r.consensus_dir || r.direction || '').toUpperCase();
     const isBull      = dir === 'BULL';
     const dirClr      = isBull ? '#00e676' : '#ff4455';
@@ -5072,10 +5074,14 @@ function renderPredictions() {
     </div>`;
   }
 
-  // ── Sort alpha signals: ELITE first, then PRIME, then SOLID
+  // ── Sort alpha signals: ELITE first, then PRIME, then SOLID, CONFLICT last
   // Within tier: momentum-confirmed first, then by confidence desc
   function sortAlpha(arr) {
     return [...arr].sort((a, b) => {
+      // 0. Futures-conflict signals always sink to bottom
+      const ca = a.futures_conflict ? 1 : 0;
+      const cb = b.futures_conflict ? 1 : 0;
+      if (ca !== cb) return ca - cb;
       // 1. Tier: ELITE → PRIME → SOLID
       const ta = TIER_ORDER[a.alpha_tier] ?? 3;
       const tb = TIER_ORDER[b.alpha_tier] ?? 3;
