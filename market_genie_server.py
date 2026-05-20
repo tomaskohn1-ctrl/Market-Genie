@@ -7529,7 +7529,7 @@ def _alp_count_open_orders():
     return 0
 
 
-def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, eff_conf: float = 72.0, forced: bool = False):
+def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, eff_conf: float = 72.0, forced: bool = False, ext_hours: bool = False):
     """
     Two-phase order for accurate bracket placement:
       Phase 1: Submit market entry only.
@@ -7821,9 +7821,15 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
         "limit_price":   str(limit_px),
         "time_in_force": "day",
     }
-    print(f"[Alpaca] Phase1 POST /v2/orders → {sym} {side.upper()} qty={qty} "
-          f"limit@${limit_px:.2f} (mid of bid=${bid_px:.2f}/ask=${ask_px:.2f}, "
-          f"saves ~${(ask_px - limit_px) * qty:.2f} vs market)")
+    if ext_hours:
+        # Alpaca requires extended_hours=true + type=limit + time_in_force=day
+        entry_order["extended_hours"] = True
+        print(f"[Alpaca] Phase1 POST /v2/orders → {sym} {side.upper()} qty={qty} "
+              f"limit@${limit_px:.2f} EXTENDED HOURS (bid=${bid_px:.2f}/ask=${ask_px:.2f})")
+    else:
+        print(f"[Alpaca] Phase1 POST /v2/orders → {sym} {side.upper()} qty={qty} "
+              f"limit@${limit_px:.2f} (mid of bid=${bid_px:.2f}/ask=${ask_px:.2f}, "
+              f"saves ~${(ask_px - limit_px) * qty:.2f} vs market)")
     try:
         r1 = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
                            headers=_alp_headers(),
@@ -8657,7 +8663,18 @@ def _alp_execute_signal(res: dict):
     if not _ALP_ENABLED and not _is_forced:
         print(f"[Alpaca] {sym} — SKIPPED: executor disabled (ALPACA_EXEC_ENABLED=false)")
         return
-    if not _us_market_open():
+    # Allow function to run during extended hours (4 AM – 8 PM ET, weekdays) so
+    # signals reach the extended-hours log block below and appear on dashboard.
+    # Overnight / weekends are still gated by _us_market_open() below.
+    _et_now_gate = _get_et_now()
+    _et_time_gate = _et_now_gate.time()
+    _in_ext_hours = (
+        _et_now_gate.weekday() <= 4 and (
+            dtime(4, 0) <= _et_time_gate < dtime(9, 30) or
+            dtime(16, 0) <= _et_time_gate < dtime(20, 0)
+        )
+    )
+    if not _in_ext_hours and not _us_market_open():
         print(f"[Alpaca] {sym} — SKIPPED: market closed")
         return
     # Opening window gate — no entries before 9:45 AM ET.
@@ -8693,8 +8710,27 @@ def _alp_execute_signal(res: dict):
                 print(f"[EarlyBear] {sym} — {_gap_tag} bypass: NQ={_nq_early:+.2f}% ES={_es_early:+.2f}% "
                       f"at {et_now_chk.strftime('%H:%M')} ET — all quality gates still active")
         if not _early_bear_ok:
-            print(f"[Alpaca] {sym} — SKIPPED: outside safe entry window "
-                  f"(current ET={et_now_chk.strftime('%H:%M')}, window=09:45-15:30)")
+            # ── Extended-hours alert mode ─────────────────────────────────────
+            # Outside regular trading hours (pre-market 4-9:44 AM and AH 3:31-8 PM ET):
+            # Do NOT auto-execute — fire a push alert instead so Tomas can
+            # review the chart manually and decide whether to trade.
+            # Overnight (8 PM - 4 AM ET) and weekends: skip silently.
+            _et_ext = et_now_chk.time()
+            _is_premarket  = dtime(4,  0) <= _et_ext < dtime(9, 45)
+            _is_afterhours = dtime(15, 31) <= _et_ext < dtime(20, 0)
+            if _is_premarket or _is_afterhours:
+                _session_label = "Pre-Market" if _is_premarket else "After-Hours"
+                _ext_dir    = (res.get("consensus_dir") or res.get("direction") or "").lower()
+                _ext_conf_v = float(res.get("confidence", 0) or 0)
+                _ext_streak = int(res.get("streak", 0) or 0)
+                _ext_ba     = int(res.get("both_agree", 0) or 0)
+                # Signal visible on dashboard — user reviews and fires Trade Now manually
+                print(f"[ExtHours] {sym} {_ext_dir.upper()} — {_session_label} signal "
+                      f"(conf={_ext_conf_v:.0f} streak={_ext_streak} ba={_ext_ba}) "
+                      f"— visible on dashboard, no auto-execute")
+            else:
+                print(f"[Alpaca] {sym} — SKIPPED: outside safe entry window "
+                      f"(current ET={et_now_chk.strftime('%H:%M')}, window=09:45-15:30)")
             return
     # Hard entry cutoff at 15:32 ET — backstop in case _safe_to_enter() race.
     # _safe_to_enter() already blocks after 15:30; this catches any edge case
@@ -9982,8 +10018,18 @@ def api_alpaca_force(sym):
     if not sym:
         return jsonify({"ok": False, "reason": "missing symbol"}), 400
 
-    if not _us_market_open():
-        return jsonify({"ok": False, "reason": "Market is closed"}), 400
+    # Allow force-trade during extended hours (pre-market 4-9:30 AM, AH 4-8 PM ET)
+    _et_force = _get_et_now()
+    _et_force_t = _et_force.time()
+    _force_ext = (
+        _et_force.weekday() <= 4 and (
+            dtime(4, 0) <= _et_force_t < dtime(9, 30) or
+            dtime(16, 0) <= _et_force_t < dtime(20, 0)
+        )
+    )
+    _force_regular = _us_market_open()
+    if not _force_regular and not _force_ext:
+        return jsonify({"ok": False, "reason": "Market is closed (outside 4 AM – 8 PM ET weekdays)"}), 400
 
     if not _ALPACA_KEY or not _ALPACA_SECRET:
         return jsonify({"ok": False, "reason": "Alpaca keys not configured"}), 400
@@ -10053,11 +10099,14 @@ def api_alpaca_force(sym):
             f"poor fills and no short borrow"
         )}), 400
 
+    _force_is_ext = not _force_regular and _force_ext
+    _session_tag  = "extended-hours" if _force_is_ext else "regular-hours"
     print(f"[ForceOrder] {sym} {direction.upper()} conf={eff_conf:.1f} price={price_source} "
-          f"strong={is_strong} — bypassing all soft gates (manual Trade Now)")
+          f"strong={is_strong} session={_session_tag} — bypassing all soft gates (manual Trade Now)")
 
     try:
-        ok = _alp_place_bracket(sym, direction, price, is_strong, eff_conf=eff_conf, forced=True)
+        ok = _alp_place_bracket(sym, direction, price, is_strong, eff_conf=eff_conf, forced=True,
+                                ext_hours=_force_is_ext)
     except Exception as e:
         print(f"[ForceOrder] {sym} — exception: {e}")
         return jsonify({"ok": False, "reason": f"Order error: {e}"}), 500
