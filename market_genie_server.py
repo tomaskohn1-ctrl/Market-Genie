@@ -4519,17 +4519,24 @@ def _predict_one(sym):
                     pred_len=4, T=1.0, top_k=0, top_p=0.9,
                     sample_count=3, verbose=False
                 )
-                pred_close = float(pred_df["close"].iloc[-1])
-                kronos_pct  = round((pred_close - last_p) / last_p * 100, 3)
-                kronos_dir  = "bull" if kronos_pct > 0 else "bear"
-                kronos_prob = round(float(np.mean(pred_df["close"].values > last_p)) * 100, 1)
-                if kronos_prob in (0.0, 100.0):
-                    kronos_prob = 80.0 if kronos_dir == "bull" else 20.0
+                # Guard: pred_df may be None or empty if model gets incomplete bars
+                if pred_df is not None and len(pred_df) > 0:
+                    close_vals = pred_df["close"].dropna().values
+                    if len(close_vals) > 0:
+                        pred_close = float(close_vals[-1])
+                        if pred_close > 0:  # sanity: no zero/negative prices
+                            kronos_pct  = round((pred_close - last_p) / last_p * 100, 3)
+                            kronos_dir  = "bull" if kronos_pct > 0 else "bear"
+                            kronos_prob = round(float(np.mean(close_vals > last_p)) * 100, 1)
+                            if kronos_prob in (0.0, 100.0):
+                                kronos_prob = 80.0 if kronos_dir == "bull" else 20.0
     except Exception as e:
         err_str = str(e)
-        # Tensor size mismatch = ticker has fewer bars than model expects — TFM covers it.
-        # Don't log every occurrence (dozens per bucket); only log unexpected errors.
-        if "size of tensor" not in err_str:
+        # Suppress known benign errors — TFM covers these cases:
+        #   "size of tensor"  — fewer bars than model expects at market open
+        #   "NoneType"        — incomplete bar data causes None in tensor multiply
+        _suppress = ("size of tensor", "NoneType", "unsupported operand type")
+        if not any(s in err_str for s in _suppress):
             print(f"[Predict] Kronos {sym}: {err_str}")
 
     # ── TimesFM (1-min closes, 5-bar ahead) or linear fallback ──────────────
