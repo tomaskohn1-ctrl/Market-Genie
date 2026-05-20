@@ -8907,15 +8907,17 @@ def _alp_execute_signal(res: dict):
     # ── Hard gate: liquidity floor ────────────────────────────────────────────
     # Passes if EITHER:
     #   (a) share ADV ≥ 5M  — standard liquid names (AAPL, TSLA, MARA, etc.)
-    #   (b) dollar ADV ≥ $500M — high-priced institutional names whose share count
+    #   (b) dollar ADV ≥ $100M — high-priced institutional names whose share count
     #       looks thin but whose dollar liquidity is deep (GS ~$550×2M = $1.1B/day).
+    # Thresholds lowered from 5M shares / $500M to 2M shares / $100M to open
+    # mid-cap stocks (ABNB, DASH, SNAP etc.) for extended-hours scanning.
     # ETFs exempt from both checks — they have guaranteed creation/redemption liquidity.
     _is_etf_hard  = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
     _avg_vol       = int(res.get("avg_volume", 0) or 0)
     _last_px       = float(res.get("last_price") or res.get("price") or 0)
     _dollar_adv    = _avg_vol * _last_px   # estimated daily dollar volume
-    _passes_shares = _avg_vol >= 5_000_000
-    _passes_dollar = _dollar_adv >= 500_000_000   # $500M/day floor
+    _passes_shares = _avg_vol >= 2_000_000
+    _passes_dollar = _dollar_adv >= 100_000_000   # $100M/day floor
     # BUG FIX: old gate used `if _avg_vol > 0` which silently passed stocks
     # where yfinance returned 0 (missing data). MCHP entered with 0 volume data.
     # New behaviour: 0 avg_volume = no data = block (fail-safe). ETFs exempt.
@@ -8924,7 +8926,7 @@ def _alp_execute_signal(res: dict):
             print(f"[ADVGate] {sym} — SKIPPED: avg_volume=0 (no yfinance data, fail-safe block)")
         else:
             print(f"[ADVGate] {sym} — SKIPPED: avg daily vol {_avg_vol:,} shares / "
-                  f"${_dollar_adv/1e6:.0f}M < minimums (5M shares or $500M/day)")
+                  f"${_dollar_adv/1e6:.0f}M < minimums (2M shares or $100M/day)")
         return
 
     # ── Social Sentiment Boost ────────────────────────────────────────────────
@@ -10084,18 +10086,18 @@ def api_alpaca_force(sym):
     if price < 5.0:
         return jsonify({"ok": False, "reason": f"{sym} at ${price:.2f} is below $5 minimum — Alpaca cannot short penny stocks"}), 400
 
-    # Block thin-float stocks below 5M avg daily volume — poor fills, no borrow
-    # (Price ceiling removed: ADV alone is the right filter — AMD at $419/38M ADV
-    # fills cleanly; KLAC at $1,746/0.98M ADV is blocked by ADV gate anyway.)
+    # Block thin-float stocks below 2M avg daily volume / $100M/day dollar vol.
+    # Lowered from 5M / $500M to allow mid-caps (ABNB, DASH, SNAP etc.) in extended hours.
+    # Force-trade path is manual — user has already reviewed the chart.
     _avg_vol_force  = int(sig.get("avg_volume", 0) or 0)
     _is_etf_force   = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
     _dollar_adv_force = _avg_vol_force * price
-    _passes_sh_force  = _avg_vol_force >= 5_000_000
-    _passes_dl_force  = _dollar_adv_force >= 500_000_000
+    _passes_sh_force  = _avg_vol_force >= 2_000_000
+    _passes_dl_force  = _dollar_adv_force >= 100_000_000
     if _avg_vol_force > 0 and not _passes_sh_force and not _passes_dl_force and not _is_etf_force:
         return jsonify({"ok": False, "reason": (
             f"{sym} avg daily volume {_avg_vol_force:,} shares / "
-            f"${_dollar_adv_force/1e6:.0f}M is below minimums (5M shares or $500M/day) — "
+            f"${_dollar_adv_force/1e6:.0f}M is below minimums (2M shares or $100M/day) — "
             f"poor fills and no short borrow"
         )}), 400
 
