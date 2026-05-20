@@ -7357,8 +7357,8 @@ _tech_snap_cache  = {}   # { sym: (result_dict, expiry_ts) }
 _tech_snap_lock   = threading.Lock()
 
 # Gates — set to 0 in Railway Variables to disable
-_RSI_OVERBOUGHT   = int(os.getenv("TECH_RSI_OVERBOUGHT",  "82"))   # block BULL if RSI ≥ this (82 = Reddit rec; 78 was too tight, blocks breakouts)
-_RSI_OVERSOLD     = int(os.getenv("TECH_RSI_OVERSOLD",    "18"))   # block BEAR if RSI ≤ this (18 = matching loosening)
+_RSI_OVERBOUGHT   = int(os.getenv("TECH_RSI_OVERBOUGHT",  "75"))   # block BULL if RSI ≥ this (75 = avoid chasing extended moves)
+_RSI_OVERSOLD     = int(os.getenv("TECH_RSI_OVERSOLD",    "25"))   # block BEAR if RSI ≤ this (25 = avoid fading oversold bounces)
 _VOL_SURGE_MIN    = float(os.getenv("TECH_VOL_SURGE_MIN",  "0.5")) # soft floor: 0.5× avg — 1.0× was too strict; compares current 1-min bar to avg of recent bars which includes opening spike, so midday always reads low
 _VWAP_BOOST       = int(os.getenv("TECH_VWAP_BOOST",       "5"))   # conf pts when price on right side of VWAP
 _EMA_BOOST        = int(os.getenv("TECH_EMA_BOOST",         "5"))   # conf pts when 5/13/34 stack aligned
@@ -7460,16 +7460,26 @@ def _get_tech_snapshot(sym: str) -> dict:
         except Exception:
             pass   # fail open — day_open stays 0, filter skipped gracefully
 
+        # Last-bar momentum: is the most recent 5-min bar green (close > open)?
+        # Used to confirm signal direction at entry time.
+        _lb = bars[-1]
+        last_bar_open   = float(_lb.get("o", _lb["c"]))
+        last_bar_close  = float(_lb["c"])
+        last_bar_chg    = round((last_bar_close - last_bar_open) / last_bar_open * 100, 3) if last_bar_open > 0 else 0.0
+        last_bar_green  = last_bar_close > last_bar_open   # True = green bar, False = red bar
+
         result = {
-            "rsi":       rsi,
-            "ema5":      ema5,
-            "ema13":     ema13,
-            "ema34":     ema34,
-            "ema50":     ema50,
-            "vol_ratio": vol_ratio,
-            "atr_ratio": atr_ratio,
-            "vwap":      vwap_b,
-            "day_open":  day_open,
+            "rsi":            rsi,
+            "ema5":           ema5,
+            "ema13":          ema13,
+            "ema34":          ema34,
+            "ema50":          ema50,
+            "vol_ratio":      vol_ratio,
+            "atr_ratio":      atr_ratio,
+            "vwap":           vwap_b,
+            "day_open":       day_open,
+            "last_bar_green": last_bar_green,
+            "last_bar_chg":   last_bar_chg,
         }
         with _tech_snap_lock:
             _tech_snap_cache[sym] = (result, time.time() + 300)  # 5 min cache
@@ -9824,6 +9834,33 @@ def _alp_execute_signal(res: dict):
         if _RSI_OVERSOLD > 0 and direction == "bear" and rsi <= _RSI_OVERSOLD:
             print(f"[TechGate] {sym} — SKIPPED: RSI {rsi:.1f} ≤ {_RSI_OVERSOLD} (oversold, no BEAR entry)")
             return
+
+        # ── Last-bar momentum confirmation ────────────────────────────────────
+        # The most recent 5-min bar should be moving in the signal direction.
+        # A BULL signal where price is actively ticking down (red bar) = buying
+        # into a local pullback — higher stop-hit risk. Vice versa for BEAR.
+        # Bypass for ultra-high conviction (eff_conf ≥ 105): elite signals can
+        # enter on a brief pullback since the model has overwhelming agreement.
+        # Bypass threshold configurable via TECH_LASTBAR_BYPASS Railway var.
+        _lb_green  = tech.get("last_bar_green", True)   # default True = don't block if missing
+        _lb_chg    = tech.get("last_bar_chg", 0.0)
+        _LASTBAR_BYPASS_CONF = int(os.getenv("TECH_LASTBAR_BYPASS", "105"))
+        _lb_elite  = eff_conf >= _LASTBAR_BYPASS_CONF
+        if not _lb_elite:
+            if direction == "bull" and not _lb_green:
+                print(f"[LastBar] {sym} — SKIPPED: last 5m bar is RED ({_lb_chg:+.2f}%) "
+                      f"while BULL signal — buying into pullback (conf={eff_conf:.1f})")
+                return
+            if direction == "bear" and _lb_green:
+                print(f"[LastBar] {sym} — SKIPPED: last 5m bar is GREEN ({_lb_chg:+.2f}%) "
+                      f"while BEAR signal — shorting into bounce (conf={eff_conf:.1f})")
+                return
+            _lb_label = "GREEN ✓" if _lb_green else "RED ✓"
+            print(f"[LastBar] {sym} — last bar {_lb_label} ({_lb_chg:+.2f}%) aligns with {direction.upper()}")
+        else:
+            _lb_label = "GREEN" if _lb_green else "RED"
+            print(f"[LastBar] {sym} — elite bypass: conf={eff_conf:.1f} ≥ {_LASTBAR_BYPASS_CONF} "
+                  f"(last bar {_lb_label} {_lb_chg:+.2f}%)")
 
         # Volume surge hard gate — no conviction without volume
         # Exception 1: very high confidence signals (≥85) bypass — multi-model agreement
