@@ -5213,6 +5213,16 @@ def _us_market_open() -> bool:
     return dtime(9, 30) <= et_now.time() < dtime(16, 0)
 
 
+def _in_extended_hours() -> bool:
+    """True when we're in pre-market (4-9:30 AM) or after-hours (4-8 PM ET) on a weekday.
+    Used to switch close orders from market → limit+extended_hours=true."""
+    et = _get_et_now()
+    if et.weekday() > 4:
+        return False
+    t = et.time()
+    return (dtime(4, 0) <= t < dtime(9, 30)) or (dtime(16, 0) <= t < dtime(20, 0))
+
+
 def _safe_to_enter() -> bool:
     """Return True only during the core tradeable window (Mon-Fri 09:45-15:30 ET).
     - First 15 min (9:30-9:45) excluded: opening volatility, wide spreads.
@@ -10169,9 +10179,12 @@ def api_alpaca_close(sym):
         except Exception as ce:
             print(f"[Manual] Cancel orders error for {sym}: {ce}")
 
+        _ext = _in_extended_hours()
+        close_side = "sell" if side == "long" else "buy"
+
         if limit_price:
-            # Place a DAY limit order to close at the requested price
-            close_side  = "sell" if side == "long" else "buy"
+            # Place a DAY limit order to close at the requested price.
+            # In extended hours: must include extended_hours=true (Alpaca rule).
             limit_price = round(float(limit_price), 2)
             order = {
                 "symbol":        sym,
@@ -10181,15 +10194,54 @@ def api_alpaca_close(sym):
                 "time_in_force": "day",
                 "limit_price":   str(limit_price),
             }
+            if _ext:
+                order["extended_hours"] = True
             r_lim = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
                                   headers=_alp_headers(), json=order, timeout=8)
             if r_lim.status_code not in (200, 201):
                 return jsonify({"ok": False,
                                 "error": f"Limit order failed HTTP {r_lim.status_code}: {r_lim.text[:200]}"})
-            msg = f"{sym} limit close @ ${limit_price:.2f} placed (qty={qty})"
+            ext_tag = " [extended-hours]" if _ext else ""
+            msg = f"{sym} limit close @ ${limit_price:.2f} placed (qty={qty}){ext_tag}"
             order_type = "limit"
+        elif _ext:
+            # Extended hours: Alpaca does NOT support market orders (DELETE /positions).
+            # Fetch live bid/ask and place an aggressive limit at the bid (for longs)
+            # or ask (for shorts) so it fills immediately at best available price.
+            _close_px = 0.0
+            try:
+                _q = requests.get(f"{_ALP_DATA_URL}/v2/stocks/{sym}/quotes/latest",
+                                  headers=_alp_headers(), timeout=4)
+                if _q.status_code == 200:
+                    _qd = _q.json().get("quote", {})
+                    _bid = float(_qd.get("bp") or 0)
+                    _ask = float(_qd.get("ap") or 0)
+                    # Long: sell at bid (guaranteed fill). Short: buy at ask.
+                    _close_px = _bid if side == "long" else _ask
+            except Exception:
+                pass
+            if _close_px <= 0:
+                return jsonify({"ok": False,
+                                "error": f"Cannot get live quote for {sym} in extended hours — enter a limit price manually"})
+            order = {
+                "symbol":        sym,
+                "qty":           str(qty),
+                "side":          close_side,
+                "type":          "limit",
+                "time_in_force": "day",
+                "limit_price":   str(round(_close_px, 2)),
+                "extended_hours": True,
+            }
+            r_ext = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
+                                  headers=_alp_headers(), json=order, timeout=8)
+            if r_ext.status_code not in (200, 201):
+                return jsonify({"ok": False,
+                                "error": f"Extended-hours close failed HTTP {r_ext.status_code}: {r_ext.text[:200]}"})
+            msg = f"{sym} extended-hours limit close @ ${_close_px:.2f} placed (qty={qty})"
+            order_type = "limit_ext"
+            print(f"[Manual] ✂ {msg}")
         else:
-            # Market close via DELETE /v2/positions/{sym}
+            # Regular hours: market close via DELETE /v2/positions/{sym}
             r_mkt = requests.delete(f"{_ALPACA_BASE_URL}/v2/positions/{sym}",
                                     headers=_alp_headers(), timeout=10)
             if r_mkt.status_code not in (200, 201, 204):
@@ -10214,16 +10266,80 @@ def api_alpaca_close(sym):
 @app.route("/api/alpaca/close-all", methods=["POST"])
 def api_alpaca_close_all():
     """
-    Manually close ALL open positions at market price.
-    Same as EOD flattener but user-triggered.
+    Manually close ALL open positions.
+    Regular hours: market close via DELETE /v2/positions.
+    Extended hours: Alpaca rejects market orders — place aggressive limit orders
+    at bid (longs) or ask (shorts) for each position with extended_hours=true.
     """
     try:
-        _alp_flatten_all()
+        closed = []
+        errors = []
+
+        if _in_extended_hours():
+            # Fetch all open positions
+            r_pos = requests.get(f"{_ALPACA_BASE_URL}/v2/positions",
+                                 headers=_alp_headers(), timeout=8)
+            positions = r_pos.json() if r_pos.status_code == 200 else []
+
+            # Cancel all open orders first
+            try:
+                requests.delete(f"{_ALPACA_BASE_URL}/v2/orders",
+                                headers=_alp_headers(), timeout=8)
+                time.sleep(0.5)
+            except Exception:
+                pass
+
+            for pos in positions:
+                sym_c    = pos.get("symbol", "")
+                side_c   = pos.get("side", "long")
+                qty_c    = abs(int(float(pos.get("qty", 1))))
+                close_sd = "sell" if side_c == "long" else "buy"
+                # Get live bid/ask
+                _close_px = 0.0
+                try:
+                    _q = requests.get(f"{_ALP_DATA_URL}/v2/stocks/{sym_c}/quotes/latest",
+                                      headers=_alp_headers(), timeout=4)
+                    if _q.status_code == 200:
+                        _qd = _q.json().get("quote", {})
+                        _bid = float(_qd.get("bp") or 0)
+                        _ask = float(_qd.get("ap") or 0)
+                        _close_px = _bid if side_c == "long" else _ask
+                except Exception:
+                    pass
+                if _close_px <= 0:
+                    errors.append(f"{sym_c}: no quote")
+                    continue
+                order = {
+                    "symbol":         sym_c,
+                    "qty":            str(qty_c),
+                    "side":           close_sd,
+                    "type":           "limit",
+                    "time_in_force":  "day",
+                    "limit_price":    str(round(_close_px, 2)),
+                    "extended_hours": True,
+                }
+                r_o = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
+                                    headers=_alp_headers(), json=order, timeout=8)
+                if r_o.status_code in (200, 201):
+                    closed.append(f"{sym_c}@${_close_px:.2f}")
+                    print(f"[Manual] ✂ {sym_c} ext-hours limit close @ ${_close_px:.2f}")
+                else:
+                    errors.append(f"{sym_c}: HTTP {r_o.status_code}")
+
+            msg = f"Extended-hours close orders placed: {', '.join(closed) or 'none'}"
+            if errors:
+                msg += f" | Errors: {', '.join(errors)}"
+        else:
+            _alp_flatten_all()
+            msg = "All positions closed at market"
+
         with _alp_lock:
             _alp_last_traded.clear()
             _alp_breakeven_set.clear()
-        print("[Manual] ✂ ALL positions closed by user request")
-        return jsonify({"ok": True, "msg": "All positions closed at market"})
+            _alp_partial_taken.clear()
+            _alp_tight_trail_set.clear()
+        print(f"[Manual] ✂ {msg}")
+        return jsonify({"ok": True, "msg": msg})
     except Exception as e:
         print(f"[Manual] ✂ close-all error: {e}")
         return jsonify({"ok": False, "error": str(e)})
