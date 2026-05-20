@@ -5174,8 +5174,8 @@ _CHRONIC_LOSERS = frozenset(["NUGT", "LABU", "DUST", "TECL"])
 # SQQQ removed from chronic losers — it is now a PRIMARY focused-pair instrument.
 # Its historical losses were due to trading in wrong conditions (BULLISH/NEUTRAL tape).
 # With regime gate + focused strategy, SQQQ only fires in confirmed BEARISH tape.
-_WR_MAX_SPREAD_PCT = 0.35  # max bid-ask spread % to log — raised 0.25→0.35 for more opportunity
-                           # stop is 0.5% so 0.35% spread still leaves meaningful edge
+_WR_MAX_SPREAD_PCT = 0.15  # max bid-ask spread % — tightened 0.35→0.15 for $80K+ concentrated positions
+                           # 0.15% spread on $80K = $120 max cost; tighter = better R:R at entry
 _WR_MIN_AVG_VOL    = 200_000  # fast-reject micro-caps below this 3-month avg daily volume
 _wr_last_logged    = {}    # { sym: {"dir": str, "ts": float} } — in-memory dedup (per-worker)
 _wr_lock           = threading.Lock()
@@ -5204,10 +5204,11 @@ def _wr_check_spread(sym: str, avg_vol: float = 0) -> bool:
         print(f"[Spread] {sym} rejected — avg_vol {avg_vol:,.0f} < {_WR_MIN_AVG_VOL:,}")
         return False
 
-    # Volume bypass: highly liquid stocks always pass — bad bid/ask data from
-    # Massive (stale quotes, single limit orders) causes false-wide spreads on
-    # AAPL, MSFT, INTC, MU etc. Skip the check for stocks > 1M avg daily vol.
-    _LIQUID_VOL_BYPASS = 1_000_000
+    # Volume bypass: only true mega-caps (>5M avg daily vol) bypass the pre-scan
+    # yfinance spread check — stale quotes on AAPL/MSFT/NVDA can show false-wide
+    # spreads. Mid-caps (1-5M vol) still get checked; the live Alpaca gate at
+    # execution time is the definitive filter for all stocks.
+    _LIQUID_VOL_BYPASS = 5_000_000
     if avg_vol >= _LIQUID_VOL_BYPASS:
         return True
 
@@ -6990,7 +6991,7 @@ _PAIR_TARGET_HIGH_PCT = float(os.getenv("PAIR_TARGET_HIGH_PCT", "0.025"))  # 2.5
 _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "90"))             # min confidence floor — raised 72→90 for concentrated $80K single-position strategy; only elite setups
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
 _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "15.0"))        # min stock price — CLOV $2.62 (3 losses -$114), DJT $9.23, AI $9.25, SNAP $6.18 all under $10 and all losers today; $15 floor eliminates the worst noise
-_ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.20"))   # max bid-ask spread % — raised 0.15→0.20 to capture near-miss large caps like AVGO ($0.82 wide at 0.19%); still blocks thin/bad-quote spreads
+_ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.10"))   # max bid-ask spread % — tightened 0.20→0.10 for $80K+ concentrated positions; 0.10% on $100K = $100 max spread cost
 _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
 _ALP_DEDUP_SECS       = 600    # 10 min dedup — reduced 25→10 min: with 9-ticker universe and 20-40 min holds, 25 min was blocking same-ticker re-entry in the same hour entirely; 10 min allows a fresh setup after the position exits while preventing immediate same-bar re-entry
@@ -7688,11 +7689,11 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
                 # midday NUGT/LABU spreads clear easily.
                 _is_etf_sym = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
                 if _is_etf_sym and price >= 30:
-                    _spread_cap = 0.35   # tightened 0.65→0.35: max $0.67 on $190 ETF
+                    _spread_cap = 0.20   # tightened 0.35→0.20: max $0.40 on $200 ETF
                 elif _is_etf_sym and price >= 10:
-                    _spread_cap = 0.30   # $10-30 ETFs: slightly looser
+                    _spread_cap = 0.15   # tightened 0.30→0.15: $10-30 ETFs
                 else:
-                    _spread_cap = _ALP_MAX_SPREAD_PCT  # default 0.2%
+                    _spread_cap = _ALP_MAX_SPREAD_PCT  # default 0.10%
                 _spread_dollar = ask_px - bid_px
                 _spread_ok = (spread_pct <= _spread_cap) or (_spread_dollar <= 0.02) or forced
                 if ask_px > 0 and bid_px > 0 and not _spread_ok:
@@ -7716,10 +7717,10 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
                     _stop_pct_here = _ALP_ETF_STOP_PCT if _is_etf_sym else _ALP_STOP_PCT
                     _stop_dollar   = price * _stop_pct_here
                     _spread_ratio  = _spread_dollar / _stop_dollar if _stop_dollar > 0 else 0
-                    if _spread_ratio > 0.25:
+                    if _spread_ratio > 0.15:
                         print(f"[Alpaca] {sym} — SKIPPED: spread ${_spread_dollar:.3f} "
                               f"= {_spread_ratio:.0%} of stop ${_stop_dollar:.2f} "
-                              f"(>{25}% threshold — spread eats too much edge)")
+                              f"(>{15}% threshold — spread eats too much edge)")
                         return False
             else:
                 # Fallback to Finnhub if Alpaca quote is empty
