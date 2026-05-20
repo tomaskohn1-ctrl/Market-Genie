@@ -8884,10 +8884,17 @@ def _alp_execute_signal(res: dict):
             _dl_es = _futures_state.get("es_chg", 0.0)
         _dl_bullish_regime  = _dl_score >= 70
         _dl_rising_futures  = _dl_nq >= 0.3 or _dl_es >= 0.2
+        _dl_eff_conf        = float(res.get("confidence", 0) or 0)
+        _dl_elite           = _dl_eff_conf >= 90  # elite bear: stock-specific breakdown, bypass tape lock
         if _dl_bullish_regime and _dl_rising_futures:
-            print(f"[DirLock] {sym} BEAR — SKIPPED: regime={_dl_score:.0f} (BULLISH) "
-                  f"+ NQ={_dl_nq:+.2f}% ES={_dl_es:+.2f}% rising — long-only mode active")
-            return
+            if _dl_elite:
+                print(f"[DirLock] {sym} BEAR conf={_dl_eff_conf:.0f} — ALLOWED: elite signal "
+                      f"bypasses directional lock (regime={_dl_score:.0f} NQ={_dl_nq:+.2f}%)")
+            else:
+                print(f"[DirLock] {sym} BEAR — SKIPPED: regime={_dl_score:.0f} (BULLISH) "
+                      f"+ NQ={_dl_nq:+.2f}% ES={_dl_es:+.2f}% rising — long-only mode active "
+                      f"(conf={_dl_eff_conf:.0f} < 90)")
+                return
 
     # ── Per-symbol loss cooldown ──────────────────────────────────────────────
     # ── Profit Guard pause — no new entries while guard is active ────────────
