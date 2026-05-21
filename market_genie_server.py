@@ -7025,7 +7025,7 @@ _PAIR_TARGET_HIGH_PCT = float(os.getenv("PAIR_TARGET_HIGH_PCT", "0.025"))  # 2.5
 # should comfortably exceed 45%, making both tiers profitable.
 _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "90"))             # min confidence floor — raised 72→90 for concentrated $80K single-position strategy; only elite setups
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
-_ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "15.0"))        # min stock price — CLOV $2.62 (3 losses -$114), DJT $9.23, AI $9.25, SNAP $6.18 all under $10 and all losers today; $15 floor eliminates the worst noise
+_ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "10.0"))        # min stock price — lowered $15→$10: opens AAL ($12.75), NTLA ($11.97), NCLH etc; sub-$10 names (CLOV $2.62, SNAP $6.18) still blocked
 _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.10"))   # max bid-ask spread % — tightened 0.20→0.10 for $80K+ concentrated positions; 0.10% on $100K = $100 max spread cost
 _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
