@@ -9916,15 +9916,20 @@ def _alp_execute_signal(res: dict):
         _lb_chg    = tech.get("last_bar_chg", 0.0)
         _LASTBAR_BYPASS_CONF = int(os.getenv("TECH_LASTBAR_BYPASS", "105"))
         _lb_elite  = eff_conf >= _LASTBAR_BYPASS_CONF
+        # Minimum magnitude gate: bars moving < 0.10% against direction are noise,
+        # not meaningful pullbacks/bounces. Don't penalise a $245 stock for a $0.07 wiggle.
+        _lb_noise  = abs(_lb_chg) < 0.10
         if not _lb_elite:
-            if direction == "bull" and not _lb_green:
+            if direction == "bull" and not _lb_green and not _lb_noise:
                 print(f"[LastBar] {sym} — SKIPPED: last 5m bar is RED ({_lb_chg:+.2f}%) "
                       f"while BULL signal — buying into pullback (conf={eff_conf:.1f})")
                 return
-            if direction == "bear" and _lb_green:
+            if direction == "bear" and _lb_green and not _lb_noise:
                 print(f"[LastBar] {sym} — SKIPPED: last 5m bar is GREEN ({_lb_chg:+.2f}%) "
                       f"while BEAR signal — shorting into bounce (conf={eff_conf:.1f})")
                 return
+            if _lb_noise and ((direction == "bull" and not _lb_green) or (direction == "bear" and _lb_green)):
+                print(f"[LastBar] {sym} — noise bypass: bar {_lb_chg:+.2f}% < 0.10% threshold, not a real pullback")
             _lb_label = "GREEN ✓" if _lb_green else "RED ✓"
             print(f"[LastBar] {sym} — last bar {_lb_label} ({_lb_chg:+.2f}%) aligns with {direction.upper()}")
         else:
