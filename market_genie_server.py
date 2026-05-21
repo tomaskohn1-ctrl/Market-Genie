@@ -6983,7 +6983,7 @@ _ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "80000"))  # $80
 _ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "1"))         # 1 position at a time — concentrated conviction strategy
 _ALP_STOP_PCT         = float(os.getenv("ALPACA_STOP_PCT", "0.0075"))       # 0.75% stop loss — wider room for intraday noise (was 0.5%, too tight for $50-150 stocks)
 _ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.015"))      # 1.5% target — maintains 2:1 R:R with wider stop
-_ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.030"))# 3.0% for STRONG (was 2.0%)
+_ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.020"))# 2.0% for STRONG — lowered from 3.0% (3% targets almost never hit in 40 min; 2% maintains 2.7:1 R:R vs 0.75% stop)
 # Leveraged ETF overrides — 3× products move 3× faster, 0.75% stop is ~0.25% in the underlying
 # and gets clipped by normal intraday noise before the real move develops.
 # 1.5% stop / 3.0% target maintains the same 2:1 R:R at a scale that fits ETF volatility.
@@ -7855,6 +7855,16 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
 
     qty = max(1, int(_pos_usd / price)) if price > 0 else 1
 
+    # ── Max shares cap ────────────────────────────────────────────────────────
+    # Low-priced stocks ($10-15) generate 5,000-8,000+ share orders that are
+    # difficult to fill cleanly and cause slippage on entry and exit.
+    # Cap at 3,000 shares — if price is so low that 3,000 shares < 60% of
+    # target notional the notional sanity guard below will re-evaluate.
+    _ALP_MAX_SHARES = int(os.getenv("ALPACA_MAX_SHARES", "3000"))
+    if _ALP_MAX_SHARES > 0 and qty > _ALP_MAX_SHARES:
+        print(f"[Alpaca] {sym} — qty {qty} capped at {_ALP_MAX_SHARES} shares (${qty*price:,.0f} → ${_ALP_MAX_SHARES*price:,.0f})")
+        qty = _ALP_MAX_SHARES
+
     # ── Notional sanity guard ─────────────────────────────────────────────────
     # If qty × price < 60% of target, the price used for qty was almost certainly
     # wrong (e.g. Alpaca quote API bug returning stale data). Skip rather than
@@ -8047,6 +8057,9 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
             _fb_limit = round(_signal_price * (1.003 if direction == "bull" else 0.997), 2)
         _fb_ref = _fb_ask if direction == "bull" else _fb_bid
         qty = max(1, int(_ALP_POSITION_SIZE_USD / _fb_limit))
+        _fb_max_shares = int(os.getenv("ALPACA_MAX_SHARES", "3000"))
+        if _fb_max_shares > 0 and qty > _fb_max_shares:
+            qty = _fb_max_shares
         print(f"[Alpaca] Phase2 marketable limit: {side.upper()} {qty}x {sym} @ ${_fb_limit:.2f} "
               f"(live={'ask' if direction=='bull' else 'bid'}=${_fb_ref:.2f}, "
               f"cap=signal×{'1.005' if direction=='bull' else '0.995'}=${_signal_price*(1.005 if direction=='bull' else 0.995):.2f})")
@@ -9123,9 +9136,9 @@ def _alp_execute_signal(res: dict):
     # Require a minimum raw model confidence before any boosts are applied.
     # This prevents low-conviction signals (e.g. conf=55) from being boosted
     # to threshold purely by technicals — boosts should amplify good signals,
-    # not rescue weak ones. Floor is intentionally permissive (65) to avoid
-    # cutting genuinely borderline setups in volatile markets.
-    _BASE_CONF_FLOOR = float(os.getenv("BASE_CONF_FLOOR", "65"))
+    # not rescue weak ones. Floor raised to 70 to filter marginal setups that
+    # exit flat via time exit (65-69 conf trades produced near-zero P&L in practice).
+    _BASE_CONF_FLOOR = float(os.getenv("BASE_CONF_FLOOR", "70"))
     if conf < _BASE_CONF_FLOOR:
         print(f"[BaseFloor] {sym} — raw conf {conf:.1f} < {_BASE_CONF_FLOOR} floor, skipping (boosts cannot rescue weak signal)")
         return
