@@ -10204,10 +10204,11 @@ def _alp_execute_signal(res: dict):
               f"regime={regime} min_conf={min_conf}")
         ok = _alp_place_bracket(sym, direction, price, is_strong, eff_conf=eff_conf)
         if not ok:
-            # Order failed — remove dedup so the next signal attempt can retry
+            # Execution was blocked (spread gate, stale price, or order error) —
+            # remove dedup so the next signal attempt can retry cleanly.
             with _alp_lock:
                 _alp_last_traded.pop(sym, None)
-            print(f"[Alpaca] {sym} — order failed, dedup cleared for retry")
+            print(f"[Alpaca] {sym} — execution blocked (gate/spread/price check) — dedup cleared for retry")
 
 
 @app.route("/api/breadth")
