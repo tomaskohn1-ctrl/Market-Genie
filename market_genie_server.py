@@ -9077,6 +9077,17 @@ def _alp_execute_signal(res: dict):
                   f"${_dollar_adv/1e6:.0f}M < minimums (2M shares or $100M/day)")
         return
 
+    # ── Base Confidence Floor ─────────────────────────────────────────────────
+    # Require a minimum raw model confidence before any boosts are applied.
+    # This prevents low-conviction signals (e.g. conf=55) from being boosted
+    # to threshold purely by technicals — boosts should amplify good signals,
+    # not rescue weak ones. Floor is intentionally permissive (65) to avoid
+    # cutting genuinely borderline setups in volatile markets.
+    _BASE_CONF_FLOOR = float(os.getenv("BASE_CONF_FLOOR", "65"))
+    if conf < _BASE_CONF_FLOOR:
+        print(f"[BaseFloor] {sym} — raw conf {conf:.1f} < {_BASE_CONF_FLOOR} floor, skipping (boosts cannot rescue weak signal)")
+        return
+
     # ── Social Sentiment Boost ────────────────────────────────────────────────
     # If this ticker is currently trending on Reddit (ApeWisdom velocity > 20),
     # add up to +8 conf pts as a crowd-confirmation bonus.
