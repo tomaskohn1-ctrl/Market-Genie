@@ -10213,6 +10213,38 @@ def _alp_execute_signal(res: dict):
             price = _snap_price
         # ─────────────────────────────────────────────────────────────────────
 
+        # ── Extended-Move Gate ────────────────────────────────────────────────
+        # Don't enter a short after the stock has already fallen > 1.5% from its
+        # intraday high — the move is mature and risk/reward is poor (we're likely
+        # buying at support, not entering the trend early). Mirror logic for longs.
+        # Configurable via EXTENDED_MOVE_MAX_PCT Railway var (default 1.5).
+        # Fails open if snap data unavailable (no intraday high/low stored yet).
+        _EXT_MOVE_MAX = float(os.getenv("EXTENDED_MOVE_MAX_PCT", "1.5"))
+        _snap_h = float(_snap.get("h") or 0)
+        _snap_l = float(_snap.get("l") or 0)
+        if price > 0 and _EXT_MOVE_MAX > 0:
+            if direction == "bear" and _snap_h > 0:
+                _drop_from_high = (_snap_h - price) / _snap_h * 100
+                if _drop_from_high > _EXT_MOVE_MAX:
+                    print(f"[ExtMove] {sym} — SKIPPED: already dropped {_drop_from_high:.2f}% from intraday high "
+                          f"(${_snap_h:.2f} → ${price:.2f}), move is mature (max {_EXT_MOVE_MAX}%)")
+                    with _alp_lock:
+                        _alp_last_traded.pop(sym, None)
+                    return
+                else:
+                    print(f"[ExtMove] {sym} — BEAR drop from high: {_drop_from_high:.2f}% ✓ (< {_EXT_MOVE_MAX}% limit)")
+            elif direction == "bull" and _snap_l > 0:
+                _rise_from_low = (price - _snap_l) / _snap_l * 100
+                if _rise_from_low > _EXT_MOVE_MAX:
+                    print(f"[ExtMove] {sym} — SKIPPED: already risen {_rise_from_low:.2f}% from intraday low "
+                          f"(${_snap_l:.2f} → ${price:.2f}), move is mature (max {_EXT_MOVE_MAX}%)")
+                    with _alp_lock:
+                        _alp_last_traded.pop(sym, None)
+                    return
+                else:
+                    print(f"[ExtMove] {sym} — BULL rise from low: {_rise_from_low:.2f}% ✓ (< {_EXT_MOVE_MAX}% limit)")
+        # ─────────────────────────────────────────────────────────────────────
+
         social_tag = f" social+{social_boost}" if social_boost > 0 else ""
         print(f"[Alpaca] {sym} — FIRING bracket: {direction.upper()} "
               f"conf={conf:.1f}→{eff_conf:.1f}{social_tag} "
