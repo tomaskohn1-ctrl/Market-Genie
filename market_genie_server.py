@@ -8544,7 +8544,13 @@ def _alp_time_exit_loop():
                     continue   # will be evaluated on the next cycle
                 age_mins       = (now_ts - entry_ts) / 60
                 unrealized_pct = float(pos.get("unrealized_plpc", 0)) * 100
-                is_winner      = unrealized_pct >= 0
+                # Flat-position exemption: only cut real losers at 20 min.
+                # Positions within -0.15% of entry are "flat" — they just need
+                # more time to develop. WFC at -0.03% and KWEB at -0.03% were
+                # incorrectly cut at 20 min; they should ride the full 40 min.
+                # Only positions worse than -0.15% are treated as true losers.
+                _FLAT_EXEMPT_PCT = float(os.getenv("FLAT_EXEMPT_PCT", "-0.15"))
+                is_winner      = unrealized_pct >= _FLAT_EXEMPT_PCT
                 fill_price     = entry_info.get("fill", 0.0)
                 entry_dir      = entry_info.get("dir", "bull")   # "bull" or "bear"
                 fill_qty_pos   = abs(int(float(pos.get("qty", 1))))
@@ -8722,10 +8728,12 @@ def _alp_time_exit_loop():
                         print(f"[TimeExit] ⚠️  {sym} trailing stop exception: {_be_err}")
 
                 # ── ASYMMETRIC EXIT LOGIC ─────────────────────────────────────
-                # Case 1: Loser at/past 20-min mark → cut immediately
+                # Case 1: Real loser at/past 20-min mark → cut immediately
+                # Flat positions (> -0.15%) are exempt and ride to the 40-min hard max.
                 if not is_winner and age_mins >= _ALP_LOSER_EXIT_MINS:
                     print(f"[TimeExit] ✂️  {sym} LOSER exit — open {age_mins:.0f}m, "
-                          f"{unrealized_pct:+.2f}% → closing at market (loser cutoff={_ALP_LOSER_EXIT_MINS}m)")
+                          f"{unrealized_pct:+.2f}% (< {_FLAT_EXEMPT_PCT}% floor) → closing at market "
+                          f"(loser cutoff={_ALP_LOSER_EXIT_MINS}m)")
                     _alp_close_position(sym, side)
                     with _alp_lock:
                         _alp_last_traded.pop(sym, None)
@@ -8744,11 +8752,12 @@ def _alp_time_exit_loop():
                         _alp_bear_session_locked.add(sym)
                         print(f"[SessionLock] 🔒 {sym} — session-locked after BULLISH-tape loss "
                               f"(breadth={_bs_now:.0f}). Unlocks when regime flips.")
-                # Case 2: Winner past 20 min — log that we're letting it ride
+                # Case 2: Winner/flat past 20 min — let it ride to 40-min hard max
                 elif is_winner and age_mins >= _ALP_LOSER_EXIT_MINS and age_mins < _ALP_WINNER_MAX_MINS:
                     remaining = _ALP_WINNER_MAX_MINS - age_mins
                     be_status  = "🔒 BE-locked" if sym in _alp_breakeven_set else "🔓 no BE yet"
-                    print(f"[TimeExit] 🟢 {sym} WINNER riding — open {age_mins:.0f}m, "
+                    _ride_tag  = "FLAT riding" if unrealized_pct < 0 else "WINNER riding"
+                    print(f"[TimeExit] 🟢 {sym} {_ride_tag} — open {age_mins:.0f}m, "
                           f"{unrealized_pct:+.2f}% {be_status} "
                           f"({remaining:.0f}m left before hard stop)")
                 # Case 3: Anyone still open at 40-min hard max → close regardless
