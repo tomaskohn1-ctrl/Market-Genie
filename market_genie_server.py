@@ -5231,8 +5231,14 @@ def _wr_check_spread(sym: str, avg_vol: float = 0) -> bool:
             return True
         mid  = (bid + ask) / 2
         spread_pct = round((ask - bid) / mid * 100, 4) if mid > 0 else 0.0
-        # Spreads >5% are either genuinely illiquid (skip) or have bad quote data.
-        # Either way the stock is untradeable at our bracket sizing — reject.
+        # Spreads >3% on any normally-liquid stock are almost certainly stale
+        # pre-market bid/ask from yfinance (e.g. OKTA showing 11.48% at 9:30).
+        # Don't cache these bad values — defer to the live Alpaca quote gate
+        # which uses real-time quotes and will catch genuinely wide spreads.
+        if spread_pct > 3.0:
+            print(f"[Spread] {sym} bid={bid} ask={ask} spread={spread_pct:.3f}% — suspect stale quote, deferring to live Alpaca gate")
+            return True
+
         _wr_spread_cache[sym] = {"spread_pct": spread_pct, "ts": now}
         ok = spread_pct <= _WR_MAX_SPREAD_PCT
         print(f"[Spread] {sym} bid={bid} ask={ask} spread={spread_pct:.3f}% — {'OK' if ok else 'WIDE, skipped'}")
