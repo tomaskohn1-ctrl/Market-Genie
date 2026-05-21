@@ -7705,6 +7705,17 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
                       f"spread={spread_pct:.3f}% → using {'ask' if direction=='bull' else 'bid'} "
                       f"${price:.2f} (signal was ${signal_price:.2f}, "
                       f"Δ={((price-signal_price)/signal_price*100):+.2f}%)")
+                # ── Stale live-quote detection ────────────────────────────────
+                # Alpaca's snapshot API can return pre-market or stale bid/ask
+                # (e.g. TXN bid=$283 ask=$310, spread=8.56% during normal trading).
+                # A spread > 3% on a liquid stock is always stale data — bail out
+                # so the dedup is cleared and we retry next scan cycle with a
+                # fresh quote rather than blocking the signal permanently.
+                if ask_px > 0 and bid_px > 0 and spread_pct > 3.0:
+                    print(f"[Alpaca] {sym} — stale live quote detected: "
+                          f"bid=${bid_px:.2f} ask=${ask_px:.2f} spread={spread_pct:.2f}% > 3% "
+                          f"— skipping (dedup cleared for retry next cycle)")
+                    return False
                 # ── Spread gate — skip if spread eats too much of the stop ──────
                 # On FSLR: ask=$219.56, bid=$219.20, spread=0.16%. With a 0.75%
                 # stop that's 22% of stop buffer gone instantly on entry. Cap at
@@ -9936,9 +9947,12 @@ def _alp_execute_signal(res: dict):
         _lb_chg    = tech.get("last_bar_chg", 0.0)
         _LASTBAR_BYPASS_CONF = int(os.getenv("TECH_LASTBAR_BYPASS", "105"))
         _lb_elite  = eff_conf >= _LASTBAR_BYPASS_CONF
-        # Minimum magnitude gate: bars moving < 0.10% against direction are noise,
-        # not meaningful pullbacks/bounces. Don't penalise a $245 stock for a $0.07 wiggle.
-        _lb_noise  = abs(_lb_chg) < 0.10
+        # Minimum magnitude gate: bars moving < threshold% against direction are
+        # noise, not meaningful pullbacks. Standard threshold is 0.10%; high-conf
+        # signals (eff_conf ≥ 90) get a wider 0.20% threshold — a -0.17% bar on a
+        # 95-conf signal (MGM) is a micro-pause in momentum, not a reversal.
+        _lb_noise_thresh = 0.20 if eff_conf >= 90 else 0.10
+        _lb_noise  = abs(_lb_chg) < _lb_noise_thresh
         if not _lb_elite:
             if direction == "bull" and not _lb_green and not _lb_noise:
                 print(f"[LastBar] {sym} — SKIPPED: last 5m bar is RED ({_lb_chg:+.2f}%) "
@@ -9949,7 +9963,8 @@ def _alp_execute_signal(res: dict):
                       f"while BEAR signal — shorting into bounce (conf={eff_conf:.1f})")
                 return
             if _lb_noise and ((direction == "bull" and not _lb_green) or (direction == "bear" and _lb_green)):
-                print(f"[LastBar] {sym} — noise bypass: bar {_lb_chg:+.2f}% < 0.10% threshold, not a real pullback")
+                print(f"[LastBar] {sym} — noise bypass: bar {_lb_chg:+.2f}% < {_lb_noise_thresh}% threshold "
+                      f"({'high-conf' if eff_conf >= 90 else 'standard'} noise floor), not a real pullback")
             _lb_label = "GREEN ✓" if _lb_green else "RED ✓"
             print(f"[LastBar] {sym} — last bar {_lb_label} ({_lb_chg:+.2f}%) aligns with {direction.upper()}")
         else:
@@ -10223,35 +10238,46 @@ def _alp_execute_signal(res: dict):
         # ─────────────────────────────────────────────────────────────────────
 
         # ── Extended-Move Gate ────────────────────────────────────────────────
-        # Don't enter a short after the stock has already fallen > 1.5% from its
-        # intraday high — the move is mature and risk/reward is poor (we're likely
-        # buying at support, not entering the trend early). Mirror logic for longs.
-        # Configurable via EXTENDED_MOVE_MAX_PCT Railway var (default 1.5).
-        # Fails open if snap data unavailable (no intraday high/low stored yet).
-        _EXT_MOVE_MAX = float(os.getenv("EXTENDED_MOVE_MAX_PCT", "1.5"))
+        # Don't enter after the move is already mature. Counter-trend trades
+        # (shorts in BULLISH tape, longs in BEARISH tape) use the base limit.
+        # Trend-aligned trades get a more generous threshold because the whole
+        # market is moving — a stock being 2% off its low on a bull day is normal,
+        # not a sign the move is over. ZM was the original problem: shorted AFTER
+        # a 1.7% drop, when the move was done. That's still correctly blocked.
+        # Configurable via EXTENDED_MOVE_MAX_PCT (base, default 1.5) and
+        # EXTENDED_MOVE_TREND_PCT (trend-aligned, default 2.5) Railway vars.
+        _EXT_MOVE_MAX       = float(os.getenv("EXTENDED_MOVE_MAX_PCT",   "1.5"))
+        _EXT_MOVE_TREND_MAX = float(os.getenv("EXTENDED_MOVE_TREND_PCT", "2.5"))
+        with _breadth_lock:
+            _ext_regime = _breadth_state.get("regime", "NEUTRAL")
+        _is_trend_aligned = (direction == "bull" and _ext_regime == "BULLISH") or \
+                            (direction == "bear" and _ext_regime == "BEARISH")
+        _ext_limit = _EXT_MOVE_TREND_MAX if _is_trend_aligned else _EXT_MOVE_MAX
         _snap_h = float(_snap.get("h") or 0)
         _snap_l = float(_snap.get("l") or 0)
-        if price > 0 and _EXT_MOVE_MAX > 0:
+        if price > 0 and _ext_limit > 0:
             if direction == "bear" and _snap_h > 0:
                 _drop_from_high = (_snap_h - price) / _snap_h * 100
-                if _drop_from_high > _EXT_MOVE_MAX:
+                if _drop_from_high > _ext_limit:
+                    _trend_tag = "trend-aligned" if _is_trend_aligned else "counter-trend"
                     print(f"[ExtMove] {sym} — SKIPPED: already dropped {_drop_from_high:.2f}% from intraday high "
-                          f"(${_snap_h:.2f} → ${price:.2f}), move is mature (max {_EXT_MOVE_MAX}%)")
+                          f"(${_snap_h:.2f} → ${price:.2f}), move is mature ({_trend_tag} max {_ext_limit}%)")
                     with _alp_lock:
                         _alp_last_traded.pop(sym, None)
                     return
                 else:
-                    print(f"[ExtMove] {sym} — BEAR drop from high: {_drop_from_high:.2f}% ✓ (< {_EXT_MOVE_MAX}% limit)")
+                    print(f"[ExtMove] {sym} — BEAR drop from high: {_drop_from_high:.2f}% ✓ (< {_ext_limit}% limit, regime={_ext_regime})")
             elif direction == "bull" and _snap_l > 0:
                 _rise_from_low = (price - _snap_l) / _snap_l * 100
-                if _rise_from_low > _EXT_MOVE_MAX:
+                if _rise_from_low > _ext_limit:
+                    _trend_tag = "trend-aligned" if _is_trend_aligned else "counter-trend"
                     print(f"[ExtMove] {sym} — SKIPPED: already risen {_rise_from_low:.2f}% from intraday low "
-                          f"(${_snap_l:.2f} → ${price:.2f}), move is mature (max {_EXT_MOVE_MAX}%)")
+                          f"(${_snap_l:.2f} → ${price:.2f}), move is mature ({_trend_tag} max {_ext_limit}%)")
                     with _alp_lock:
                         _alp_last_traded.pop(sym, None)
                     return
                 else:
-                    print(f"[ExtMove] {sym} — BULL rise from low: {_rise_from_low:.2f}% ✓ (< {_EXT_MOVE_MAX}% limit)")
+                    print(f"[ExtMove] {sym} — BULL rise from low: {_rise_from_low:.2f}% ✓ (< {_ext_limit}% limit, regime={_ext_regime})")
         # ─────────────────────────────────────────────────────────────────────
 
         social_tag = f" social+{social_boost}" if social_boost > 0 else ""
