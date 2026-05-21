@@ -7966,14 +7966,15 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
         print(f"[Alpaca] ❌ Entry order exception: {e}")
         return False
 
-    # ── Phase 2: Poll for fill — up to 20s then fall back to market ──────────
-    # Poll at 0.2s, 0.3s, then 0.5s intervals (same fast-start as before).
-    # After 20s total, cancel the limit and place a market order to ensure
-    # we always get in when the signal is valid.
+    # ── Phase 2: Poll for fill — up to 45s then fall back to marketable limit ──
+    # Poll at 0.2s, 0.3s, then 0.5s intervals.
+    # Extended from 20s → 45s: gives the mid-price limit more time to fill
+    # naturally, avoiding the market fallback that causes bad fills on less
+    # liquid names (CLSK, AAL, NTLA etc at 6000+ shares).
     fill_price = None
     fill_qty   = None
     _limit_timed_out = False
-    poll_delays = [0.2, 0.3] + [0.5] * 39   # 41 attempts, ~20.5s max
+    poll_delays = [0.2, 0.3] + [0.5] * 89   # 91 attempts, ~45s max
     for _attempt, _delay in enumerate(poll_delays):
         time.sleep(_delay)
         try:
@@ -8010,33 +8011,51 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
         except Exception as _pe:
             print(f"[Alpaca] Phase2 poll error: {_pe}")
 
-    # ── Market fallback: limit didn't fill in 20s ─────────────────────────────
+    # ── Marketable-limit fallback: limit didn't fill in 45s ──────────────────
+    # Instead of a true market order (unlimited slippage), use a marketable
+    # limit — set at live ask (bulls) or bid (bears), capped at 0.5% from the
+    # original signal price. Acts like a market order for execution priority
+    # but protects against extreme fills on illiquid names (CLSK, AAL etc).
     if not fill_price or fill_price <= 0:
         _limit_timed_out = True
-        print(f"[Alpaca] Phase2 ⏱️  limit unfilled after 20s — cancelling and falling back to market")
+        print(f"[Alpaca] Phase2 ⏱️  limit unfilled after 45s — cancelling, falling back to marketable limit")
         try:
             requests.delete(f"{_ALPACA_BASE_URL}/v2/orders/{order_id}",
                             headers=_alp_headers(), timeout=5)
             time.sleep(0.5)
         except Exception:
             pass
-        # Re-fetch live price for market order (20s have passed, price may have moved)
+        # Re-fetch live quote for accurate marketable limit price
+        _fb_ask = _fb_bid = 0.0
         try:
             _mkt_q = requests.get(f"{_ALP_DATA_URL}/v2/stocks/{sym}/quotes/latest",
                                   headers=_alp_headers(), timeout=3)
             if _mkt_q.status_code == 200:
                 _mkt_qd = _mkt_q.json().get("quote", {})
-                _mkt_ask = float(_mkt_qd.get("ap") or 0)
-                if _mkt_ask > 0:
-                    price = _mkt_ask
-                    qty   = max(1, int(_ALP_POSITION_SIZE_USD / price))
+                _fb_ask = float(_mkt_qd.get("ap") or 0)
+                _fb_bid = float(_mkt_qd.get("bp") or 0)
         except Exception:
             pass
+        # Marketable limit: at live ask/bid, capped 0.5% from signal price
+        _signal_price = price   # original signal price before any drift
+        if direction == "bull" and _fb_ask > 0:
+            _fb_limit = round(min(_fb_ask, _signal_price * 1.005), 2)
+        elif direction == "bear" and _fb_bid > 0:
+            _fb_limit = round(max(_fb_bid, _signal_price * 0.995), 2)
+        else:
+            # No live quote — use signal price + small buffer
+            _fb_limit = round(_signal_price * (1.003 if direction == "bull" else 0.997), 2)
+        _fb_ref = _fb_ask if direction == "bull" else _fb_bid
+        qty = max(1, int(_ALP_POSITION_SIZE_USD / _fb_limit))
+        print(f"[Alpaca] Phase2 marketable limit: {side.upper()} {qty}x {sym} @ ${_fb_limit:.2f} "
+              f"(live={'ask' if direction=='bull' else 'bid'}=${_fb_ref:.2f}, "
+              f"cap=signal×{'1.005' if direction=='bull' else '0.995'}=${_signal_price*(1.005 if direction=='bull' else 0.995):.2f})")
         mkt_order = {
             "symbol":        sym,
             "qty":           str(qty),
             "side":          side,
-            "type":          "market",
+            "type":          "limit",
+            "limit_price":   str(_fb_limit),
             "time_in_force": "day",
         }
         try:
@@ -8044,13 +8063,13 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
                                   headers=_alp_headers(),
                                   json=mkt_order, timeout=10)
             if r_mkt.status_code not in (200, 201):
-                print(f"[Alpaca] ❌ Market fallback rejected HTTP {r_mkt.status_code}: {r_mkt.text[:300]}")
+                print(f"[Alpaca] ❌ Marketable-limit fallback rejected HTTP {r_mkt.status_code}: {r_mkt.text[:300]}")
                 with _alp_pending_lock:
                     _alp_pending.pop(sym, None)
                 return False
             order_id = r_mkt.json().get("id", "")
-            print(f"[Alpaca] Phase2 market fallback submitted id={order_id[:8]}")
-            # Quick poll for market fill (should fill fast)
+            print(f"[Alpaca] Phase2 marketable-limit fallback submitted id={order_id[:8]}")
+            # Poll for fill — should fill quickly at ask/bid level
             for _ma, _md in enumerate([0.2, 0.3] + [0.5] * 19):
                 time.sleep(_md)
                 try:
@@ -8061,12 +8080,15 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
                         if _ms.get("status") == "filled":
                             fill_price = float(_ms.get("filled_avg_price") or 0)
                             fill_qty   = int(float(_ms.get("filled_qty") or qty))
-                            print(f"[Alpaca] Phase2 ✅ market fallback filled {fill_qty}x @ ${fill_price:.4f}")
+                            print(f"[Alpaca] Phase2 ✅ marketable-limit fallback filled {fill_qty}x @ ${fill_price:.4f}")
+                            break
+                        elif _ms.get("status") in ("cancelled", "rejected", "expired"):
+                            print(f"[Alpaca] Phase2 ❌ marketable-limit fallback {_ms.get('status')} — price moved past cap")
                             break
                 except Exception:
                     pass
         except Exception as _mkt_err:
-            print(f"[Alpaca] ❌ Market fallback exception: {_mkt_err}")
+            print(f"[Alpaca] ❌ Marketable-limit fallback exception: {_mkt_err}")
 
     # Final safety net: if still no fill price, use reference price
     if not fill_price or fill_price <= 0:
