@@ -317,14 +317,33 @@ def fh_get(path, params=None):
 # ── Massive helpers ────────────────────────────────────────────────────────────
 # Auth: apiKey as query param (NOT Bearer header). API version: v2.
 _massive_403_paths = {}   # { path: last_log_ts } — rate-limit 403 noise per endpoint
+_massive_timeout_counts = {}  # { ticker: int } — consecutive timeout counter per ticker
+_massive_skip_until = {}      # { ticker: float } — skip Massive for ticker until this ts
+
+def _massive_ticker_from_path(path: str) -> str:
+    """Extract ticker symbol from a Massive API path like /v2/aggs/ticker/QQQ/range/..."""
+    parts = path.split("/")
+    for i, p in enumerate(parts):
+        if p == "ticker" and i + 1 < len(parts):
+            return parts[i + 1].upper()
+    return ""
 
 def massive_get(path, params=None):
     """Call Massive.com REST API v2. Returns parsed JSON or None.
     Retries once on read timeout. Semaphore caps concurrent requests at 4
     to prevent timeout bursts when seed + prediction + scanner all fire at once.
-    403 errors are logged at most once per 30 min per path to avoid log spam."""
+    403 errors are logged at most once per 30 min per path to avoid log spam.
+    Circuit breaker: after 2 consecutive timeouts per ticker, skip for 5 min."""
     if not MASSIVE_KEY:
         return None
+
+    # Circuit breaker: if this ticker has failed too many times recently, skip
+    _cb_ticker = _massive_ticker_from_path(path)
+    if _cb_ticker:
+        _skip_ts = _massive_skip_until.get(_cb_ticker, 0)
+        if time.time() < _skip_ts:
+            return None  # silently skip — use Alpaca snapshot data instead
+
     p = params or {}
     p["apiKey"] = MASSIVE_KEY          # correct auth method
     with _MASSIVE_SEMAPHORE:           # blocks if 4 requests already in-flight
@@ -338,6 +357,9 @@ def massive_get(path, params=None):
                         _massive_403_paths[path] = _now_403
                     return None
                 r.raise_for_status()
+                # Success — reset consecutive timeout counter for this ticker
+                if _cb_ticker:
+                    _massive_timeout_counts.pop(_cb_ticker, None)
                 return r.json()
             except requests.exceptions.ReadTimeout:
                 if attempt == 0:
@@ -345,6 +367,13 @@ def massive_get(path, params=None):
                     time.sleep(3)
                 else:
                     print(f"[Massive] {path} read timeout after retry — giving up")
+                    # Circuit breaker: track consecutive failures, skip after 2
+                    if _cb_ticker:
+                        _massive_timeout_counts[_cb_ticker] = _massive_timeout_counts.get(_cb_ticker, 0) + 1
+                        if _massive_timeout_counts[_cb_ticker] >= 2:
+                            _massive_skip_until[_cb_ticker] = time.time() + 300  # 5-min cooldown
+                            print(f"[Massive] {_cb_ticker} — circuit breaker: {_massive_timeout_counts[_cb_ticker]} consecutive timeouts, skipping for 5 min")
+                            _massive_timeout_counts.pop(_cb_ticker, None)
                     return None
             except Exception as e:
                 print(f"[Massive] {path} error: {e}")
@@ -9380,6 +9409,22 @@ def _alp_execute_signal(res: dict):
                 eff_conf += _gex_adj
                 print(f"[GEX] {sym} — {_gex_key.upper()} GEX={_gex_total:+.2f}B ({_gex_label}) "
                       f"spot={_gex_spot:.2f} → eff_conf {_gex_adj:+d} ({', '.join(_gex_notes)}) → {eff_conf:.1f}")
+    else:
+        # Non-ETF stocks: use SPY GEX as a market environment signal.
+        # Positive GEX = dealers defend the floor (buy dips) → safer for BULL entries → +2
+        # Negative GEX = dealers amplify momentum in both directions → +1 any direction
+        with _gex_lock:
+            _spy_gex_snap = dict(_gex_state["spy"])
+        _spy_gex_age = time.time() - _spy_gex_snap.get("updated_at", 0)
+        if _spy_gex_age < 1200:
+            _spy_gex_total = _spy_gex_snap.get("total_bn", 0.0)
+            _spy_gex_label = _spy_gex_snap.get("label", "neutral")
+            if _spy_gex_label == "positive" and _spy_gex_total >= 1.0 and direction == "bull":
+                eff_conf += 2
+                print(f"[GEX] {sym} — SPY GEX={_spy_gex_total:+.2f}B (positive) floor defended → BULL +2 → {eff_conf:.1f}")
+            elif _spy_gex_label == "negative" and _spy_gex_total <= -1.0:
+                eff_conf += 1
+                print(f"[GEX] {sym} — SPY GEX={_spy_gex_total:+.2f}B (negative) momentum amplified → +1 → {eff_conf:.1f}")
 
     # ── Cross-Pair Confirmation ───────────────────────────────────────────────
     # TQQQ + SPXL firing the same direction within 5 min = both Nasdaq AND S&P
