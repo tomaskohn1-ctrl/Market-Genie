@@ -9426,6 +9426,23 @@ def _alp_execute_signal(res: dict):
                 eff_conf += 1
                 print(f"[GEX] {sym} — SPY GEX={_spy_gex_total:+.2f}B (negative) momentum amplified → +1 → {eff_conf:.1f}")
 
+    # ── Dual Negative GEX Momentum Confirmation ───────────────────────────────
+    # When BOTH SPY and QQQ are in negative GEX territory simultaneously,
+    # dealers are short gamma on BOTH benchmarks — amplified momentum across
+    # the board. This is a rare high-quality environmental signal (+3 any direction).
+    with _gex_lock:
+        _dual_spy = dict(_gex_state["spy"])
+        _dual_qqq = dict(_gex_state["qqq"])
+    _dual_spy_age = time.time() - _dual_spy.get("updated_at", 0)
+    _dual_qqq_age = time.time() - _dual_qqq.get("updated_at", 0)
+    if _dual_spy_age < 1200 and _dual_qqq_age < 1200:
+        if (_dual_spy.get("label") == "negative" and _dual_qqq.get("label") == "negative"):
+            _dual_spy_bn = _dual_spy.get("total_bn", 0.0)
+            _dual_qqq_bn = _dual_qqq.get("total_bn", 0.0)
+            eff_conf += 3
+            print(f"[GEX] {sym} — DUAL negative GEX (SPY={_dual_spy_bn:+.2f}B QQQ={_dual_qqq_bn:+.2f}B) "
+                  f"→ momentum amplified both benchmarks → eff_conf +3 → {eff_conf:.1f}")
+
     # ── Cross-Pair Confirmation ───────────────────────────────────────────────
     # TQQQ + SPXL firing the same direction within 5 min = both Nasdaq AND S&P
     # futures vehicles agree → broad market conviction → +5 eff_conf on second signal.
@@ -9529,13 +9546,14 @@ def _alp_execute_signal(res: dict):
         # Use a slightly higher eff_conf bar (72) since only one benchmark confirms.
         _spy_bullish  = _spy_chg >=  0.2   # SPY alone positive
         _spy_bearish  = _spy_chg <= -0.2   # SPY alone negative
-        # Bypass A: ba=1 + eff_conf ≥ 80 — lowered from 82 (TQQQ was hitting 80-81 repeatedly).
+        # Bypass A: ba=1 + eff_conf ≥ 75 — lowered from 80 (signals with both-model agreement
+        # in the 75-80 range are genuine quality setups; 80 was filtering too aggressively).
         # MUST be directionally aligned with tape (no bull entry if tape clearly falling).
         _ba_dir_ok = (
             (sym in _ETF_BEAR_UNIVERSE and not _tape_bullish) or
             (sym in _ETF_BULL_UNIVERSE and not _tape_bearish)
         )
-        _neutral_ba_bypass    = (ba == 1 and eff_conf >= 80 and _ba_dir_ok)
+        _neutral_ba_bypass    = (ba == 1 and eff_conf >= 75 and _ba_dir_ok)
         _neutral_elite_bypass = eff_conf >= 90
         # Bypass C (directional tape): breadth lags price by 5-10 min.
         # Standard: SPY AND QQQ both ≥ 0.2% → full tape confirmation.
@@ -9551,7 +9569,7 @@ def _alp_execute_signal(res: dict):
         if not _neutral_ba_bypass and not _neutral_elite_bypass and not _neutral_dir_bypass:
             print(f"[RegimeGate] {sym} — SKIPPED: NEUTRAL tape (breadth={breadth_score:.0f}, "
                   f"SPY={_spy_chg:+.2f}% QQQ={_qqq_chg:+.2f}%), "
-                  f"ETF requires regime or (ba=1+eff_conf≥80) or eff_conf≥90 or "
+                  f"ETF requires regime or (ba=1+eff_conf≥75) or eff_conf≥90 or "
                   f"(directional tape ba=1+eff_conf≥68) — got ba={ba} eff_conf={eff_conf:.1f}")
             return
         if _neutral_dir_bypass and not _neutral_ba_bypass and not _neutral_elite_bypass:
