@@ -9864,29 +9864,6 @@ def _alp_execute_signal(res: dict):
         print(f"[DeadZone] {sym} — dead zone bypassed: ELITE eff_conf={eff_conf:.1f} ≥ 85 "
               f"at {_dz_now.strftime('%H:%M')} ET ✓")
 
-    # ── Late-session entry cutoff — no new entries after 2:30 PM ET ──────────
-    # Entries taken within 90 min of close have insufficient time for the bracket
-    # to work. The 40-min hard exit fires at ~3:10 PM, then EOD flatten at 3:45 PM
-    # leaves only 35 min of runway — not enough for a 1.5% target. GDXJ on May 22
-    # entered at 2:51 PM, got stopped out at 3:29 PM for -$701 (largest single loss).
-    # ELITE bypass (eff_conf ≥ 95, ba=1): very high conviction setups with both
-    # models in full agreement may still enter up to 3:00 PM ET.
-    _NO_ENTRY_AFTER        = dtime(14, 30)
-    _NO_ENTRY_ELITE_AFTER  = dtime(15, 0)
-    _ct_now = _get_et_now()
-    _ct_time = _ct_now.time()
-    if _ct_time >= _NO_ENTRY_ELITE_AFTER:
-        print(f"[TimeGate] {sym} — SKIPPED: {_ct_now.strftime('%H:%M')} ET ≥ 3:00 PM, "
-              f"no new entries in final 45 min (EOD flatten at 3:45 PM)")
-        return
-    if _ct_time >= _NO_ENTRY_AFTER and not (eff_conf >= 95 and ba == 1):
-        print(f"[TimeGate] {sym} — SKIPPED: {_ct_now.strftime('%H:%M')} ET ≥ 2:30 PM, "
-              f"no new entries (need ELITE eff_conf≥95 + ba=1 to bypass, got {eff_conf:.1f} ba={ba})")
-        return
-    if _ct_time >= _NO_ENTRY_AFTER:
-        print(f"[TimeGate] {sym} — 2:30 PM bypass: ELITE eff_conf={eff_conf:.1f}≥95 + ba=1 ✓ "
-              f"(entry allowed until 3:00 PM)")
-
     # ── SPY momentum gate — raise bear conf when tape is strongly rising ──────
     # On days when SPY is up >0.3%, individual-stock BEAR signals are fighting
     # the primary tape direction. The model sees weakness in one name but misses
