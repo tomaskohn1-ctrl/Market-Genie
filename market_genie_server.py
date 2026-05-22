@@ -9864,6 +9864,53 @@ def _alp_execute_signal(res: dict):
         print(f"[DeadZone] {sym} — dead zone bypassed: ELITE eff_conf={eff_conf:.1f} ≥ 85 "
               f"at {_dz_now.strftime('%H:%M')} ET ✓")
 
+    # ── Late-session entry cutoff — no new entries after 2:30 PM ET ──────────
+    # Entries taken within 90 min of close have insufficient time for the bracket
+    # to work. The 40-min hard exit fires at ~3:10 PM, then EOD flatten at 3:45 PM
+    # leaves only 35 min of runway — not enough for a 1.5% target. GDXJ on May 22
+    # entered at 2:51 PM, got stopped out at 3:29 PM for -$701 (largest single loss).
+    # ELITE bypass (eff_conf ≥ 95, ba=1): very high conviction setups with both
+    # models in full agreement may still enter up to 3:00 PM ET.
+    _NO_ENTRY_AFTER        = dtime(14, 30)
+    _NO_ENTRY_ELITE_AFTER  = dtime(15, 0)
+    _ct_now = _get_et_now()
+    _ct_time = _ct_now.time()
+    if _ct_time >= _NO_ENTRY_ELITE_AFTER:
+        print(f"[TimeGate] {sym} — SKIPPED: {_ct_now.strftime('%H:%M')} ET ≥ 3:00 PM, "
+              f"no new entries in final 45 min (EOD flatten at 3:45 PM)")
+        return
+    if _ct_time >= _NO_ENTRY_AFTER and not (eff_conf >= 95 and ba == 1):
+        print(f"[TimeGate] {sym} — SKIPPED: {_ct_now.strftime('%H:%M')} ET ≥ 2:30 PM, "
+              f"no new entries (need ELITE eff_conf≥95 + ba=1 to bypass, got {eff_conf:.1f} ba={ba})")
+        return
+    if _ct_time >= _NO_ENTRY_AFTER:
+        print(f"[TimeGate] {sym} — 2:30 PM bypass: ELITE eff_conf={eff_conf:.1f}≥95 + ba=1 ✓ "
+              f"(entry allowed until 3:00 PM)")
+
+    # ── SPY momentum gate — raise bear conf when tape is strongly rising ──────
+    # On days when SPY is up >0.3%, individual-stock BEAR signals are fighting
+    # the primary tape direction. The model sees weakness in one name but misses
+    # the index-level bid lifting all boats. May 22: BMY -$164, TXN -$173, C -$130
+    # all shorted into SPY +0.5-0.7% — bear signals were real but overwhelmed.
+    # Gate: when SPY ≥ +0.3% intraday, require bear eff_conf ≥ 90 to proceed.
+    # ETF bear instruments (SQQQ, SPXS, SOXS) are exempt — their signal already
+    # incorporates index direction via both_agree and the regime gate.
+    _SPY_BULL_GATE_PCT  = float(os.getenv("SPY_BULL_GATE_PCT",  "0.3"))
+    _SPY_BULL_GATE_CONF = float(os.getenv("SPY_BULL_GATE_CONF", "90"))
+    if direction == "bear" and sym not in (_ETF_BEAR_UNIVERSE | _ETF_BULL_UNIVERSE):
+        with _breadth_lock:
+            _spy_gate_chg = _breadth_state.get("spy_chg", 0.0)
+        if _spy_gate_chg >= _SPY_BULL_GATE_PCT and eff_conf < _SPY_BULL_GATE_CONF:
+            print(f"[SPYGate] {sym} — SKIPPED: BEAR signal on rising tape "
+                  f"(SPY +{_spy_gate_chg:.2f}% ≥ +{_SPY_BULL_GATE_PCT:.1f}%), "
+                  f"need eff_conf≥{_SPY_BULL_GATE_CONF} (got {eff_conf:.1f})")
+            with _alp_lock:
+                _alp_last_traded.pop(sym, None)
+            return
+        if _spy_gate_chg >= _SPY_BULL_GATE_PCT:
+            print(f"[SPYGate] {sym} — BEAR on rising tape (SPY +{_spy_gate_chg:.2f}%) "
+                  f"bypassed: ELITE eff_conf={eff_conf:.1f}≥{_SPY_BULL_GATE_CONF} ✓")
+
     # ── Chronic loser high-confidence gate ───────────────────────────────────
     # NUGT, SQQQ, LABU, DUST, TECL: 0 TARGET exits combined, -$1,192 total loss
     # across May 6-12 2026. These fire frequently (strong models) but the move
