@@ -6979,8 +6979,8 @@ _ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.market
 
 # Execution settings (override via Railway Variables)
 _ALP_ENABLED          = os.getenv("ALPACA_EXEC_ENABLED", "false").lower() == "true"  # default OFF — use Trade Now button for manual entry
-_ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "80000"))  # $80K per trade — concentrated single-position strategy (1 elite setup at a time)
-_ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "1"))         # 1 position at a time — concentrated conviction strategy
+_ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "80000"))  # $80K per trade — up to 2 concurrent positions ($160K max deployed)
+_ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "2"))         # 2 positions at a time — allows second elite setup while first is open (was 1: missed ZS/ALAB/SNOW/CRDO while BMY blocked the slot)
 _ALP_STOP_PCT         = float(os.getenv("ALPACA_STOP_PCT", "0.0075"))       # 0.75% stop loss — wider room for intraday noise (was 0.5%, too tight for $50-150 stocks)
 _ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.015"))      # 1.5% target — maintains 2:1 R:R with wider stop
 _ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.020"))# 2.0% for STRONG — lowered from 3.0% (3% targets almost never hit in 40 min; 2% maintains 2.7:1 R:R vs 0.75% stop)
