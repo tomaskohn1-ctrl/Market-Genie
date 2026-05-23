@@ -6050,6 +6050,148 @@ threading.Thread(target=_kelly_poll_loop, daemon=True, name="kelly-sizer").start
 print("[Kelly] Half-Kelly dynamic sizer started (30-min refresh from winrate.db)")
 
 
+# ── Confidence Floor Recalibrator ─────────────────────────────────────────────
+# Reads winrate.db every 2 hours, computes actual win rate per confidence bucket,
+# and adjusts _LIVE_CONF_FLOOR so the system only trades ranges that have real edge.
+#
+# How it works:
+#   Signals are grouped into buckets (70-74, 75-79, 80-84, 85-89, 90+).
+#   For each bucket: win_rate = WIN / (WIN + LOSS).
+#   The lowest bucket with win_rate >= 40% AND enough data becomes the new floor.
+#   Changes are capped at ±5 points per cycle to prevent wild swings.
+#
+# Example: if conf 70-74 has a 28% win rate over 25 trades but conf 75-79 has
+#   52% over 30 trades, the floor rises from 70 → 75 automatically.
+#   Next day if conf 70-74 recovers to 44%, the floor drops back to 70.
+#
+# Guards:
+#   - Requires 30+ total resolved trades before first recalibration
+#   - Requires 15+ trades per bucket before trusting that bucket
+#   - Max drift ±5 per cycle (floor can never jump 10 points overnight)
+#   - Hard bounds: floor never goes below 65 or above 85
+# ─────────────────────────────────────────────────────────────────────────────
+_RECAL_MIN_TOTAL   = 30     # total resolved trades needed before first recal
+_RECAL_MIN_BUCKET  = 15     # trades per bucket before trusting it
+_RECAL_MIN_WR      = 0.40   # minimum win rate to accept a bucket (40%)
+_RECAL_MAX_DRIFT   = 5      # max floor change per cycle (points)
+_RECAL_FLOOR_MIN   = 65     # hard lower bound on floor
+_RECAL_FLOOR_MAX   = 85     # hard upper bound on floor
+_RECAL_LOOKBACK    = 90     # rolling window (days)
+_RECAL_INTERVAL_H  = 2      # hours between recalibration runs
+
+_RECAL_BUCKETS = [
+    ("70–74", 70, 75),
+    ("75–79", 75, 80),
+    ("80–84", 80, 85),
+    ("85–89", 85, 90),
+    ("90+",   90, 999),
+]
+
+# Live conf floor — starts at env value, updated by recalibrator
+_live_conf_floor      = float(os.getenv("BASE_CONF_FLOOR", "70"))
+_live_conf_floor_lock = threading.Lock()
+_recal_log            = []   # [(ts, old, new, reason)] — last 20 adjustments
+
+
+def _get_live_conf_floor() -> float:
+    with _live_conf_floor_lock:
+        return _live_conf_floor
+
+
+def _run_conf_recalibration():
+    """
+    Read winrate.db, compute bucket win rates, find optimal floor, update live value.
+    Called by background thread every 2 hours.
+    """
+    global _live_conf_floor
+
+    cutoff = int(time.time()) - _RECAL_LOOKBACK * 86400
+    try:
+        with sqlite3.connect(_WR_DB_PATH, timeout=5) as con:
+            rows = con.execute(
+                "SELECT confidence, outcome FROM signals "
+                "WHERE outcome IN ('WIN','LOSS') AND confidence IS NOT NULL "
+                "AND ts_entry >= ?", (cutoff,)
+            ).fetchall()
+    except Exception as e:
+        print(f"[Recal] DB read error: {e}")
+        return
+
+    total = len(rows)
+    if total < _RECAL_MIN_TOTAL:
+        print(f"[Recal] {total}/{_RECAL_MIN_TOTAL} resolved trades — not enough to recalibrate yet")
+        return
+
+    # Compute win rate per bucket
+    bucket_stats = {}
+    for label, lo, hi in _RECAL_BUCKETS:
+        bucket = [(r[0], r[1]) for r in rows if lo <= r[0] < hi]
+        n    = len(bucket)
+        wins = sum(1 for r in bucket if r[1] == "WIN")
+        wr   = wins / n if n > 0 else None
+        bucket_stats[label] = {"lo": lo, "n": n, "wins": wins, "wr": wr}
+
+    # Log bucket breakdown
+    print(f"[Recal] Win rate by conf bucket ({total} trades, last {_RECAL_LOOKBACK}d):")
+    for label, s in bucket_stats.items():
+        wr_str  = f"{s['wr']*100:.1f}%" if s["wr"] is not None else "  n/a"
+        ok      = "✅" if s["wr"] and s["wr"] >= _RECAL_MIN_WR else ("⚠️ " if s["n"] < _RECAL_MIN_BUCKET else "❌")
+        print(f"[Recal]   conf {label:<6}  {s['n']:>3} trades  WR={wr_str:>6}  {ok}")
+
+    # Find lowest conf bucket with sufficient data AND viable win rate
+    best_floor = None
+    for label, lo, hi in _RECAL_BUCKETS:
+        s = bucket_stats[label]
+        if s["n"] >= _RECAL_MIN_BUCKET and s["wr"] is not None and s["wr"] >= _RECAL_MIN_WR:
+            best_floor = lo   # first viable bucket = optimal floor
+            break
+
+    if best_floor is None:
+        print(f"[Recal] No bucket meets criteria (≥{_RECAL_MIN_BUCKET} trades, WR≥{_RECAL_MIN_WR*100:.0f}%) "
+              f"— floor unchanged at {_live_conf_floor:.0f}")
+        return
+
+    with _live_conf_floor_lock:
+        old_floor = _live_conf_floor
+
+        # Apply drift cap
+        drift      = best_floor - old_floor
+        capped     = max(-_RECAL_MAX_DRIFT, min(_RECAL_MAX_DRIFT, drift))
+        new_floor  = old_floor + capped
+
+        # Apply hard bounds
+        new_floor  = max(_RECAL_FLOOR_MIN, min(_RECAL_FLOOR_MAX, new_floor))
+        new_floor  = round(new_floor)
+
+        if new_floor == round(old_floor):
+            print(f"[Recal] Floor stable at {old_floor:.0f} — no change needed")
+            return
+
+        _live_conf_floor = float(new_floor)
+        _recal_log.append((time.time(), old_floor, new_floor,
+                           f"{total} trades · best_bucket={label}"))
+        if len(_recal_log) > 20:
+            _recal_log.pop(0)
+
+    arrow = "↑ raised" if new_floor > old_floor else "↓ lowered"
+    print(f"[Recal] ✅ Conf floor {arrow}: {old_floor:.0f} → {new_floor} "
+          f"(based on {total} resolved trades over last {_RECAL_LOOKBACK}d)")
+
+
+def _recal_loop():
+    time.sleep(300)   # 5-min startup grace — let winrate DB warm up
+    while True:
+        try:
+            _run_conf_recalibration()
+        except Exception as e:
+            print(f"[Recal] Loop error: {e}")
+        time.sleep(_RECAL_INTERVAL_H * 3600)
+
+
+threading.Thread(target=_recal_loop, daemon=True, name="conf-recal").start()
+print("[Recal] Confidence floor recalibrator started (2-hr cycle from winrate.db)")
+
+
 def _kelly_position_usd(eff_conf: float, base_usd: float) -> float:
     """Return Half-Kelly adjusted position size in USD.
     eff_conf  — effective confidence score for this signal
