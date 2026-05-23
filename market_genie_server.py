@@ -8641,6 +8641,48 @@ def _alp_time_exit_loop():
                         print(f"[ReversalExit] ⚠️  {sym} reversal check error: {_rev_err}")
 
                 # ══════════════════════════════════════════════════════════════
+                # SELLING STRATEGY 1b — Early Cut-and-Run (5–10 min, −0.35%)
+                # ──────────────────────────────────────────────────────────────
+                # If the trade is clearly wrong in the first 5–10 minutes
+                # (down > 0.35% ≈ half the stop distance), close immediately
+                # and free the slot for a better setup.
+                #
+                # Normal noise is ±0.1–0.2%. −0.35% in 5 min means price moved
+                # hard against the signal from the start — not noise, wrong call.
+                # Holding to the full 0.75% stop wastes an $80K slot that a
+                # higher-conviction signal could use right now.
+                #
+                # Cooldown: sets loss_cooldown (15 min) on this symbol to
+                # block immediate re-entry of the same failed trade.
+                # exit_cooldown NOT set — slot freed immediately for a
+                # different, better setup without any waiting period.
+                # Only fires if the position has NOT already hit breakeven
+                # (trailing stop active) — those are managed differently.
+                # ══════════════════════════════════════════════════════════════
+                _EARLY_CUT_MIN_AGE  = float(os.getenv("EARLY_CUT_MIN_AGE",  "5"))
+                _EARLY_CUT_MAX_AGE  = float(os.getenv("EARLY_CUT_MAX_AGE",  "10"))
+                _EARLY_CUT_LOSS_PCT = float(os.getenv("EARLY_CUT_LOSS_PCT", "-0.35"))
+                if (sym not in _alp_breakeven_set
+                        and age_mins >= _EARLY_CUT_MIN_AGE
+                        and age_mins <  _EARLY_CUT_MAX_AGE
+                        and unrealized_pct <= _EARLY_CUT_LOSS_PCT):
+                    print(f"[EarlyCut] ✂️  {sym} — CUT-AND-RUN at {age_mins:.0f}m, "
+                          f"{unrealized_pct:+.2f}% ≤ {_EARLY_CUT_LOSS_PCT}% threshold "
+                          f"→ closing now, slot freed for better setup")
+                    _alp_close_position(sym, pos_side_now)
+                    with _alp_lock:
+                        _alp_last_traded.pop(sym, None)
+                        _alp_breakeven_set.discard(sym)
+                        _alp_partial_taken.discard(sym)
+                        _alp_tight_trail_set.discard(sym)
+                        _alp_loss_cooldown[sym] = time.time()   # block same-symbol re-entry 15 min
+                        # exit_cooldown intentionally NOT set — different symbol can enter immediately
+                    _save_alp_state()
+                    print(f"[Cooldown] ❄️  {sym} — loss cooldown {_ALP_LOSS_COOLDOWN_MINS}m "
+                          f"(same-symbol only) | slot OPEN for new setup")
+                    continue
+
+                # ══════════════════════════════════════════════════════════════
                 # SELLING STRATEGY 2 — Tiered Take-Profit (50% at +1%)
                 # ──────────────────────────────────────────────────────────────
                 # When unrealized gain hits +1%, close half the position at market.
