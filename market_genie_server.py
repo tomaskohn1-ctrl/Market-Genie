@@ -9322,9 +9322,9 @@ def _alp_execute_signal(res: dict):
     # to threshold purely by technicals — boosts should amplify good signals,
     # not rescue weak ones. Floor raised to 70 to filter marginal setups that
     # exit flat via time exit (65-69 conf trades produced near-zero P&L in practice).
-    _BASE_CONF_FLOOR = float(os.getenv("BASE_CONF_FLOOR", "70"))
+    _BASE_CONF_FLOOR = _get_live_conf_floor()
     if conf < _BASE_CONF_FLOOR:
-        print(f"[BaseFloor] {sym} — raw conf {conf:.1f} < {_BASE_CONF_FLOOR} floor, skipping (boosts cannot rescue weak signal)")
+        print(f"[BaseFloor] {sym} — raw conf {conf:.1f} < {_BASE_CONF_FLOOR:.0f} floor (live-calibrated), skipping (boosts cannot rescue weak signal)")
         return
 
     # ── Social Sentiment Boost ────────────────────────────────────────────────
@@ -11547,6 +11547,67 @@ def api_winrate_analytics():
             "agreement_tiers": agreement_tiers,
             "ba1_recent_20":   ba1_recent,
             "ba1_older":       ba1_older,
+            "ts": int(time.time()),
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/calibration")
+def api_calibration():
+    """
+    Live confidence floor recalibration status.
+    Shows current floor, per-bucket win-rate breakdown, and recent recal history.
+    Useful for understanding why the system raised or lowered its confidence bar.
+    """
+    try:
+        _wr_init_db()
+        cutoff_ts = int(time.time()) - _RECAL_LOOKBACK * 86400
+
+        with sqlite3.connect(_WR_DB_PATH) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute("""
+                SELECT confidence, outcome FROM signals
+                WHERE outcome IN ('WIN','LOSS')
+                AND ts_entry >= ?
+            """, (cutoff_ts,)).fetchall()
+
+        buckets_out = []
+        for label, lo, hi in _RECAL_BUCKETS:
+            bucket_rows = [r for r in rows
+                           if r["confidence"] is not None
+                           and lo <= r["confidence"] < hi]
+            wins   = sum(1 for r in bucket_rows if r["outcome"] == "WIN")
+            losses = sum(1 for r in bucket_rows if r["outcome"] == "LOSS")
+            total  = wins + losses
+            wr     = round(wins / total * 100, 1) if total > 0 else None
+            viable = (total >= _RECAL_MIN_BUCKET and wr is not None
+                      and wr / 100 >= _RECAL_MIN_WR)
+            buckets_out.append({
+                "label":   label,
+                "lo":      lo,
+                "hi":      hi if hi < 999 else None,
+                "wins":    wins,
+                "losses":  losses,
+                "total":   total,
+                "win_rate": wr,
+                "viable":  viable,
+            })
+
+        with _live_conf_floor_lock:
+            current_floor = _live_conf_floor
+
+        return jsonify({
+            "live_conf_floor":  current_floor,
+            "env_floor":        float(os.getenv("BASE_CONF_FLOOR", "70")),
+            "lookback_days":    _RECAL_LOOKBACK,
+            "min_bucket_trades": _RECAL_MIN_BUCKET,
+            "min_win_rate_pct": _RECAL_MIN_WR * 100,
+            "max_drift":        _RECAL_MAX_DRIFT,
+            "hard_bounds":      [_RECAL_FLOOR_MIN, _RECAL_FLOOR_MAX],
+            "buckets":          buckets_out,
+            "recal_log":        _recal_log[-20:],   # last 20 recalibration events
             "ts": int(time.time()),
         })
     except Exception as e:
