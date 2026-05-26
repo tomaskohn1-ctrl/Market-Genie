@@ -5311,15 +5311,14 @@ def _in_extended_hours() -> bool:
 
 
 def _safe_to_enter() -> bool:
-    """Return True only during the core tradeable window (Mon-Fri 09:45-15:30 ET).
-    - First 15 min (9:30-9:45) excluded: opening volatility, wide spreads.
+    """Return True only during the core tradeable window (Mon-Fri 09:30-15:30 ET).
+    - Full session from 9:30 AM: opening bar trades allowed to maximise data collection.
     - Entry cutoff 15:30 ET: ensures the 20-min time exit completes by 15:50,
-      and EOD flattener at 15:45 has a full 15-min buffer. Previously 15:50
-      allowed entries that would try to time-exit at 16:10 (after-hours)."""
+      and EOD flattener at 15:45 has a full 15-min buffer."""
     et_now = _get_et_now()
     if et_now.weekday() > 4:
         return False
-    return dtime(9, 45) <= et_now.time() < dtime(15, 30)
+    return dtime(9, 30) <= et_now.time() < dtime(15, 30)
 
 
 def _in_dead_zone() -> bool:
@@ -9038,60 +9037,34 @@ def _alp_execute_signal(res: dict):
         print(f"[Alpaca] {sym} — SKIPPED: market closed")
         return
     # Opening window gate — no entries before 9:45 AM ET.
-    # _us_market_open() allows from 9:30 but the first 15 min have wide spreads,
-    # erratic order flow, and price discovery noise. _safe_to_enter() enforces
-    # the 9:45 floor. Previously this function existed but was never called here.
-    #
-    # EARLY BEAR BYPASS (9:35–9:44 AM): On confirmed gap-down opens where NQ
-    # futures are < -0.7% (or ES < -0.5%), bear ETF gap-down continuation is one
-    # of the highest-probability setups of the day. Allow SQQQ/SPXS/SOXS entry
-    # from 9:35 AM on these days. All downstream quality gates (BothAgree, ETFQuality,
-    # RegimeGate, spread) still apply — this only opens the time window.
+    # Full session from 9:30 AM — no opening cooldown. _safe_to_enter() now
+    # opens at 9:30 to maximise data collection. All quality gates (spread,
+    # BothAgree, regime, VIX) still apply — the time window simply does not
+    # exclude the opening 15 minutes.
     if not _safe_to_enter():
         et_now_chk = _get_et_now()
-        _early_bear_ok = False
-        if sym in ("SQQQ", "SPXS", "SOXS") and dtime(9, 30) <= et_now_chk.time() < dtime(9, 45):
-            with _futures_lock:
-                _nq_early = _futures_state.get("nq_chg", 0.0)
-                _es_early = _futures_state.get("es_chg", 0.0)
-            # Strong gap-down (NQ < -1.0% or ES < -0.7%): open from 9:30 — these
-            # are confirmed directional opens, not opening noise.
-            # Moderate gap-down (NQ < -0.7% or ES < -0.5%): open from 9:35 — wait
-            # one bar for price discovery to settle.
-            _strong_gap  = _nq_early < -1.0 or _es_early < -0.7
-            _moderate_gap = _nq_early < -0.7 or _es_early < -0.5
-            _time_ok = (
-                (_strong_gap  and et_now_chk.time() >= dtime(9, 30)) or
-                (_moderate_gap and et_now_chk.time() >= dtime(9, 35))
-            )
-            if _time_ok:
-                _early_bear_ok = True
-                _gap_tag = "STRONG gap-down" if _strong_gap else "gap-down"
-                print(f"[EarlyBear] {sym} — {_gap_tag} bypass: NQ={_nq_early:+.2f}% ES={_es_early:+.2f}% "
-                      f"at {et_now_chk.strftime('%H:%M')} ET — all quality gates still active")
-        if not _early_bear_ok:
-            # ── Extended-hours alert mode ─────────────────────────────────────
-            # Outside regular trading hours (pre-market 4-9:44 AM and AH 3:31-8 PM ET):
-            # Do NOT auto-execute — fire a push alert instead so Tomas can
-            # review the chart manually and decide whether to trade.
-            # Overnight (8 PM - 4 AM ET) and weekends: skip silently.
-            _et_ext = et_now_chk.time()
-            _is_premarket  = dtime(4,  0) <= _et_ext < dtime(9, 45)
-            _is_afterhours = dtime(15, 31) <= _et_ext < dtime(20, 0)
-            if _is_premarket or _is_afterhours:
-                _session_label = "Pre-Market" if _is_premarket else "After-Hours"
-                _ext_dir    = (res.get("consensus_dir") or res.get("direction") or "").lower()
-                _ext_conf_v = float(res.get("confidence", 0) or 0)
-                _ext_streak = int(res.get("streak", 0) or 0)
-                _ext_ba     = int(res.get("both_agree", 0) or 0)
-                # Signal visible on dashboard — user reviews and fires Trade Now manually
-                print(f"[ExtHours] {sym} {_ext_dir.upper()} — {_session_label} signal "
-                      f"(conf={_ext_conf_v:.0f} streak={_ext_streak} ba={_ext_ba}) "
-                      f"— visible on dashboard, no auto-execute")
-            else:
-                print(f"[Alpaca] {sym} — SKIPPED: outside safe entry window "
-                      f"(current ET={et_now_chk.strftime('%H:%M')}, window=09:45-15:30)")
-            return
+        # ── Extended-hours alert mode ─────────────────────────────────────
+        # Outside regular trading hours (pre-market 4-9:29 AM and AH 3:31-8 PM ET):
+        # Do NOT auto-execute — fire a push alert instead so Tomas can
+        # review the chart manually and decide whether to trade.
+        # Overnight (8 PM - 4 AM ET) and weekends: skip silently.
+        _et_ext = et_now_chk.time()
+        _is_premarket  = dtime(4,  0) <= _et_ext < dtime(9, 30)
+        _is_afterhours = dtime(15, 31) <= _et_ext < dtime(20, 0)
+        if _is_premarket or _is_afterhours:
+            _session_label = "Pre-Market" if _is_premarket else "After-Hours"
+            _ext_dir    = (res.get("consensus_dir") or res.get("direction") or "").lower()
+            _ext_conf_v = float(res.get("confidence", 0) or 0)
+            _ext_streak = int(res.get("streak", 0) or 0)
+            _ext_ba     = int(res.get("both_agree", 0) or 0)
+            # Signal visible on dashboard — user reviews and fires Trade Now manually
+            print(f"[ExtHours] {sym} {_ext_dir.upper()} — {_session_label} signal "
+                  f"(conf={_ext_conf_v:.0f} streak={_ext_streak} ba={_ext_ba}) "
+                  f"— visible on dashboard, no auto-execute")
+        else:
+            print(f"[Alpaca] {sym} — SKIPPED: outside safe entry window "
+                  f"(current ET={et_now_chk.strftime('%H:%M')}, window=09:30-15:30)")
+        return
     # Hard entry cutoff at 15:32 ET — backstop in case _safe_to_enter() race.
     # _safe_to_enter() already blocks after 15:30; this catches any edge case
     # where the signal fires within the same second as the cutoff.
