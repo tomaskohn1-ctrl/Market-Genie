@@ -160,7 +160,7 @@ SCANNER_UNIVERSE = [
     "PLTR","SNOW","DDOG","NET","CRWD","PANW","AI","PATH",
     "HUBS","S","GTLB","DOCN",
     # ── Enterprise SaaS (new) — NOW 43M ADV, ZS 5M ADV, MDB 5M ADV ─────────
-    "NOW","ZS","MDB","OKTA",
+    "NOW","ZS","MDB",
     # ── AI / Emerging Tech ───────────────────────────────────────────────────
     "APP","NBIS","ALAB","RXRX",
     # ── Consumer Tech / Platforms ───────────────────────────────────────────
@@ -7196,7 +7196,7 @@ _SECTOR_MAP: dict[str, str] = {
     "PLTR":"saas","SNOW":"saas","DDOG":"saas","NET":"saas","CRWD":"saas",
     "PANW":"saas","AI":"saas","PATH":"saas","HUBS":"saas","S":"saas",
     "GTLB":"saas","DOCN":"saas","NOW":"saas","ZS":"saas","MDB":"saas",
-    "OKTA":"saas","APP":"saas","NBIS":"saas","ALAB":"saas","RXRX":"saas",
+    "APP":"saas","NBIS":"saas","ALAB":"saas","RXRX":"saas",
     # Consumer tech / platforms
     "SHOP":"consumer_tech","UBER":"consumer_tech","LYFT":"consumer_tech",
     "DASH":"consumer_tech","ABNB":"consumer_tech","RDDT":"consumer_tech",
@@ -8362,27 +8362,56 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
 def _alp_flatten_all():
     """
     Cancel all open orders and close all open positions.
-    Called by EOD flattener at 15:55 ET to ensure no overnight holds.
+    Called by EOD flattener at 15:45 ET to ensure no overnight holds.
+    Retries up to 3 times and verifies positions are actually flat.
     """
     if not _ALPACA_KEY or not _ALPACA_SECRET:
         return
-    try:
-        # 1. Cancel all open orders first (stops bracket legs from re-opening)
-        r = requests.delete(f"{_ALPACA_BASE_URL}/v2/orders",
-                            headers=_alp_headers(), timeout=10)
-        cancelled = r.json() if r.status_code == 207 else []
-        print(f"[EOD] Cancelled {len(cancelled) if isinstance(cancelled, list) else '?'} open orders")
-    except Exception as e:
-        print(f"[EOD] Cancel orders error: {e}")
 
-    try:
-        # 2. Close all open positions at market
-        r = requests.delete(f"{_ALPACA_BASE_URL}/v2/positions",
-                            headers=_alp_headers(), timeout=10)
-        closed = r.json() if r.status_code == 207 else []
-        print(f"[EOD] Closed {len(closed) if isinstance(closed, list) else '?'} positions — all flat for EOD")
-    except Exception as e:
-        print(f"[EOD] Close positions error: {e}")
+    for attempt in range(1, 4):  # up to 3 attempts
+        try:
+            # 1. Cancel all open orders first (stops bracket legs from re-opening)
+            r = requests.delete(f"{_ALPACA_BASE_URL}/v2/orders",
+                                headers=_alp_headers(), timeout=10)
+            if r.status_code in (200, 207):
+                cancelled = r.json() if isinstance(r.json(), list) else []
+                print(f"[EOD] attempt={attempt} Cancelled {len(cancelled)} open orders")
+            else:
+                print(f"[EOD] attempt={attempt} Cancel orders HTTP {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            print(f"[EOD] attempt={attempt} Cancel orders error: {e}")
+
+        try:
+            # 2. Close all open positions at market
+            r = requests.delete(f"{_ALPACA_BASE_URL}/v2/positions",
+                                headers=_alp_headers(), timeout=10)
+            if r.status_code in (200, 207):
+                body = r.json()
+                closed = body if isinstance(body, list) else []
+                print(f"[EOD] attempt={attempt} Closed {len(closed)} positions — all flat for EOD")
+            else:
+                print(f"[EOD] attempt={attempt} Close positions HTTP {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            print(f"[EOD] attempt={attempt} Close positions error: {e}")
+
+        # 3. Verify: check if any positions remain
+        time.sleep(2)
+        try:
+            chk = requests.get(f"{_ALPACA_BASE_URL}/v2/positions",
+                               headers=_alp_headers(), timeout=5)
+            remaining = chk.json() if chk.status_code == 200 else []
+            remaining = remaining if isinstance(remaining, list) else []
+            if not remaining:
+                print(f"[EOD] ✅ attempt={attempt} Verified flat — no open positions")
+                return  # success — exit retry loop
+            else:
+                syms = [p.get("symbol","?") for p in remaining]
+                print(f"[EOD] ⚠️  attempt={attempt} Still {len(remaining)} position(s) open: {syms} — retrying")
+        except Exception as e:
+            print(f"[EOD] attempt={attempt} Verify positions error: {e}")
+            return  # can't verify, assume ok
+
+    print(f"[EOD] ❌ 3 attempts exhausted — positions may still be open. Check Alpaca manually.")
 
 
 def _alp_eod_loop():
@@ -10185,7 +10214,7 @@ def _alp_execute_signal(res: dict):
         # noise, not meaningful pullbacks. Standard threshold is 0.10%; high-conf
         # signals (eff_conf ≥ 90) get a wider 0.20% threshold — a -0.17% bar on a
         # 95-conf signal (MGM) is a micro-pause in momentum, not a reversal.
-        _lb_noise_thresh = 0.20 if eff_conf >= 90 else 0.10
+        _lb_noise_thresh = 0.20 if eff_conf >= 90 else 0.15  # raised 0.10→0.15: -0.13% on conf=81 is micro-noise not a real pullback
         _lb_noise  = abs(_lb_chg) < _lb_noise_thresh
         if not _lb_elite:
             if direction == "bull" and not _lb_green and not _lb_noise:
@@ -11769,7 +11798,7 @@ _SCALP_UNIVERSE = [
     "XLF","XLE","XLK","XBI","XLV","XLP","XLU","XLB","XLI","XLC","XLRE",
     "GDX","GDXJ","SLV","GLD","USO","IBB","SMH","SOXX","HACK","WCLD",
     # ── Growth / SaaS / Cloud ────────────────────────────────────────────
-    "SHOP","SNOW","DDOG","NET","CRWD","OKTA","ZS","PANW","S",
+    "SHOP","SNOW","DDOG","NET","CRWD","ZS","PANW","S",
     "BILL","HUBS","MDB","APP","TTD","ROKU","TWLO","VEEV","WDAY","NOW",
     "INTU","ZM","DOCU","GTLB","ESTC","BRZE","AMPL","TOST",
     "PCTY","PAYC","NCNO","MNDY","CELH","CAVA","CART","ALTR","LPSN","APPF",
