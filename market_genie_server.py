@@ -6701,7 +6701,7 @@ def _dynamic_conf_floors(score: float):
 # block entries in the opposite direction entirely. Fighting the tape is the
 # #1 cause of losing BULL positions on bearish days.
 # Set TAPE_FILTER_THRESHOLD=0 in Railway Variables to disable.
-_TAPE_FILTER_THRESHOLD = float(os.getenv("TAPE_FILTER_THRESHOLD", "0.72"))
+_TAPE_FILTER_THRESHOLD = float(os.getenv("TAPE_FILTER_THRESHOLD", "0.85"))
 
 # ── ELITE Preemption ───────────────────────────────────────────────────────────
 # When all position slots are full and an ELITE signal arrives (both_agree=1,
@@ -8198,7 +8198,7 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
             _fb_limit = round(_signal_price * (1.003 if direction == "bull" else 0.997), 2)
         _fb_ref = _fb_ask if direction == "bull" else _fb_bid
         qty = max(1, int(_ALP_POSITION_SIZE_USD / _fb_limit))
-        _fb_max_shares = int(os.getenv("ALPACA_MAX_SHARES", "3000"))
+        _fb_max_shares = int(os.getenv("ALPACA_MAX_SHARES", "10000"))
         if _fb_max_shares > 0 and qty > _fb_max_shares:
             qty = _fb_max_shares
         print(f"[Alpaca] Phase2 marketable limit: {side.upper()} {qty}x {sym} @ ${_fb_limit:.2f} "
@@ -8251,6 +8251,24 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
         print(f"[Alpaca] Phase2 ⚠️  all fill attempts timed out — using reference ${price:.2f} for bracket")
 
     # ── Phase 3: Attach OCO stop/target anchored to ACTUAL fill price ──────────
+    # Query actual Alpaca position to get true qty before placing bracket.
+    # Fixes partial-fill race: Phase 2 may accept a partial and cancel the
+    # remainder, but Alpaca sometimes fills the rest before the cancel lands,
+    # leaving the full position open with only the partial qty in the bracket.
+    try:
+        _pos_chk = requests.get(f"{_ALPACA_BASE_URL}/v2/positions/{sym}",
+                                 headers=_alp_headers(), timeout=5)
+        if _pos_chk.status_code == 200:
+            _actual_qty = abs(int(float(_pos_chk.json().get("qty") or fill_qty)))
+            if _actual_qty != fill_qty:
+                print(f"[Alpaca] Phase3 ⚠️  position={_actual_qty} differs from fill_qty={fill_qty} "
+                      f"— using actual position for bracket (race condition fixed)")
+                fill_qty = _actual_qty
+        elif _pos_chk.status_code == 404:
+            print(f"[Alpaca] Phase3 ⚠️  position not found for {sym} — bracket may be wrong qty")
+    except Exception as _pce:
+        print(f"[Alpaca] Phase3 position query failed: {_pce} — using fill_qty={fill_qty}")
+
     if direction == "bull":
         stop_px        = round(fill_price * (1 - stop_pct), 2)
         # Fix 2: stop-limit not stop-market — 0.2% below trigger avoids gap fills
