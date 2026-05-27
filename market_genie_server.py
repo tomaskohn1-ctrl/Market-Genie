@@ -8349,14 +8349,54 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
                 print(f"[ConvCheck] {sym} — 90s conviction check armed")
             return True
         else:
-            # Entry is already filled — position is open but unprotected.
-            # Log loudly; the EOD flattener will close it at 15:55.
+            # Entry is already filled — OCO was rejected. Place an emergency
+            # stop-only order to protect the position (no take-profit, just a stop).
             print(f"[Alpaca] ⚠️  OCO rejected HTTP {r3.status_code}: {r3.text[:300]}")
-            print(f"[Alpaca] ⚠️  {sym} position OPEN but NO bracket — EOD flattener will close at 15:55")
-            return True   # entry succeeded; bracket partial failure is not fatal
+            print(f"[Alpaca] ⚠️  {sym} — OCO failed, placing emergency stop-only order")
+            try:
+                _emg_stop = {
+                    "symbol":        sym,
+                    "qty":           str(fill_qty),
+                    "side":          close_side,
+                    "type":          "stop_limit",
+                    "time_in_force": "day",
+                    "stop_price":    str(stop_px),
+                    "limit_price":   str(stop_limit_px),
+                }
+                _emg_r = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
+                                       headers=_alp_headers(),
+                                       json=_emg_stop, timeout=10)
+                if _emg_r.status_code in (200, 201):
+                    print(f"[Alpaca] ✅ Emergency stop placed for {sym} @ ${stop_px} "
+                          f"(no take-profit — OCO was rejected)")
+                else:
+                    print(f"[Alpaca] ❌ Emergency stop ALSO failed HTTP {_emg_r.status_code}: "
+                          f"{_emg_r.text[:200]} — {sym} fully unprotected, EOD flattener at 15:45")
+            except Exception as _emg_e:
+                print(f"[Alpaca] ❌ Emergency stop exception: {_emg_e} — {sym} unprotected")
+            return True   # entry succeeded; best-effort protection attempted
     except Exception as e:
-        print(f"[Alpaca] ⚠️  OCO exception: {e} — {sym} open, no bracket")
-        return True   # same: entry filled, bracket failed — not fatal
+        print(f"[Alpaca] ⚠️  OCO exception: {e} — {sym} open, attempting emergency stop")
+        try:
+            _emg_stop2 = {
+                "symbol":        sym,
+                "qty":           str(fill_qty),
+                "side":          close_side,
+                "type":          "stop_limit",
+                "time_in_force": "day",
+                "stop_price":    str(stop_px),
+                "limit_price":   str(stop_limit_px),
+            }
+            _emg_r2 = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
+                                    headers=_alp_headers(),
+                                    json=_emg_stop2, timeout=10)
+            if _emg_r2.status_code in (200, 201):
+                print(f"[Alpaca] ✅ Emergency stop placed for {sym} after OCO exception")
+            else:
+                print(f"[Alpaca] ❌ Emergency stop failed too — {sym} fully unprotected")
+        except Exception as _emg_e2:
+            print(f"[Alpaca] ❌ Emergency stop also failed: {_emg_e2}")
+        return True
 
 
 def _alp_flatten_all():
@@ -9120,6 +9160,25 @@ def _alp_execute_signal(res: dict):
         print(f"[Alpaca] {sym} — SKIPPED: past 15:32 ET entry cutoff (EOD safety buffer)")
         return
 
+    # ── Opening volatility guard (9:30–9:44 ET) ──────────────────────────────
+    # The first 15 minutes are the most volatile of the day: wide spreads,
+    # price discovery still settling, stops hit by gap-fills and algo noise.
+    # RGTI stopped out in 28 seconds at 9:45 (opened volatile, conf 70-something).
+    # Require both_agree=1 AND conf ≥ 78 to enter during this window.
+    # This doesn't block the window entirely — strong signals (DVN, OXY-type) still
+    # fire; it just filters out marginal-confidence opens where risk is highest.
+    _ov_now = _get_et_now().time()
+    if dtime(9, 30) <= _ov_now < dtime(9, 45) and not _is_forced:
+        _ov_conf = float(res.get("confidence", 0) or 0)
+        _ov_ba   = int(res.get("both_agree", 0) or 0)
+        _ov_min_conf = int(os.getenv("OPEN_GUARD_MIN_CONF", "78"))
+        if _ov_ba < 1 or _ov_conf < _ov_min_conf:
+            print(f"[OpenGuard] {sym} — SKIPPED: opening window 9:30-9:44 ET requires "
+                  f"both_agree=1 AND conf≥{_ov_min_conf} "
+                  f"(got ba={_ov_ba} conf={_ov_conf:.1f}) — too volatile for marginal signals")
+            return
+        print(f"[OpenGuard] {sym} — PASSED: opening window (ba={_ov_ba} conf={_ov_conf:.1f}≥{_ov_min_conf})")
+
     # ── VIX gate — volatility-aware entry filter ──────────────────────────────
     # Only applies to the 4 focused ETFs (TQQQ/SQQQ/SPXL/SPXS).
     # These instruments' 3× leverage amplifies both moves AND stop-hit risk.
@@ -9192,15 +9251,25 @@ def _alp_execute_signal(res: dict):
         _dl_bullish_regime  = _dl_score >= 70
         _dl_rising_futures  = _dl_nq >= 0.3 or _dl_es >= 0.2
         _dl_eff_conf        = float(res.get("confidence", 0) or 0)
-        _dl_elite           = _dl_eff_conf >= 90  # elite bear: stock-specific breakdown, bypass tape lock
+        # Tiered elite bypass: stronger NQ momentum = harder to enter a bear trade.
+        # NQ 0.3–0.5% → need conf ≥ 90 (weak rally, individual breakdown possible)
+        # NQ 0.5–1.0% → need conf ≥ 95 (solid uptrend, bear signals mostly noise)
+        # NQ ≥ 1.0%   → need conf ≥ 98 (strong bull, almost never worth fading)
+        if abs(_dl_nq) >= 1.0 or abs(_dl_es) >= 0.7:
+            _dl_elite_thresh = 98
+        elif abs(_dl_nq) >= 0.5 or abs(_dl_es) >= 0.35:
+            _dl_elite_thresh = 95
+        else:
+            _dl_elite_thresh = 90
+        _dl_elite = _dl_eff_conf >= _dl_elite_thresh
         if _dl_bullish_regime and _dl_rising_futures:
             if _dl_elite:
-                print(f"[DirLock] {sym} BEAR conf={_dl_eff_conf:.0f} — ALLOWED: elite signal "
-                      f"bypasses directional lock (regime={_dl_score:.0f} NQ={_dl_nq:+.2f}%)")
+                print(f"[DirLock] {sym} BEAR conf={_dl_eff_conf:.0f} — ALLOWED: elite bypass "
+                      f"(conf≥{_dl_elite_thresh} for NQ={_dl_nq:+.2f}%, regime={_dl_score:.0f})")
             else:
                 print(f"[DirLock] {sym} BEAR — SKIPPED: regime={_dl_score:.0f} (BULLISH) "
-                      f"+ NQ={_dl_nq:+.2f}% ES={_dl_es:+.2f}% rising — long-only mode active "
-                      f"(conf={_dl_eff_conf:.0f} < 90)")
+                      f"+ NQ={_dl_nq:+.2f}% ES={_dl_es:+.2f}% rising — need conf≥{_dl_elite_thresh} "
+                      f"for bear entry (conf={_dl_eff_conf:.0f})")
                 return
 
     # ── Per-symbol loss cooldown ──────────────────────────────────────────────
