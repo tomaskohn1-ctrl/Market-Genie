@@ -5199,7 +5199,9 @@ _WR_BLACKLIST      = {"MAXN"}  # tickers with confirmed Kronos calibration failu
 # deliver the move needed to reach target. At eff_conf<85 the edge simply isn't there.
 # NUGT: -$291, SQQQ: -$268, LABU: -$218, DUST: -$208, TECL: -$207
 _CHRONIC_LOSER_MIN_CONF = int(os.getenv("CHRONIC_LOSER_MIN_CONF", "85"))
-_CHRONIC_LOSERS = frozenset(["NUGT", "LABU", "DUST", "TECL"])
+_CHRONIC_LOSERS = frozenset(["NUGT", "LABU", "DUST", "TECL", "ZS"])
+# ZS added 2026-05-28: earnings gap -22.9% pre-market; extreme spread/slippage risk on gap days.
+# Requires conf≥85 before any entry to avoid chasing a broken chart.
 # SQQQ removed from chronic losers — it is now a PRIMARY focused-pair instrument.
 # Its historical losses were due to trading in wrong conditions (BULLISH/NEUTRAL tape).
 # With regime gate + focused strategy, SQQQ only fires in confirmed BEARISH tape.
@@ -11064,6 +11066,14 @@ print(f"[TimeExit] Loop started — positions close after {_ALP_MAX_HOLD_MINS} m
 # after every Railway deploy — no need to open the Alpha Engine tab first.
 _start_predict_bg()
 print("[Predict] Background scanner auto-started on import — signals will flow to Alpaca immediately")
+
+# Start YouTube auto-poster — generates Shorts at 9:15 AM, 12:00 PM, 4:15 PM ET.
+# No-op if YOUTUBE_TOKEN_JSON env var is not set.
+try:
+    from youtube_poster import start_youtube_scheduler
+    start_youtube_scheduler()
+except Exception as _yt_err:
+    print(f"[YouTube] Scheduler import error (non-fatal): {_yt_err}")
 
 
 @app.route("/api/debug/signals")
