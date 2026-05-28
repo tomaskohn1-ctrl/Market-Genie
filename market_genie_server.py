@@ -10648,6 +10648,24 @@ def api_breadth():
     })
 
 
+@app.route("/api/youtube/post", methods=["POST"])
+def api_youtube_post():
+    """Manually trigger a YouTube Short upload. Body: {"trigger": "midday"} (optional)."""
+    trigger = (request.json or {}).get("trigger", "midday")
+    if trigger not in ("premarket", "midday", "eod"):
+        trigger = "midday"
+    try:
+        from youtube_poster import post_market_update
+        threading.Thread(
+            target=post_market_update, args=(trigger,),
+            daemon=True, name="YT-manual"
+        ).start()
+        return jsonify({"ok": True, "trigger": trigger,
+                        "message": f"YouTube {trigger} post started — check Railway logs for upload URL"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/alpaca/force/<sym>", methods=["POST"])
 def api_alpaca_force(sym):
     """
