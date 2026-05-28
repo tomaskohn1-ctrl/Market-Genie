@@ -510,10 +510,49 @@ def post_market_update(trigger: str = "midday"):
 # Fires 3× per trading day using the same while-True pattern as _alp_eod_loop.
 # Times (all ET):  9:15 AM pre-market  |  12:00 PM midday  |  4:15 PM EOD
 
+_YT_POSTED_FILE = "/tmp/youtube_posted.json"
+
+
+def _load_posted() -> dict:
+    """Load posted-keys dict from disk (survives process restarts / redeploys)."""
+    try:
+        if Path(_YT_POSTED_FILE).exists():
+            with open(_YT_POSTED_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_posted(d: dict):
+    """Persist posted-keys dict to disk."""
+    try:
+        # Keep only keys from the last 7 days to avoid unbounded growth
+        from datetime import datetime as _dt, timedelta
+        cutoff = (_dt.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        pruned = {k: v for k, v in d.items() if k[:10] >= cutoff}
+        with open(_YT_POSTED_FILE, "w") as f:
+            json.dump(pruned, f)
+    except Exception:
+        pass
+
+
 def _youtube_scheduler_loop():
-    """Background thread: posts to YouTube at 9:15, 12:00, 16:15 ET on weekdays."""
+    """Background thread: posts to YouTube at 9:15, 12:00, 16:15, 17:30 ET on weekdays.
+    Uses a disk-persisted posted-keys dict so Railway redeploys don't cause duplicate posts.
+    """
     import pytz
-    _posted = {}   # { "2026-05-28_premarket": True, ... }
+    from datetime import time as dtime
+
+    # Load history from disk — survives restarts within the same day
+    _posted = _load_posted()
+
+    slots = [
+        (dtime(9,  15), dtime(9,  30), "premarket"),
+        (dtime(12,  0), dtime(12, 15), "midday"),
+        (dtime(16, 15), dtime(16, 30), "eod"),
+        (dtime(17, 30), dtime(17, 45), "afterhours"),
+    ]
 
     while True:
         try:
@@ -522,34 +561,22 @@ def _youtube_scheduler_loop():
             t        = et_now.time()
             is_wday  = et_now.weekday() <= 4   # Mon–Fri
 
-            # Only post if YouTube creds are configured
             if not os.getenv("YOUTUBE_TOKEN_JSON"):
                 time.sleep(60)
                 continue
 
             if is_wday:
-                from datetime import time as dtime
-                slots = [
-                    (dtime(9,  15), dtime(9,  30), "premarket"),
-                    (dtime(12,  0), dtime(12, 15), "midday"),
-                    (dtime(16, 15), dtime(16, 30), "eod"),
-                    (dtime(17, 30), dtime(17, 45), "afterhours"),
-                ]
                 for start, end, trigger in slots:
                     key = f"{date_key}_{trigger}"
                     if start <= t < end and key not in _posted:
                         _posted[key] = True
-                        # Run in its own thread so scheduler loop never blocks
+                        _save_posted(_posted)   # ← persist before spawning thread
                         threading.Thread(
                             target=post_market_update,
                             args=(trigger,),
                             daemon=True,
                             name=f"YT-{trigger}",
                         ).start()
-                        # Prune old keys (keep last 30)
-                        if len(_posted) > 30:
-                            oldest = sorted(_posted.keys())[0]
-                            del _posted[oldest]
 
         except Exception as e:
             print(f"[YouTube] Scheduler error: {e}")
