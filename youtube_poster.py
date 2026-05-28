@@ -165,136 +165,186 @@ def _regime_rgb(regime: str):
 
 
 def _generate_frame(data: dict, trigger: str):
-    """Return a 1080×1920 PIL Image ready for ffmpeg."""
+    """Return a 1080×1920 PIL Image ready for ffmpeg.
+    Fonts are sized for legibility on a phone screen (~390px wide display).
+    Rule of thumb: divide pixel size by ~2.8 to get effective display pts.
+    So a 140px font ≈ 50pt on screen — clearly readable as a headline.
+    """
     from PIL import Image, ImageDraw
-    import math, random
+    import random
 
     W, H = _VIDEO_W, _VIDEO_H
-    img  = Image.new("RGB", (W, H), (13, 17, 23))
+    img  = Image.new("RGB", (W, H), (10, 14, 20))   # near-black background
     d    = ImageDraw.Draw(img)
 
-    # ── Subtle grid ──────────────────────────────────────────────────────────
-    for y in range(0, H, 140):
-        d.line([(0, y), (W, y)], fill=(25, 35, 50), width=1)
+    # ── Subtle horizontal grid lines ─────────────────────────────────────────
+    for y in range(0, H, 180):
+        d.line([(0, y), (W, y)], fill=(20, 28, 40), width=1)
 
-    # ── Animated equity-curve silhouette ─────────────────────────────────────
-    random.seed(7)
-    pts = []
-    cx0, cy_base, cw, ch = 60, 820, W - 120, 340
-    pnl = data["pnl_today"]
-    trending_up = pnl >= 0
-    for i in range(50):
-        prog = i / 49
-        # Base trend direction
-        base_y = cy_base + ch * (1 - prog) if trending_up else cy_base + ch * prog
-        noise  = random.randint(-20, 20)
-        pts.append((int(cx0 + cw * prog), int(base_y + noise)))
+    # ── Fonts (all sized for phone readability) ───────────────────────────────
+    fnt_tiny   = _load_font(46)               # disclaimer, timestamp
+    fnt_sub    = _load_font(56)               # section labels, NQ/VIX line
+    fnt_badge  = _load_font(72, bold=True)    # regime badge text
+    fnt_pos    = _load_font(80, bold=True)    # position symbol
+    fnt_pos_dt = _load_font(62)              # position detail / P&L
+    fnt_logo   = _load_font(110, bold=True)  # MARKET GENIE wordmark
+    fnt_tagline= _load_font(52)              # "AI AUTO-TRADER · PAPER LIVE"
+    fnt_pnl    = _load_font(180, bold=True)  # giant P&L dollar figure (180 fits +$99,999)
+    fnt_pct    = _load_font(130, bold=True)  # P&L percentage
 
-    # Fill under curve
-    fill_pts = pts + [(pts[-1][0], cy_base + ch + 10), (pts[0][0], cy_base + ch + 10)]
     rc = _regime_rgb(data["regime"])
-    d.polygon(fill_pts, fill=(*rc, 0) if False else (rc[0] // 8, rc[1] // 8, rc[2] // 8))
-
-    # Curve line
-    for i in range(len(pts) - 1):
-        d.line([pts[i], pts[i + 1]], fill=rc, width=5)
-
-    # ── Logo ─────────────────────────────────────────────────────────────────
-    fnt_logo = _load_font(54, bold=True)
-    fnt_tag  = _load_font(28)
-    fnt_sm   = _load_font(32)
-    fnt_med  = _load_font(44)
-    fnt_lg   = _load_font(90, bold=True)
-    fnt_xl   = _load_font(130, bold=True)
-
-    d.text((60, 90),  "MARKET GENIE",  font=fnt_logo, fill=(255, 255, 255))
-    d.text((60, 158), "AI AUTO-TRADER  ·  PAPER LIVE", font=fnt_tag, fill=(75, 85, 99))
-
-    # ── Regime badge ─────────────────────────────────────────────────────────
-    regime     = data["regime"]
-    score      = data["regime_score"]
-    rc         = _regime_rgb(regime)
-    badge_text = f"{regime}  {score}"
-    d.rounded_rectangle(
-        [56, 208, 400, 268], radius=22,
-        fill=(rc[0] // 6, rc[1] // 6, rc[2] // 6),
-        outline=rc, width=2,
-    )
-    d.text((72, 214), badge_text, font=fnt_sm, fill=rc)
-
-    nq   = data["nq_pct"]
-    nq_c = (74, 222, 128) if nq >= 0 else (248, 113, 113)
-    d.text((420, 222), f"NQ {nq:+.2f}%   VIX {data['vix']:.1f}", font=fnt_sm, fill=(107, 114, 128))
-
-    # ── P&L ──────────────────────────────────────────────────────────────────
     pnl       = data["pnl_today"]
     pnl_color = (74, 222, 128) if pnl >= 0 else (248, 113, 113)
-    pnl_sign  = "+" if pnl >= 0 else ""
+    pnl_sign  = "+" if pnl >= 0 else "-"
 
-    d.text((60, 330), "TODAY'S P&L", font=fnt_tag, fill=(75, 85, 99))
-    d.text((60, 368), f"{pnl_sign}${abs(pnl):,.0f}", font=fnt_xl, fill=pnl_color)
+    PAD = 70   # left/right padding
+
+    # ════════════════════════════════════════════════════════════════════════
+    # ZONE 1 — Logo (y = 80–240)
+    # ════════════════════════════════════════════════════════════════════════
+    d.text((PAD, 80),  "MARKET GENIE", font=fnt_logo, fill=(255, 255, 255))
+    d.text((PAD, 210), "AI AUTO-TRADER  ·  PAPER LIVE", font=fnt_tagline, fill=(80, 95, 115))
+
+    # ════════════════════════════════════════════════════════════════════════
+    # ZONE 2 — Regime badge + NQ/VIX row (y = 310–430)
+    # ════════════════════════════════════════════════════════════════════════
+    regime     = data["regime"]
+    score      = data["regime_score"]
+    badge_text = f"{regime}  {score}"
+
+    # Draw filled pill for regime badge — measure text width for dynamic sizing
+    try:
+        _bw = d.textlength(badge_text, font=fnt_badge)
+    except Exception:
+        _bw = len(badge_text) * 43
+    badge_r = PAD + int(_bw) + 40   # 20px pad each side
+    d.rounded_rectangle(
+        [PAD - 10, 310, badge_r, 422], radius=28,
+        fill=(rc[0] // 6, rc[1] // 6, rc[2] // 6),
+        outline=rc, width=3,
+    )
+    d.text((PAD + 10, 322), badge_text, font=fnt_badge, fill=rc)
+
+    # NQ + VIX stacked on right side — start safely after badge
+    nq    = data["nq_pct"]
+    nq_c  = (74, 222, 128) if nq >= 0 else (248, 113, 113)
+    vix_c = (248, 113, 113) if data["vix"] > 20 else (107, 114, 128)
+    nq_x  = badge_r + 24
+    d.text((nq_x, 322), f"NQ {nq:+.2f}%",       font=fnt_sub, fill=nq_c)
+    d.text((nq_x, 386), f"VIX {data['vix']:.1f}", font=fnt_sub, fill=vix_c)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # ZONE 3 — Giant P&L (y = 470–830)
+    # ════════════════════════════════════════════════════════════════════════
+    d.text((PAD, 470), "TODAY'S P&L", font=fnt_sub, fill=(75, 85, 99))
+
+    pnl_str = f"{pnl_sign}${abs(pnl):,.0f}"
+    d.text((PAD, 530), pnl_str, font=fnt_pnl, fill=pnl_color)
 
     eq = data["equity"]
     if eq > 0:
         pct   = (pnl / max(eq - pnl, 1)) * 100
         pct_s = f"{pnl_sign}{abs(pct):.2f}%"
-        d.text((60, 520), pct_s, font=fnt_lg, fill=(*pnl_color[:3],))
+        d.text((PAD, 760), pct_s, font=fnt_pct, fill=pnl_color)
 
-    # ── Open positions ────────────────────────────────────────────────────────
+    # ════════════════════════════════════════════════════════════════════════
+    # ZONE 4 — Equity curve silhouette (y = 940–1240)
+    # ════════════════════════════════════════════════════════════════════════
+    random.seed(42)
+    # Bottom of chart zone, curve fills upward or downward based on P&L
+    cy_bottom = 1230
+    ch        = 260
+    cx0, cw   = PAD, W - PAD * 2
+    trending_up = pnl >= 0
+    pts = []
+    for i in range(60):
+        prog   = i / 59
+        # if up: start low on left, end high on right; if down: reverse
+        base_y = cy_bottom - int(ch * prog) if trending_up else cy_bottom - int(ch * (1 - prog))
+        noise  = random.randint(-14, 14)
+        pts.append((int(cx0 + cw * prog), int(base_y + noise)))
+
+    # Shaded area under curve
+    fill_pts = pts + [(pts[-1][0], cy_bottom + 8), (pts[0][0], cy_bottom + 8)]
+    d.polygon(fill_pts, fill=(rc[0] // 7, rc[1] // 7, rc[2] // 7))
+
+    # Curve line (thicker for visibility)
+    for i in range(len(pts) - 1):
+        d.line([pts[i], pts[i + 1]], fill=rc, width=8)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # ZONE 5 — Open Positions (y = 1320–1720)
+    # ════════════════════════════════════════════════════════════════════════
     positions = data["positions"]
-    pos_y     = 1000
-    count_lbl = f"OPEN POSITIONS  ({len(positions)})"
-    d.text((60, pos_y - 52), count_lbl, font=fnt_tag, fill=(75, 85, 99))
-    d.line([(60, pos_y - 14), (W - 60, pos_y - 14)], fill=(30, 40, 58), width=2)
+    d.text((PAD, 1320), f"OPEN POSITIONS ({len(positions)})", font=fnt_sub, fill=(75, 85, 99))
+    d.line([(PAD, 1388), (W - PAD, 1388)], fill=(30, 42, 60), width=2)
 
-    for pos in positions[:4]:
+    pos_y = 1400
+    ROW_H = 130   # each position card height (max 2 positions = 260px)
+
+    for pos in positions[:2]:  # max_positions=2 in Alpaca, so cap at 2
         sym    = pos["symbol"]
         side   = pos["side"]
         upl    = pos["unrealized_pl"]
         uplpct = pos["unrealized_plpc"]
         sc     = (74, 222, 128) if side == "LONG" else (248, 113, 113)
         pc     = (74, 222, 128) if upl >= 0 else (248, 113, 113)
-        ps     = "+" if upl >= 0 else ""
+        ps     = "+" if upl >= 0 else "-"
 
-        # Row card
-        d.rounded_rectangle([56, pos_y - 6, W - 56, pos_y + 74], radius=14, fill=(20, 28, 42))
+        # Card background
+        d.rounded_rectangle(
+            [PAD - 10, pos_y, W - PAD + 10, pos_y + ROW_H - 10],
+            radius=18, fill=(18, 26, 38)
+        )
 
-        # Symbol
-        d.text((80, pos_y + 8), sym, font=fnt_med, fill=(255, 255, 255))
+        # Symbol (large)
+        sym_x = PAD + 10
+        d.text((sym_x, pos_y + 14), sym, font=fnt_pos, fill=(255, 255, 255))
 
-        # Side badge
-        sym_w = len(sym) * 26 + 80 + 12
-        d.rounded_rectangle([sym_w, pos_y + 14, sym_w + 110, pos_y + 54], radius=8,
-                             fill=(sc[0] // 5, sc[1] // 5, sc[2] // 5))
-        d.text((sym_w + 8, pos_y + 17), side, font=fnt_sm, fill=sc)
+        # Side badge (LONG / SHORT) — use actual text width so it never overlaps
+        try:
+            sym_bbox  = d.textbbox((sym_x, pos_y + 14), sym, font=fnt_pos)
+            badge_x   = sym_bbox[2] + 20   # right edge of symbol + gap
+        except Exception:
+            badge_x   = sym_x + len(sym) * 54 + 20
+        d.rounded_rectangle(
+            [badge_x, pos_y + 22, badge_x + 150, pos_y + 82],
+            radius=10, fill=(sc[0] // 5, sc[1] // 5, sc[2] // 5)
+        )
+        d.text((badge_x + 14, pos_y + 28), side, font=fnt_pos_dt, fill=sc)
 
         # P&L right-aligned
-        pl_str = f"{ps}${abs(upl):,.0f}  ({ps}{abs(uplpct):.2f}%)"
-        d.text((W - 70, pos_y + 8), pl_str, font=fnt_med, fill=pc, anchor="ra")
+        pl_str  = f"{ps}${abs(upl):,.0f}"
+        pct_str = f"({ps}{abs(uplpct):.2f}%)"
+        d.text((W - PAD, pos_y + 14), pl_str,  font=fnt_pos,    fill=pc, anchor="ra")
+        d.text((W - PAD, pos_y + 76), pct_str, font=fnt_pos_dt, fill=pc, anchor="ra")
 
-        pos_y += 104
+        pos_y += ROW_H
 
     if not positions:
-        d.text((80, pos_y + 10), "No open positions", font=fnt_med, fill=(75, 85, 99))
-        pos_y += 90
+        d.text((PAD + 10, pos_y + 20), "No open positions", font=fnt_pos, fill=(55, 65, 81))
+        pos_y += ROW_H
 
-    # ── Trigger label ─────────────────────────────────────────────────────────
+    # ════════════════════════════════════════════════════════════════════════
+    # ZONE 6 — Trigger label + timestamp (pinned to y=1710 so footer fits)
+    # ════════════════════════════════════════════════════════════════════════
+    label_y = 1710
     labels = {
         "premarket":  "PRE-MARKET BRIEF",
         "midday":     "MIDDAY UPDATE",
         "eod":        "END-OF-DAY RECAP",
         "afterhours": "AFTER-HOURS WRAP",
     }
-    d.text((60, pos_y + 80), labels.get(trigger, "LIVE UPDATE"), font=fnt_med, fill=(107, 114, 128))
-    d.text((60, pos_y + 136), data["timestamp"], font=fnt_sm, fill=(55, 65, 81))
+    d.text((PAD, label_y), labels.get(trigger, "LIVE UPDATE"), font=fnt_sub, fill=(107, 114, 128))
+    d.text((PAD, label_y + 68), data["timestamp"], font=fnt_sub, fill=(80, 90, 105))
 
-    # ── Disclaimer ────────────────────────────────────────────────────────────
-    disc_y = H - 110
-    d.line([(60, disc_y - 18), (W - 60, disc_y - 18)], fill=(25, 35, 50), width=1)
-    d.text((W // 2, disc_y), "PAPER TRADING ONLY  ·  NOT FINANCIAL ADVICE",
-           font=fnt_tag, fill=(55, 65, 81), anchor="mm")
-    d.text((W // 2, disc_y + 44), "@marketgenie.ai  ·  Subscribe for daily updates",
-           font=fnt_tag, fill=(55, 65, 81), anchor="mm")
+    # ════════════════════════════════════════════════════════════════════════
+    # ZONE 7 — Disclaimer footer (fixed to bottom)
+    # ════════════════════════════════════════════════════════════════════════
+    disc_y = H - 62
+    d.line([(PAD, disc_y - 22), (W - PAD, disc_y - 22)], fill=(25, 35, 50), width=1)
+    d.text((W // 2, disc_y), "PAPER TRADING · NOT FINANCIAL ADVICE",
+           font=fnt_tiny, fill=(50, 60, 75), anchor="mm")
 
     return img
 
@@ -418,7 +468,7 @@ def post_market_update(trigger: str = "midday"):
     # ── Build title & description ─────────────────────────────────────────────
     date_str  = datetime.now().strftime("%b %d, %Y")
     pnl       = data["pnl_today"]
-    pnl_sign  = "+" if pnl >= 0 else ""
+    pnl_sign  = "+" if pnl >= 0 else "-"
     regime    = f"{data['regime']} {data['regime_score']}"
 
     titles = {
@@ -430,7 +480,7 @@ def post_market_update(trigger: str = "midday"):
     title = titles.get(trigger, f"AI Trader Update | {date_str}")
 
     pos_lines = "\n".join(
-        f"  {p['symbol']} {p['side']}: {'+' if p['unrealized_pl'] >= 0 else ''}${p['unrealized_pl']:,.0f}"
+        f"  {p['symbol']} {p['side']}: {'+' if p['unrealized_pl'] >= 0 else '-'}${abs(p['unrealized_pl']):,.0f}"
         for p in data["positions"]
     ) or "  No open positions"
 
