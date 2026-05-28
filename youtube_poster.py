@@ -140,9 +140,13 @@ def _fetch_market_data() -> dict:
 # ── Font loader ───────────────────────────────────────────────────────────────
 def _load_font(size: int, bold: bool = False):
     from PIL import ImageFont
+    suffix = "-Bold" if bold else ""
+    # Bundled fonts (committed to repo) — always available on Railway
+    _here = Path(__file__).parent
     candidates = [
-        f"/usr/share/fonts/truetype/dejavu/DejaVuSans{'-Bold' if bold else ''}.ttf",
-        f"/usr/share/fonts/truetype/liberation/LiberationSans{'-Bold' if bold else ''}.ttf",
+        str(_here / "fonts" / f"DejaVuSans{suffix}.ttf"),   # bundled ← first priority
+        f"/usr/share/fonts/truetype/dejavu/DejaVuSans{suffix}.ttf",
+        f"/usr/share/fonts/truetype/liberation/LiberationSans{suffix}.ttf",
         f"/usr/share/fonts/truetype/ubuntu/Ubuntu-{'B' if bold else 'R'}.ttf",
         f"/usr/share/fonts/truetype/freefont/FreeSans{'Bold' if bold else ''}.ttf",
     ]
@@ -152,6 +156,8 @@ def _load_font(size: int, bold: bool = False):
                 return ImageFont.truetype(path, size)
         except Exception:
             pass
+    # Last resort: PIL default (11px bitmap) — text will be tiny but won't crash
+    print(f"[YouTube] ⚠️  No truetype font found — text will render small")
     return ImageFont.load_default()
 
 
