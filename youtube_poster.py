@@ -308,8 +308,15 @@ def _create_short(frame, output_path: str) -> bool:
     fps    = 25
     frames = _VIDEO_SECS * fps  # 750 frames
 
+    # Use bundled ffmpeg from imageio-ffmpeg (no system install needed)
+    try:
+        import imageio_ffmpeg
+        ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        ffmpeg_bin = "ffmpeg"   # fallback to PATH if imageio-ffmpeg unavailable
+
     cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_bin, "-y",
         "-loop", "1", "-i", png_path,
         "-vf",
         (
