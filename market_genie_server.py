@@ -4466,6 +4466,39 @@ _ETF_PAIRS: dict = {
     # IWM (Russell 2000) has no inverse in universe — no pair conflict
 }
 
+# ── Sector correlation map — SectorDedup gate ─────────────────────────────────
+# Tickers sharing a sector tag are treated as one exposure slot.
+# If ANY ticker from a sector group is already open, new entries in the same
+# group are blocked.  Prevents GDX+GDXJ stacking, crypto-miner stacking, etc.
+# Rule: only the FIRST confirmed signal in a group gets the slot that session.
+_SECTOR_CORR_MAP: dict[str, str] = {
+    # Gold miners
+    "GDX":  "gold_miners",  "GDXJ": "gold_miners",
+    "NUGT": "gold_miners",  "DUST": "gold_miners",
+    # Crypto / Bitcoin proxies
+    "MARA": "crypto_miners", "RIOT": "crypto_miners",
+    "CLSK": "crypto_miners", "HUT":  "crypto_miners",
+    "IREN": "crypto_miners", "CIFR": "crypto_miners",
+    "BTBT": "crypto_miners",
+    "MSTR": "crypto_btc",    "IBIT": "crypto_btc",   "BITO": "crypto_btc",
+    # Semiconductor leveraged
+    "SOXL": "semis_lev",    "SOXS": "semis_lev",
+    "NVDL": "nvda_lev",     "NVDD": "nvda_lev",
+    "TSLL": "tsla_lev",     "TSLS": "tsla_lev",
+    # Biotech
+    "LABU": "biotech_lev",  "LABD": "biotech_lev",
+    "XBI":  "biotech_etf",
+    # Energy
+    "GUSH": "energy_lev",   "DRIP": "energy_lev",
+    "XLE":  "energy_etf",   "OXY":  "energy_eq",   "CVX": "energy_eq",
+    # China tech
+    "KWEB": "china_tech",   "BABA": "china_tech",
+    "JD":   "china_tech",   "PDD":  "china_tech",
+    # Financials
+    "FAS":  "fin_lev",      "FAZ":  "fin_lev",
+    "XLF":  "fin_etf",
+}
+
 _predict_results  = {}      # { sym: result_dict }  — accumulated across all buckets
 _predict_lock     = threading.Lock()
 _predict_bg_on    = False
@@ -7263,6 +7296,7 @@ _alp_order_lock   = threading.Lock()   # serializes position-check → place to 
 _alp_breakeven_set    = set()   # syms whose stop has been moved to trailing stop — prevents double-moves
 _alp_partial_taken    = set()   # syms where 50% has been closed at +1% (tiered take-profit)
 _alp_tight_trail_set  = set()   # syms whose trailing stop has been tightened to 0.2% (after +0.75%)
+_alp_lock_trail_set   = set()   # syms whose trailing stop has been locked to 0.1% (after +2.0%)
 _alp_loss_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last losing exit per symbol
 _alp_exit_cooldown = {}   # { sym: float(unix_ts) } — timestamp of last ANY exit (win OR lose); prevents churn re-entry after trailing stops / target hits
 _alp_tape_block_until = {}  # { sym: float(unix_ts) } — tape-blocked signals must wait 5 min before retrying; prevents firing the instant tape briefly improves
@@ -8322,7 +8356,7 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
                     _alp_last_traded[sym]["fill"] = fill_price
                 _alp_breakeven_set.discard(sym)      # reset breakeven flag for new trade
                 _alp_partial_taken.discard(sym)      # reset partial take-profit flag
-                _alp_tight_trail_set.discard(sym)    # reset tight trail flag
+                _alp_tight_trail_set.discard(sym); _alp_lock_trail_set.discard(sym)    # reset tight trail flag
                 today_str2 = _get_et_now().date().isoformat()
                 prev = _alp_daily_trade_count.get(sym, [today_str2, 0])
                 if prev[0] != today_str2:
@@ -8636,7 +8670,7 @@ def _conviction_check(sym: str, direction: str, fill_price: float, fill_qty: int
                 _alp_last_traded.pop(sym, None)
                 _alp_breakeven_set.discard(sym)
                 _alp_partial_taken.discard(sym)
-                _alp_tight_trail_set.discard(sym)
+                _alp_tight_trail_set.discard(sym); _alp_lock_trail_set.discard(sym)
         else:
             print(f"[ConvCheck] {sym} ✅ HOLDING — dir={current_dir.upper()} "
                   f"streak={current_streak} conf={current_conf:.1f}% "
@@ -8860,7 +8894,7 @@ def _alp_time_exit_loop():
                                 _alp_last_traded.pop(sym, None)
                                 _alp_breakeven_set.discard(sym)
                                 _alp_partial_taken.discard(sym)
-                                _alp_tight_trail_set.discard(sym)
+                                _alp_tight_trail_set.discard(sym); _alp_lock_trail_set.discard(sym)
                                 if unrealized_pct < 0:
                                     _alp_loss_cooldown[sym] = time.time()
                                 else:
@@ -8904,7 +8938,7 @@ def _alp_time_exit_loop():
                         _alp_last_traded.pop(sym, None)
                         _alp_breakeven_set.discard(sym)
                         _alp_partial_taken.discard(sym)
-                        _alp_tight_trail_set.discard(sym)
+                        _alp_tight_trail_set.discard(sym); _alp_lock_trail_set.discard(sym)
                         _alp_loss_cooldown[sym] = time.time()   # block same-symbol re-entry 15 min
                         # exit_cooldown intentionally NOT set — different symbol can enter immediately
                     _save_alp_state()
@@ -8997,6 +9031,50 @@ def _alp_time_exit_loop():
                     except Exception as _tt_err:
                         print(f"[TightTrail] ⚠️  {sym} tighten exception: {_tt_err}")
 
+                # ══════════════════════════════════════════════════════════════
+                # SELLING STRATEGY 4 — Lock Trail to 0.1% at +2.0%
+                # ──────────────────────────────────────────────────────────────
+                # Once a position is up +2%, replace the 0.2% trail with an
+                # ultra-tight 0.1% trail.  At +2% a pullback of only 0.1% from
+                # peak locks in ≥+1.9% — almost the full gain is protected.
+                # Example: GDX up +2.79% → stop triggers no earlier than +2.69%.
+                # Only fires after tight trail (sym in _alp_tight_trail_set).
+                # ══════════════════════════════════════════════════════════════
+                if (unrealized_pct >= 2.0
+                        and sym in _alp_tight_trail_set          # 0.2% trail already active
+                        and sym not in _alp_lock_trail_set
+                        and fill_price > 0):
+                    try:
+                        close_side = "sell" if pos_side_now == "long" else "buy"
+                        requests.delete(
+                            f"{_ALPACA_BASE_URL}/v2/orders",
+                            headers=_alp_headers(),
+                            params={"symbol": sym},
+                            timeout=5
+                        )
+                        time.sleep(0.3)
+                        lock_trail_order = {
+                            "symbol":        sym,
+                            "qty":           str(fill_qty_pos),
+                            "side":          close_side,
+                            "type":          "trailing_stop",
+                            "time_in_force": "day",
+                            "trail_percent": "0.1",   # ultra-tight 0.1% trail — locks in ≥+1.9%
+                        }
+                        lt_r = requests.post(f"{_ALPACA_BASE_URL}/v2/orders",
+                                             headers=_alp_headers(),
+                                             json=lock_trail_order, timeout=8)
+                        if lt_r.status_code in (200, 201):
+                            with _alp_lock:
+                                _alp_lock_trail_set.add(sym)
+                            print(f"[LockTrail] 🔒 {sym} — trail locked to 0.1% "
+                                  f"at {unrealized_pct:+.2f}% gain — protecting ≥+1.9%")
+                        else:
+                            print(f"[LockTrail] ⚠️  {sym} lock failed "
+                                  f"HTTP {lt_r.status_code}: {lt_r.text[:200]}")
+                    except Exception as _lt_err:
+                        print(f"[LockTrail] ⚠️  {sym} lock exception: {_lt_err}")
+
                 # ── TRAILING STOP (replaces old breakeven stop) ───────────────
                 # Once a position reaches +0.4% gain, cancel the OCO bracket
                 # and replace it with an Alpaca trailing_stop that trails 0.5%
@@ -9057,7 +9135,7 @@ def _alp_time_exit_loop():
                         _alp_last_traded.pop(sym, None)
                         _alp_breakeven_set.discard(sym)
                         _alp_partial_taken.discard(sym)
-                        _alp_tight_trail_set.discard(sym)
+                        _alp_tight_trail_set.discard(sym); _alp_lock_trail_set.discard(sym)
                         _alp_loss_cooldown[sym] = time.time()
                         _alp_exit_cooldown[sym] = time.time()
                     _save_alp_state()
@@ -9088,7 +9166,7 @@ def _alp_time_exit_loop():
                         _alp_last_traded.pop(sym, None)
                         _alp_breakeven_set.discard(sym)
                         _alp_partial_taken.discard(sym)
-                        _alp_tight_trail_set.discard(sym)
+                        _alp_tight_trail_set.discard(sym); _alp_lock_trail_set.discard(sym)
                         _alp_exit_cooldown[sym] = time.time()
                         if not is_winner:
                             _alp_loss_cooldown[sym] = time.time()
@@ -10467,6 +10545,23 @@ def _alp_execute_signal(res: dict):
                 _alp_last_traded.pop(sym, None)
             return
 
+        # ── Sector Dedup Gate ─────────────────────────────────────────────────
+        # Block entry if another ticker from the same correlated sector group is
+        # already open.  Prevents GDX+GDXJ stacking, crypto-miner pile-ons, etc.
+        # — both would move identically, doubling risk for zero diversification.
+        _sector = _SECTOR_CORR_MAP.get(sym)
+        if _sector:
+            _sector_conflict = [
+                s for s in open_positions
+                if _SECTOR_CORR_MAP.get(s) == _sector and s != sym
+            ]
+            if _sector_conflict:
+                print(f"[SectorDedup] {sym} — SKIPPED: {_sector_conflict} already open "
+                      f"in same sector group '{_sector}' — would be correlated double exposure")
+                with _alp_lock:
+                    _alp_last_traded.pop(sym, None)
+                return
+
         # ── Contradiction Filter ──────────────────────────────────────────────
         # Block bear ETF entries while any bull ETF is open (and vice versa).
         # Root cause of SPXS loss on May 15: system bought SPXS (bear S&P) while
@@ -10903,7 +10998,7 @@ def api_alpaca_close(sym):
             _alp_last_traded.pop(sym, None)
             _alp_breakeven_set.discard(sym)
             _alp_partial_taken.discard(sym)
-            _alp_tight_trail_set.discard(sym)
+            _alp_tight_trail_set.discard(sym); _alp_lock_trail_set.discard(sym)
         print(f"[Manual] ✂ {msg}")
         return jsonify({"ok": True, "msg": msg, "order_type": order_type})
     except Exception as e:
