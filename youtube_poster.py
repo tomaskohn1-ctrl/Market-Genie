@@ -39,7 +39,17 @@ def _get_yt_credentials():
             print("[YouTube] ⚠️  YOUTUBE_TOKEN_JSON not set — posting disabled")
             return None
 
-        token_data = json.loads(base64.b64decode(token_b64).decode("utf-8"))
+        # Strip whitespace + fix base64 padding (Railway sometimes trims trailing =)
+        token_b64 = token_b64.strip()
+        padding   = 4 - (len(token_b64) % 4)
+        if padding != 4:
+            token_b64 += "=" * padding
+        # Try standard then URL-safe base64
+        try:
+            raw = base64.b64decode(token_b64)
+        except Exception:
+            raw = base64.urlsafe_b64decode(token_b64)
+        token_data = json.loads(raw.decode("utf-8"))
         creds = Credentials(
             token         = token_data.get("token"),
             refresh_token = token_data.get("refresh_token"),
