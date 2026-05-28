@@ -280,9 +280,10 @@ def _generate_frame(data: dict, trigger: str):
 
     # ── Trigger label ─────────────────────────────────────────────────────────
     labels = {
-        "premarket": "PRE-MARKET BRIEF",
-        "midday":    "MIDDAY UPDATE",
-        "eod":       "END-OF-DAY RECAP",
+        "premarket":  "PRE-MARKET BRIEF",
+        "midday":     "MIDDAY UPDATE",
+        "eod":        "END-OF-DAY RECAP",
+        "afterhours": "AFTER-HOURS WRAP",
     }
     d.text((60, pos_y + 80), labels.get(trigger, "LIVE UPDATE"), font=fnt_med, fill=(107, 114, 128))
     d.text((60, pos_y + 136), data["timestamp"], font=fnt_sm, fill=(55, 65, 81))
@@ -421,9 +422,10 @@ def post_market_update(trigger: str = "midday"):
     regime    = f"{data['regime']} {data['regime_score']}"
 
     titles = {
-        "premarket": f"AI Trader Pre-Market Brief | {regime} | {date_str}",
-        "midday":    f"AI Trader Midday Update | {pnl_sign}${abs(pnl):,.0f} P&L | {date_str}",
-        "eod":       f"AI Trader EOD Recap | {pnl_sign}${abs(pnl):,.0f} Today | {date_str}",
+        "premarket":  f"AI Trader Pre-Market Brief | {regime} | {date_str}",
+        "midday":     f"AI Trader Midday Update | {pnl_sign}${abs(pnl):,.0f} P&L | {date_str}",
+        "eod":        f"AI Trader EOD Recap | {pnl_sign}${abs(pnl):,.0f} Today | {date_str}",
+        "afterhours": f"AI Trader After-Hours Wrap | {pnl_sign}${abs(pnl):,.0f} Final P&L | {date_str}",
     }
     title = titles.get(trigger, f"AI Trader Update | {date_str}")
 
@@ -479,8 +481,9 @@ def _youtube_scheduler_loop():
                 from datetime import time as dtime
                 slots = [
                     (dtime(9,  15), dtime(9,  30), "premarket"),
-                    (dtime(12, 0),  dtime(12, 15), "midday"),
+                    (dtime(12,  0), dtime(12, 15), "midday"),
                     (dtime(16, 15), dtime(16, 30), "eod"),
+                    (dtime(17, 30), dtime(17, 45), "afterhours"),
                 ]
                 for start, end, trigger in slots:
                     key = f"{date_key}_{trigger}"
