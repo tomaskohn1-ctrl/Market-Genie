@@ -104,90 +104,37 @@ def _fetch_ticker_moves(symbols: list) -> list:
 
 
 def _fetch_market_data() -> dict:
-    """Pull live data from Alpaca + breadth + social hot tickers."""
-    alp_key  = os.getenv("ALPACA_API_KEY_ID", "")
-    alp_sec  = os.getenv("ALPACA_SECRET_KEY", "")
-    base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-    hdrs     = {"APCA-API-KEY-ID": alp_key, "APCA-API-SECRET-KEY": alp_sec}
-    port     = int(os.getenv("PORT", "8080"))
+    """Pull rich live data from /api/youtube/data (single server call)."""
+    port = int(os.getenv("PORT", "8080"))
 
-    data = {
-        "regime":       "NEUTRAL",
-        "regime_score": 50,
-        "pnl_today":    0.0,
-        "equity":       88_000.0,
-        "positions":    [],
-        "nq_pct":       0.0,
-        "spy_pct":      0.0,
-        "qqq_pct":      0.0,
-        "vix":          16.5,
-        "hot_tickers":  [],   # [{symbol, price, pct, up}]
-        "timestamp":    datetime.now().strftime("%b %d, %Y  ·  %I:%M %p ET"),
+    defaults = {
+        "regime": "NEUTRAL", "regime_score": 50,
+        "pnl_today": 0.0, "equity": 100_000.0,
+        "positions": [], "nq_pct": 0.0, "spy_pct": 0.0,
+        "qqq_pct": 0.0, "vix": 16.5,
+        "hot_tickers": [], "social_hot": [], "ai_signals": [],
+        "timestamp": datetime.now().strftime("%b %d, %Y  ·  %I:%M %p ET"),
     }
 
-    # Alpaca account P&L
+    # One call to the server's rich data endpoint
     try:
-        r = requests.get(f"{base_url}/v2/account", headers=hdrs, timeout=5)
+        r = requests.get(f"http://localhost:{port}/api/youtube/data", timeout=8)
         if r.status_code == 200:
-            acc = r.json()
-            data["equity"]    = float(acc.get("equity", 88_000))
-            data["pnl_today"] = float(acc.get("equity", 88_000)) - float(acc.get("last_equity", 88_000))
+            srv = r.json()
+            defaults.update({k: srv[k] for k in srv if k in defaults})
+            # social_hot → hot_tickers (add price/pct via yfinance)
+            social_syms = [t["symbol"] for t in srv.get("social_hot", [])[:8]
+                           if t.get("symbol")]
+            if social_syms:
+                defaults["hot_tickers"] = _fetch_ticker_moves(social_syms)
     except Exception as e:
-        print(f"[YouTube] Account fetch error: {e}")
+        print(f"[YouTube] Data fetch error: {e}")
 
-    # Alpaca open positions
-    try:
-        r = requests.get(f"{base_url}/v2/positions", headers=hdrs, timeout=5)
-        if r.status_code == 200:
-            positions = r.json() if isinstance(r.json(), list) else []
-            data["positions"] = [
-                {
-                    "symbol":          p.get("symbol", "?"),
-                    "side":            p.get("side", "long").upper(),
-                    "unrealized_pl":   float(p.get("unrealized_pl", 0)),
-                    "unrealized_plpc": float(p.get("unrealized_plpc", 0)) * 100,
-                }
-                for p in positions
-            ]
-    except Exception as e:
-        print(f"[YouTube] Positions fetch error: {e}")
+    # Fallback: if still no hot tickers, use mega-cap list
+    if not defaults["hot_tickers"]:
+        defaults["hot_tickers"] = _fetch_ticker_moves(_HOT_FALLBACK[:6])
 
-    # Breadth / regime + social hot tickers from local server
-    hot_syms = []
-    try:
-        r = requests.get(f"http://localhost:{port}/api/breadth", timeout=5)
-        if r.status_code == 200:
-            bd    = r.json()
-            score = float(bd.get("score", 50) or 50)
-            data["regime_score"] = int(score)
-            data["regime"]       = "BULLISH" if score >= 70 else ("BEARISH" if score < 40 else "NEUTRAL")
-            data["nq_pct"]       = float(bd.get("nq_pct", 0) or 0)
-            data["spy_pct"]      = float(bd.get("spy_pct", 0) or 0)
-            data["qqq_pct"]      = float(bd.get("qqq_pct", 0) or 0)
-            data["vix"]          = float(bd.get("vix", 16.5) or 16.5)
-            # Pull social hot tickers if breadth exposes them
-            hot_syms = [t.get("symbol", t) if isinstance(t, dict) else t
-                        for t in (bd.get("hot_tickers") or bd.get("social_hot") or [])]
-    except Exception as e:
-        print(f"[YouTube] Breadth fetch error: {e}")
-
-    # Try live surges endpoint for hot tickers
-    if not hot_syms:
-        try:
-            r = requests.get(f"http://localhost:{port}/api/live/surges", timeout=5)
-            if r.status_code == 200:
-                surges = r.json() if isinstance(r.json(), list) else []
-                hot_syms = [s.get("symbol", "") for s in surges[:6] if s.get("symbol")]
-        except Exception:
-            pass
-
-    if not hot_syms:
-        hot_syms = _HOT_FALLBACK
-
-    # Fetch price/% moves for hot tickers
-    data["hot_tickers"] = _fetch_ticker_moves(hot_syms[:6])
-
-    return data
+    return defaults
 
 
 # ── Font loader ───────────────────────────────────────────────────────────────
@@ -232,172 +179,238 @@ def _draw_bar(d, x, y, w, h, pct, max_pct=5.0, color=(74,222,128), bg=(20,30,46)
 
 
 def _generate_frame(data: dict, trigger: str):
-    """Return a 1080x1920 PIL Image -- hero-mover layout for maximum virality."""
+    """1080x1920 Short — layout changes by trigger type for max viewer value."""
     from PIL import Image, ImageDraw
-
-    W, H  = _VIDEO_W, _VIDEO_H
-    img   = Image.new("RGB", (W, H), (8, 12, 18))
-    d     = ImageDraw.Draw(img)
-    PAD   = 56
+    W, H = _VIDEO_W, _VIDEO_H
+    img  = Image.new("RGB", (W, H), (8, 12, 18))
+    d    = ImageDraw.Draw(img)
+    PAD  = 56
 
     # Fonts
-    fnt_tiny   = _load_font(40)
-    fnt_sub    = _load_font(50)
-    fnt_label  = _load_font(46)
-    fnt_badge  = _load_font(64, bold=True)
-    fnt_logo   = _load_font(88, bold=True)
-    fnt_hero_s = _load_font(80, bold=True)
-    fnt_hero_p = _load_font(200, bold=True)
-    fnt_row_s  = _load_font(66, bold=True)
-    fnt_row_p  = _load_font(58, bold=True)
-    fnt_row_pr = _load_font(48)
-    fnt_pnl    = _load_font(148, bold=True)
-    fnt_pct    = _load_font(68, bold=True)
-    fnt_pos    = _load_font(64, bold=True)
-    fnt_pos_dt = _load_font(48)
+    fnt_tiny  = _load_font(40)
+    fnt_sub   = _load_font(50)
+    fnt_lbl   = _load_font(46)
+    fnt_badge = _load_font(64, bold=True)
+    fnt_logo  = _load_font(86, bold=True)
+    fnt_sym   = _load_font(72, bold=True)
+    fnt_hero  = _load_font(190, bold=True)
+    fnt_med   = _load_font(58, bold=True)
+    fnt_sml   = _load_font(50)
+    fnt_pnl   = _load_font(144, bold=True)
+    fnt_pct   = _load_font(66, bold=True)
+    fnt_conf  = _load_font(54, bold=True)
 
     rc        = _regime_rgb(data["regime"])
     pnl       = data["pnl_today"]
     pnl_color = (74, 222, 128) if pnl >= 0 else (248, 113, 113)
     pnl_sign  = "+" if pnl >= 0 else "-"
 
-    # Sort hot tickers by absolute % -- biggest mover is hero
-    hot = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
-
     def ic(v): return (74, 222, 128) if v >= 0 else (248, 113, 113)
+    def pill(txt, col, px, py, font=None):
+        font = font or fnt_lbl
+        try:    tw = int(d.textlength(txt, font=font))
+        except: tw = len(txt)*27
+        d.rounded_rectangle([px-6, py-4, px+tw+10, py+52], radius=10, fill=(18,28,44))
+        d.text((px, py+2), txt, font=font, fill=col)
+        return px + tw + 32
 
-    # TOP BAR
-    d.rectangle([0, 0, W, 118], fill=(12, 18, 28))
-    d.text((PAD, 14), "MARKET GENIE", font=fnt_logo, fill=(255, 255, 255))
-    tlabels = {"premarket": "PRE-MARKET", "midday": "MIDDAY", "eod": "END OF DAY", "afterhours": "AFTER HOURS"}
-    d.text((W - PAD, 16), tlabels.get(trigger, "LIVE"), font=fnt_sub, fill=rc, anchor="ra")
-    d.text((W - PAD, 72), data["timestamp"], font=fnt_tiny, fill=(60, 75, 92), anchor="ra")
+    # ── TOP BAR ──────────────────────────────────────────────────────────
+    d.rectangle([0, 0, W, 112], fill=(11, 17, 27))
+    d.text((PAD, 12), "MARKET GENIE", font=fnt_logo, fill=(255, 255, 255))
+    tlabels = {"premarket": "PRE-MARKET", "midday": "MIDDAY",
+               "eod": "END OF DAY", "afterhours": "AFTER HOURS"}
+    d.text((W-PAD, 14), tlabels.get(trigger, "LIVE"), font=fnt_sub, fill=rc, anchor="ra")
+    d.text((W-PAD, 68), data["timestamp"], font=fnt_tiny, fill=(58,72,90), anchor="ra")
 
-    # REGIME + INDEX ROW
+    # ── REGIME + INDEX PILLS ─────────────────────────────────────────────
     regime = data["regime"];  score = data["regime_score"]
     bt = f"{regime}  {score}"
     try:    bw = int(d.textlength(bt, font=fnt_badge))
-    except: bw = len(bt) * 38
-    d.rounded_rectangle([PAD-8, 134, PAD+bw+32, 216], radius=20,
-                         fill=(rc[0]//6, rc[1]//6, rc[2]//6), outline=rc, width=3)
-    d.text((PAD+8, 142), bt, font=fnt_badge, fill=rc)
+    except: bw = len(bt)*38
+    d.rounded_rectangle([PAD-8, 128, PAD+bw+30, 210], radius=18,
+                         fill=(rc[0]//6,rc[1]//6,rc[2]//6), outline=rc, width=3)
+    d.text((PAD+8, 136), bt, font=fnt_badge, fill=rc)
 
-    nq  = data["nq_pct"];  spy = data.get("spy_pct", 0.0)
-    idx_pills = [
-        (f"NQ {nq:+.2f}%",  ic(nq)),
-        (f"SPY {spy:+.2f}%", ic(spy)),
-        (f"VIX {data['vix']:.1f}", (248, 113, 113) if data["vix"] > 20 else (100, 112, 128)),
-    ]
-    px = PAD + bw + 54
-    for txt, col in idx_pills:
-        try:    tw = int(d.textlength(txt, font=fnt_label))
-        except: tw = len(txt) * 27
-        d.rounded_rectangle([px-6, 140, px+tw+10, 214], radius=10, fill=(18, 28, 44))
-        d.text((px, 148), txt, font=fnt_label, fill=col)
-        px += tw + 36
+    nq=data["nq_pct"]; spy=data.get("spy_pct",0.0)
+    px = PAD+bw+52
+    px = pill(f"NQ {nq:+.2f}%",  ic(nq),  px, 136)
+    px = pill(f"SPY {spy:+.2f}%", ic(spy), px, 136)
+    pill(f"VIX {data['vix']:.1f}",
+         (248,113,113) if data["vix"]>20 else (100,112,128), px, 136)
 
-    # HERO MOVER
-    y = 236
-    if hot:
-        h0  = hot[0]
-        hc  = ic(h0["up"] * 2 - 1)  # (74,222,128) if up else (248,113,113)
-        hc  = (74, 222, 128) if h0["up"] else (248, 113, 113)
-        ha  = "+" if h0["up"] else ""
+    y = 228  # content starts here
 
-        d.rounded_rectangle([PAD-8, y, W-PAD+8, y+330], radius=24,
-                              fill=(hc[0]//10, hc[1]//10, hc[2]//10))
-        d.rounded_rectangle([PAD-8, y, W-PAD+8, y+330], radius=24, outline=hc, width=3)
+    hot      = sorted(data.get("hot_tickers",[]), key=lambda t:abs(t.get("pct",0)), reverse=True)
+    signals  = data.get("ai_signals", [])
+    positions = data.get("positions", [])
 
-        d.text((W//2, y+26), "TOP MOVER TODAY", font=fnt_label,
-               fill=(hc[0]//2, hc[1]//2, hc[2]//2), anchor="mm")
-        d.text((PAD+18, y+62), h0["symbol"], font=fnt_hero_s, fill=(255, 255, 255))
-        d.text((W-PAD-18, y+70), f"${h0['price']:,.2f}", font=fnt_sub,
-               fill=(160, 170, 185), anchor="ra")
-        d.text((W//2, y+178), ha + str(round(abs(h0['pct']),2)) + '%', font=fnt_hero_p, fill=hc, anchor='mm')
-        _draw_bar(d, PAD+18, y+302, W-PAD*2-8, 16, h0["pct"],
-                  max_pct=max(abs(h0["pct"]), 2), color=hc)
-        y += 348
+    # ══════════════════════════════════════════════════════════════════════
+    # PRE-MARKET layout: AI Watchlist + top signals + futures
+    # ══════════════════════════════════════════════════════════════════════
+    if trigger == "premarket":
+        # Section: What is the AI watching today?
+        d.text((PAD, y), "WHAT AI IS WATCHING TODAY", font=fnt_sub,
+               fill=(255,200,50))
+        d.line([(PAD, y+54),(W-PAD,y+54)], fill=(50,70,40), width=2)
+        y += 66
 
-    # SUPPORTING MOVERS (2-column grid)
-    rest = hot[1:5]
-    if rest:
-        d.text((PAD, y+4), "TODAY'S MOVERS", font=fnt_label, fill=(72, 86, 104))
-        y += 52
-        cw = (W - PAD*2 - 14) // 2
+        # Top AI signals (direction + confidence bar)
+        top_sigs = [s for s in signals if s.get("confidence",0)>60][:5]
+        if not top_sigs:
+            top_sigs = [{"symbol": s, "direction": "bull", "confidence": 70, "streak": 2, "both_agree": 1}
+                        for s in ["TQQQ","QQQ","SPY","NVDA","TSLA"]]
 
-        for i, tk in enumerate(rest):
-            col = i % 2
-            cx  = PAD + col * (cw + 14)
-            tc  = (74, 222, 128) if tk["up"] else (248, 113, 113)
-            ar  = "+" if tk["up"] else ""
+        for sig in top_sigs[:5]:
+            sym  = sig["symbol"]
+            conf = sig.get("confidence", 70)
+            dirn = sig.get("direction","bull")
+            bull = "bull" in dirn.lower()
+            sc   = (74,222,128) if bull else (248,113,113)
+            lbl  = "BULL" if bull else "BEAR"
 
-            d.rounded_rectangle([cx-4, y-4, cx+cw+4, y+118], radius=16, fill=(14, 22, 34))
-            d.rounded_rectangle([cx-4, y-4, cx+cw+4, y+118], radius=16,
-                                  outline=(tc[0]//5, tc[1]//5, tc[2]//5), width=2)
-            d.text((cx+10, y+6), tk["symbol"], font=fnt_row_s, fill=(255, 255, 255))
-            d.text((cx+10, y+66), f"${tk['price']:,.2f}", font=fnt_row_pr, fill=(140, 155, 170))
-            d.text((cx+cw-6, y+6), f"{ar}{tk['pct']:+.2f}%", font=fnt_row_p, fill=tc, anchor="ra")
-            _draw_bar(d, cx+10, y+98, cw-18, 12, tk["pct"],
-                      max_pct=max(abs(tk["pct"]), 1), color=tc)
+            d.rounded_rectangle([PAD-8, y, W-PAD+8, y+96], radius=14, fill=(14,22,34))
 
-            if col == 1:
-                y += 132
+            # Symbol
+            d.text((PAD+10, y+12), sym, font=fnt_sym, fill=(255,255,255))
 
-        if len(rest) % 2 == 1:
-            y += 132
+            # Bull/Bear pill
+            try:    sx = d.textbbox((PAD+10,y+12),sym,font=fnt_sym)[2]+14
+            except: sx = PAD+10+len(sym)*44+14
+            d.rounded_rectangle([sx, y+18, sx+110, y+70], radius=8,
+                                  fill=(sc[0]//5,sc[1]//5,sc[2]//5))
+            d.text((sx+10, y+22), lbl, font=fnt_sml, fill=sc)
 
-    # AI LIVE TRADES
-    y = max(y + 14, 1200)
-    d.line([(PAD, y), (W-PAD, y)], fill=(24, 36, 52), width=2)
-    d.text((PAD, y+8), "AI LIVE TRADES", font=fnt_sub, fill=(72, 86, 104))
-    y += 66
+            # Confidence bar + pct
+            bar_x = sx+130; bar_w = W-PAD-bar_x-10
+            _draw_bar(d, bar_x, y+36, bar_w, 20, conf, max_pct=100,
+                      color=sc, bg=(20,30,46))
+            d.text((W-PAD, y+12), f"{conf:.0f}% conf",
+                   font=fnt_sml, fill=sc, anchor="ra")
 
-    for pos in data.get("positions", [])[:2]:
-        sym = pos["symbol"];  side = pos["side"]
-        upl = pos["unrealized_pl"];  uplpct = pos["unrealized_plpc"]
-        sc  = (74, 222, 128) if side == "LONG" else (248, 113, 113)
-        pc  = (74, 222, 128) if upl >= 0 else (248, 113, 113)
-        ps  = "+" if upl >= 0 else "-"
+            y += 108
 
-        d.rounded_rectangle([PAD-8, y, W-PAD+8, y+92], radius=14, fill=(14, 22, 34))
-        d.text((PAD+12, y+10), sym, font=fnt_pos, fill=(255, 255, 255))
-        try:    bx = d.textbbox((PAD+12, y+10), sym, font=fnt_pos)[2] + 16
-        except: bx = PAD + 12 + len(sym)*42 + 16
-        d.rounded_rectangle([bx, y+16, bx+120, y+66], radius=8,
-                              fill=(sc[0]//5, sc[1]//5, sc[2]//5))
-        d.text((bx+10, y+20), side, font=fnt_pos_dt, fill=sc)
-        d.text((W-PAD, y+8),  f"{ps}${abs(upl):,.0f}",       font=fnt_pos,    fill=pc, anchor="ra")
-        d.text((W-PAD, y+56), f"({ps}{abs(uplpct):.2f}%)",   font=fnt_pos_dt, fill=pc, anchor="ra")
-        y += 104
-
-    if not data.get("positions"):
-        d.text((PAD+12, y+8), "No open positions", font=fnt_pos, fill=(36, 50, 66))
+        # Futures / market open setup
+        y += 12
+        d.line([(PAD,y),(W-PAD,y)], fill=(28,40,58), width=2)
+        d.text((PAD, y+8), "MARKET OPENS 9:30 AM ET", font=fnt_sub, fill=(255,200,50))
+        y += 68
+        d.text((PAD, y), f"NQ Futures:  {nq:+.2f}%", font=fnt_med,
+               fill=ic(nq))
+        y += 76
+        d.text((PAD, y), f"Regime:  {regime}  ({score})", font=fnt_med, fill=rc)
         y += 76
 
-    # P&L
-    pnl_y = max(y + 14, 1560)
-    d.line([(PAD, pnl_y), (W-PAD, pnl_y)], fill=(24, 36, 52), width=2)
-
-    if trigger == "premarket" and abs(pnl) < 1:
-        d.text((PAD, pnl_y+8), "ACCOUNT EQUITY", font=fnt_sub, fill=(72, 86, 104))
-        d.text((PAD, pnl_y+66), f"${data['equity']:,.0f}", font=fnt_pnl, fill=(220, 230, 240))
-        d.text((W-PAD, pnl_y+96), "Opens 9:30 AM ET", font=fnt_pos_dt, fill=(72, 86, 104), anchor="ra")
+    # ══════════════════════════════════════════════════════════════════════
+    # MIDDAY / EOD / AFTERHOURS layout: Social trending + AI trades + P&L
+    # ══════════════════════════════════════════════════════════════════════
     else:
-        d.text((PAD, pnl_y+8), "TODAY'S P&L", font=fnt_sub, fill=(72, 86, 104))
-        d.text((PAD, pnl_y+66), f"{pnl_sign}${abs(pnl):,.0f}", font=fnt_pnl, fill=pnl_color)
-        if data["equity"] > 0:
-            pd = (pnl / max(data["equity"]-pnl, 1)) * 100
-            d.text((W-PAD, pnl_y+96), f"{pnl_sign}{abs(pd):.2f}%", font=fnt_pct, fill=pnl_color, anchor="ra")
+        # HERO: biggest mover
+        if hot:
+            h0 = hot[0]
+            hc = ic(1 if h0["up"] else -1)
+            ha = "+" if h0["up"] else ""
 
-    # Footer CTA
-    d.text((W//2, H-84), "Follow for daily AI trade alerts", font=fnt_sub, fill=(68, 84, 104), anchor="mm")
-    d.text((W//2, H-38), "PAPER TRADING  NOT FINANCIAL ADVICE", font=fnt_tiny, fill=(40, 54, 68), anchor="mm")
+            d.rounded_rectangle([PAD-8, y, W-PAD+8, y+296], radius=22,
+                                  fill=(hc[0]//10, hc[1]//10, hc[2]//10))
+            d.rounded_rectangle([PAD-8, y, W-PAD+8, y+296], radius=22,
+                                  outline=hc, width=3)
+            d.text((W//2, y+22), "BIGGEST MOVER", font=fnt_lbl,
+                   fill=(hc[0]//2,hc[1]//2,hc[2]//2), anchor="mm")
+            d.text((PAD+18, y+56), h0["symbol"], font=fnt_sym, fill=(255,255,255))
+            d.text((W-PAD-18, y+64), f"${h0['price']:,.2f}", font=fnt_sub,
+                   fill=(155,165,180), anchor="ra")
+            hero_pct = f"{ha}{abs(h0['pct']):.2f}%"
+            d.text((W//2, y+172), hero_pct, font=fnt_hero, fill=hc, anchor="mm")
+            _draw_bar(d, PAD+18, y+264, W-PAD*2-8, 18, h0["pct"],
+                      max_pct=max(abs(h0["pct"]),2), color=hc)
+            y += 314
+
+        # SOCIAL TRENDING (3 tickers, smaller)
+        rest = hot[1:4]
+        if rest:
+            d.text((PAD, y+4), "SOCIAL TRENDING", font=fnt_lbl, fill=(107,120,140))
+            y += 50
+            cw = (W-PAD*2-12)//3
+            for i, tk in enumerate(rest):
+                cx = PAD + i*(cw+6)
+                tc = ic(1 if tk["up"] else -1)
+                ar = "+" if tk["up"] else ""
+                d.rounded_rectangle([cx-4,y-4,cx+cw+4,y+106], radius=14, fill=(14,22,34))
+                d.text((cx+8,y+6),  tk["symbol"],           font=fnt_med, fill=(255,255,255))
+                d.text((cx+8,y+60), f"${tk['price']:,.0f}", font=fnt_sml, fill=(130,145,160))
+                d.text((cx+cw-4,y+6), f"{ar}{abs(tk['pct']):.1f}%",
+                       font=fnt_conf, fill=tc, anchor="ra")
+                _draw_bar(d, cx+8, y+88, cw-16, 10, tk["pct"],
+                          max_pct=max(abs(tk["pct"]),1), color=tc)
+            y += 122
+
+        # AI SIGNALS (top 3 high-confidence)
+        top_sigs = [s for s in signals if s.get("confidence",0)>65][:3]
+        if top_sigs:
+            y += 4
+            d.line([(PAD,y),(W-PAD,y)], fill=(24,36,52), width=2)
+            d.text((PAD, y+6), "AI SIGNALS RIGHT NOW", font=fnt_lbl, fill=(107,120,140))
+            y += 54
+            for sig in top_sigs:
+                sym  = sig["symbol"]; conf = sig.get("confidence",70)
+                bull = "bull" in sig.get("direction","bull").lower()
+                sc   = (74,222,128) if bull else (248,113,113)
+                lbl  = "BULL" if bull else "BEAR"
+                d.rounded_rectangle([PAD-8,y,W-PAD+8,y+76], radius=12, fill=(14,22,34))
+                d.text((PAD+10,y+10), sym, font=fnt_med, fill=(255,255,255))
+                try:    bx2 = d.textbbox((PAD+10,y+10),sym,font=fnt_med)[2]+12
+                except: bx2 = PAD+10+len(sym)*36+12
+                d.rounded_rectangle([bx2,y+14,bx2+100,y+58], radius=8,
+                                      fill=(sc[0]//5,sc[1]//5,sc[2]//5))
+                d.text((bx2+8,y+18), lbl, font=fnt_sml, fill=sc)
+                bar_x2 = bx2+118
+                _draw_bar(d, bar_x2, y+26, W-PAD-bar_x2-10, 16, conf,
+                          max_pct=100, color=sc, bg=(20,30,46))
+                d.text((W-PAD,y+8), f"{conf:.0f}%", font=fnt_conf, fill=sc, anchor="ra")
+                y += 88
+
+        # OPEN POSITIONS
+        if positions:
+            y += 4
+            d.line([(PAD,y),(W-PAD,y)], fill=(24,36,52), width=2)
+            d.text((PAD,y+6), "AI OPEN TRADES", font=fnt_lbl, fill=(107,120,140))
+            y += 54
+            for pos in positions[:2]:
+                sym2=pos["symbol"]; side2=pos["side"]
+                upl=pos["unrealized_pl"]; uplpct=pos["unrealized_plpc"]
+                sc2=(74,222,128) if side2=="LONG" else (248,113,113)
+                pc2=(74,222,128) if upl>=0 else (248,113,113)
+                ps2="+" if upl>=0 else "-"
+                d.rounded_rectangle([PAD-8,y,W-PAD+8,y+86], radius=12, fill=(14,22,34))
+                d.text((PAD+10,y+8),sym2,font=fnt_med,fill=(255,255,255))
+                try:    bx3=d.textbbox((PAD+10,y+8),sym2,font=fnt_med)[2]+12
+                except: bx3=PAD+10+len(sym2)*36+12
+                d.rounded_rectangle([bx3,y+12,bx3+110,y+58],radius=8,fill=(sc2[0]//5,sc2[1]//5,sc2[2]//5))
+                d.text((bx3+8,y+16),side2,font=fnt_sml,fill=sc2)
+                d.text((W-PAD,y+6),f"{ps2}${abs(upl):,.0f}",font=fnt_med,fill=pc2,anchor="ra")
+                d.text((W-PAD,y+50),f"({ps2}{abs(uplpct):.2f}%)",font=fnt_sml,fill=pc2,anchor="ra")
+                y += 98
+
+    # ── P&L FOOTER ────────────────────────────────────────────────────────
+    pnl_y = max(y+12, 1380)
+    d.line([(PAD,pnl_y),(W-PAD,pnl_y)], fill=(24,36,52), width=2)
+    if trigger == "premarket" and abs(pnl) < 1:
+        d.text((PAD,pnl_y+8),"ACCOUNT EQUITY",font=fnt_sub,fill=(107,120,140))
+        d.text((PAD,pnl_y+62),f"${data['equity']:,.0f}",font=fnt_pnl,fill=(210,225,240))
+    else:
+        d.text((PAD,pnl_y+8),"TODAY'S P&L",font=fnt_sub,fill=(107,120,140))
+        d.text((PAD,pnl_y+62),f"{pnl_sign}${abs(pnl):,.0f}",font=fnt_pnl,fill=pnl_color)
+        if data["equity"]>0:
+            pd=(pnl/max(data["equity"]-pnl,1))*100
+            d.text((W-PAD,pnl_y+92),f"{pnl_sign}{abs(pd):.2f}%",font=fnt_pct,fill=pnl_color,anchor="ra")
+
+    d.text((W//2,H-86),"Follow for daily AI signals",font=fnt_sub,fill=(68,84,104),anchor="mm")
+    d.text((W//2,H-40),"PAPER TRADING  NOT FINANCIAL ADVICE",font=fnt_tiny,fill=(40,54,68),anchor="mm")
 
     return img
 
 
 
-# ── Video creation ────────────────────────────────────────────────────────────
 def _create_short(frame, output_path: str) -> bool:
     """Write a 30-second MP4 Short using ffmpeg Ken-Burns zoom from a still frame."""
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:

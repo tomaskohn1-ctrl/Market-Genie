@@ -10768,11 +10768,90 @@ def api_breadth():
     })
 
 
+@app.route("/api/youtube/data", methods=["GET"])
+def api_youtube_data():
+    """Rich data endpoint for YouTube Shorts — combines all live signals."""
+    try:
+        import pytz
+        et = datetime.now(pytz.timezone("America/New_York"))
+
+        # ── Market regime + indices ────────────────────────────────────────
+        bd = _last_breadth_snapshot if "_last_breadth_snapshot" in dir() else {}
+        score   = float(bd.get("score", 50) or 50)
+        regime  = "BULLISH" if score >= 70 else ("BEARISH" if score < 40 else "NEUTRAL")
+        nq_pct  = float(bd.get("nq_pct", 0) or 0)
+        spy_pct = float(bd.get("spy_pct", 0) or 0)
+        qqq_pct = float(bd.get("qqq_pct", 0) or 0)
+        vix     = float(bd.get("vix", 16.5) or 16.5)
+
+        # ── Social hot tickers (ApeWisdom / Reddit) ───────────────────────
+        with _social_hot_lock:
+            social = dict(_social_hot_cache)
+        # Sort by velocity score descending, take top 8
+        social_tickers = sorted(
+            [{"symbol": k, "velocity": v.get("velocity", 0),
+              "mentions": v.get("mentions", 0)}
+             for k, v in social.items()],
+            key=lambda x: x["velocity"], reverse=True
+        )[:8]
+
+        # ── Top AI signals from predict_results ───────────────────────────
+        with _predict_lock:
+            pr = dict(_predict_results)
+        top_signals = sorted(
+            [{"symbol": sym,
+              "direction": v.get("consensus_dir", v.get("direction", "")),
+              "confidence": round(float(v.get("confidence", 0) or 0), 1),
+              "streak": int(v.get("streak_count", v.get("streak", 0)) or 0),
+              "both_agree": int(v.get("both_agree", 0) or 0)}
+             for sym, v in pr.items()
+             if v.get("confidence", 0) and v.get("consensus_dir", v.get("direction", ""))],
+            key=lambda x: x["confidence"], reverse=True
+        )[:5]
+
+        # ── Alpaca account + positions ─────────────────────────────────────
+        alp_key  = os.getenv("ALPACA_API_KEY_ID", "")
+        alp_sec  = os.getenv("ALPACA_SECRET_KEY", "")
+        base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+        hdrs     = {"APCA-API-KEY-ID": alp_key, "APCA-API-SECRET-KEY": alp_sec}
+        pnl_today = 0.0;  equity = 100_000.0;  positions = []
+        try:
+            ra = requests.get(f"{base_url}/v2/account", headers=hdrs, timeout=4)
+            if ra.status_code == 200:
+                acc = ra.json()
+                equity    = float(acc.get("equity", 100_000))
+                pnl_today = equity - float(acc.get("last_equity", equity))
+        except Exception: pass
+        try:
+            rp = requests.get(f"{base_url}/v2/positions", headers=hdrs, timeout=4)
+            if rp.status_code == 200:
+                positions = [
+                    {"symbol": p.get("symbol"), "side": p.get("side","long").upper(),
+                     "unrealized_pl": round(float(p.get("unrealized_pl",0)),2),
+                     "unrealized_plpc": round(float(p.get("unrealized_plpc",0))*100,2)}
+                    for p in (rp.json() if isinstance(rp.json(), list) else [])
+                ]
+        except Exception: pass
+
+        return jsonify({
+            "regime": regime, "regime_score": int(score),
+            "nq_pct": nq_pct, "spy_pct": spy_pct, "qqq_pct": qqq_pct, "vix": vix,
+            "social_hot": social_tickers,
+            "ai_signals": top_signals,
+            "pnl_today": round(pnl_today, 2),
+            "equity": round(equity, 2),
+            "positions": positions,
+            "timestamp": et.strftime("%b %d, %Y  ·  %I:%M %p ET"),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/youtube/post", methods=["POST"])
 def api_youtube_post():
     """Manually trigger a YouTube Short upload. Body: {"trigger": "midday"} (optional)."""
     trigger = (request.json or {}).get("trigger", "midday")
-    if trigger not in ("premarket", "midday", "eod"):
+    if trigger not in ("premarket", "midday", "eod", "afterhours"):
         trigger = "midday"
     try:
         from youtube_poster import post_market_update
