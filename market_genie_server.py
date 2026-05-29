@@ -5238,6 +5238,10 @@ _CHRONIC_LOSERS = frozenset(["NUGT", "LABU", "DUST", "TECL", "ZS",
                              "PG", "JNJ", "KO", "PEP", "WMT", "CL", "CLX",  # consumer staples
                              "WFC", "BAC", "C", "JPM", "GS", "MS",         # banks (low intraday vol)
                              "OXY", "CVX", "XOM", "COP", "SLB",            # oil (different sector)
+                             # Travel / leisure — not momentum/tech
+                             "CCL", "RCL", "NCLH", "DAL", "UAL", "AAL", "LUV", "MAR", "HLT",
+                             # Commodities / Gold — different sector dynamics
+                             "GLD", "SLV", "GDX", "GDXJ", "IAU", "GOLD", "NEM", "AEM",
                              # Meme / social stocks — manipulated, unpredictable
                              "GME", "AMC", "BBBY", "CHWY", "KOSS", "BB",
 ])
@@ -9116,7 +9120,8 @@ def _alp_time_exit_loop():
                 # Only fires once per trade (breakeven_set flag).
                 if (unrealized_pct >= 0.4
                         and fill_price > 0
-                        and sym not in _alp_breakeven_set):
+                        and sym not in _alp_breakeven_set
+                        and age_mins >= 2.0):   # ← min 2 min before touching OCO bracket
                     try:
                         pos_side   = pos.get("side", "long")
                         close_side = "sell" if pos_side == "long" else "buy"
