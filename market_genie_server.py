@@ -8867,6 +8867,31 @@ def _alp_time_exit_loop():
                 pos_side_now   = pos.get("side", "long")
 
                 # ══════════════════════════════════════════════════════════════
+                # SELLING STRATEGY 0 — Dollar Hard Stop ($280)
+                # ──────────────────────────────────────────────────────────────
+                # If unrealized loss hits $280, close immediately and move on.
+                # This is a flat dollar cap — no matter what the % is, if the
+                # position is down $280 it's done. Frees the slot for the next
+                # signal rather than riding a loser deeper.
+                # ══════════════════════════════════════════════════════════════
+                _HARD_STOP_DOLLARS = float(os.getenv("HARD_STOP_DOLLARS", "280"))
+                _unrealized_pl     = float(pos.get("unrealized_pl", 0))
+                if _unrealized_pl <= -_HARD_STOP_DOLLARS:
+                    print(f"[HardStop] 🛑 {sym} — DOLLAR STOP HIT: "
+                          f"loss=${abs(_unrealized_pl):,.0f} ≥ ${_HARD_STOP_DOLLARS:.0f} "
+                          f"({unrealized_pct:+.2f}%) — closing immediately")
+                    _alp_close_position(sym, pos_side_now)
+                    with _alp_lock:
+                        _alp_last_traded.pop(sym, None)
+                        _alp_breakeven_set.discard(sym)
+                        _alp_partial_taken.discard(sym)
+                        _alp_tight_trail_set.discard(sym)
+                        _alp_lock_trail_set.discard(sym)
+                        _alp_loss_cooldown[sym] = time.time()  # 15-min cooldown
+                    _save_alp_state()
+                    continue   # move to next position
+
+                # ══════════════════════════════════════════════════════════════
                 # SELLING STRATEGY 1 — Signal Reversal Exit
                 # ──────────────────────────────────────────────────────────────
                 # If Kronos+TFM have flipped to the opposite direction (streak≥2
