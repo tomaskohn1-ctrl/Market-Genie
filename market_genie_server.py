@@ -7371,9 +7371,9 @@ _alp_session_start_equity = None   # equity at session start (first loop run)
 _alp_session_peak_pnl     = 0.0    # highest session P&L seen today
 _alp_profit_guard_fired   = False  # True after guard fires (one-shot per session)
 _alp_profit_guard_until   = 0.0    # timestamp: block new entries until this time
-_ALP_PROFIT_GUARD_PEAK    = float(os.getenv("ALPACA_PROFIT_GUARD_PEAK",  "200"))  # min peak before guard activates
-_ALP_PROFIT_GUARD_DROP    = float(os.getenv("ALPACA_PROFIT_GUARD_DROP",  "400"))  # $ drawdown from peak that triggers close-all
-_ALP_PROFIT_GUARD_PAUSE   = int(os.getenv("ALPACA_PROFIT_GUARD_PAUSE",    "10"))  # minutes to pause new entries after guard fires
+_ALP_PROFIT_GUARD_PEAK    = float(os.getenv("ALPACA_PROFIT_GUARD_PEAK",  "600"))  # min peak before guard activates (raised 200→600)
+_ALP_PROFIT_GUARD_DROP    = float(os.getenv("ALPACA_PROFIT_GUARD_DROP",  "800"))  # $ drawdown from peak that triggers close-all (raised 400→800)
+_ALP_PROFIT_GUARD_PAUSE   = int(os.getenv("ALPACA_PROFIT_GUARD_PAUSE",    "5"))   # minutes to pause new entries after guard fires (10→5)
 _ALP_PROFIT_GUARD_NQ_SKIP = float(os.getenv("ALPACA_PROFIT_GUARD_NQ_SKIP", "0.5"))  # skip guard if NQ futures > this % (strong bull tape)
 
 # ── AI-Trader TradeSync ───────────────────────────────────────────────────────
