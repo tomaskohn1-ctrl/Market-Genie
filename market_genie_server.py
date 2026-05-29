@@ -10280,7 +10280,7 @@ def _alp_execute_signal(res: dict):
     # ── Minimum price gate ───────────────────────────────────────────────────
     # Stocks under $30 are typically meme/penny stocks — wide spreads, thin books,
     # manipulation risk. GME at $21 and CHWY at $22 showed up today with 3 losses.
-    _MIN_PRICE = float(os.getenv("MIN_STOCK_PRICE", "30"))
+    _MIN_PRICE = float(os.getenv("MIN_STOCK_PRICE", "12"))
     if price < _MIN_PRICE:
         print(f"[PriceGate] {sym} — SKIPPED: price ${price:.2f} < ${_MIN_PRICE:.0f} minimum "
               f"(low-price stocks have wide spreads and meme-stock manipulation risk)")
