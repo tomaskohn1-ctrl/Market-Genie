@@ -5232,12 +5232,19 @@ _WR_BLACKLIST      = {"MAXN"}  # tickers with confirmed Kronos calibration failu
 # deliver the move needed to reach target. At eff_conf<85 the edge simply isn't there.
 # NUGT: -$291, SQQQ: -$268, LABU: -$218, DUST: -$208, TECL: -$207
 _CHRONIC_LOSER_MIN_CONF = int(os.getenv("CHRONIC_LOSER_MIN_CONF", "85"))
-_CHRONIC_LOSERS = frozenset(["NUGT", "LABU", "DUST", "TECL", "ZS"])
-# ZS added 2026-05-28: earnings gap -22.9% pre-market; extreme spread/slippage risk on gap days.
-# Requires conf≥85 before any entry to avoid chasing a broken chart.
+_CHRONIC_LOSERS = frozenset(["NUGT", "LABU", "DUST", "TECL", "ZS",
+                             # Low-volatility / defensive stocks — don't move enough to profit
+                             "XLP", "XLRE", "XLU", "XLV", "XLB", "XLI",  # sector ETFs (non-tech)
+                             "PG", "JNJ", "KO", "PEP", "WMT", "CL", "CLX",  # consumer staples
+                             "WFC", "BAC", "C", "JPM", "GS", "MS",         # banks (low intraday vol)
+                             "OXY", "CVX", "XOM", "COP", "SLB",            # oil (different sector)
+                             # Meme / social stocks — manipulated, unpredictable
+                             "GME", "AMC", "BBBY", "CHWY", "KOSS", "BB",
+])
+# GME/CHWY added 2026-05-29: meme stocks traded 3x today, all losses.
+# Defensive stocks added: XLP, XLRE, WFC, OXY etc. don't have enough intraday
+# momentum for the strategy — they need conf≥85 (essentially blocked).
 # SQQQ removed from chronic losers — it is now a PRIMARY focused-pair instrument.
-# Its historical losses were due to trading in wrong conditions (BULLISH/NEUTRAL tape).
-# With regime gate + focused strategy, SQQQ only fires in confirmed BEARISH tape.
 _WR_MAX_SPREAD_PCT = 0.15  # max bid-ask spread % — tightened 0.35→0.15 for $80K+ concentrated positions
                            # 0.15% spread on $80K = $120 max cost; tighter = better R:R at entry
 _WR_MIN_AVG_VOL    = 200_000  # fast-reject micro-caps below this 3-month avg daily volume
@@ -8542,7 +8549,7 @@ def _alp_eod_loop():
 
         except Exception as e:
             print(f"[EOD] Loop error: {e}")
-        time.sleep(30)   # check every 30s (was 60s — tighter timing needed at close)
+        time.sleep(10)   # check every 10s (was 30s — tighter for $280 hard stop response)
 
 
 def _alp_close_position(sym: str, side: str):
@@ -10270,6 +10277,15 @@ def _alp_execute_signal(res: dict):
     # NUGT, SQQQ, LABU, DUST, TECL: 0 TARGET exits combined, -$1,192 total loss
     # across May 6-12 2026. These fire frequently (strong models) but the move
     # almost never reaches the +1.5% target — they chop and stop out repeatedly.
+    # ── Minimum price gate ───────────────────────────────────────────────────
+    # Stocks under $30 are typically meme/penny stocks — wide spreads, thin books,
+    # manipulation risk. GME at $21 and CHWY at $22 showed up today with 3 losses.
+    _MIN_PRICE = float(os.getenv("MIN_STOCK_PRICE", "30"))
+    if price < _MIN_PRICE:
+        print(f"[PriceGate] {sym} — SKIPPED: price ${price:.2f} < ${_MIN_PRICE:.0f} minimum "
+              f"(low-price stocks have wide spreads and meme-stock manipulation risk)")
+        return
+
     # Require ELITE confidence (≥85) before taking a position.
     # At eff_conf ≥ 85 the conviction is high enough that the extra friction is
     # worth accepting; below that threshold the edge simply isn't there.
