@@ -84,17 +84,22 @@ def _fetch_ticker_moves(symbols: list) -> list:
         import yfinance as yf
         for sym in symbols[:6]:
             try:
-                t = yf.Ticker(sym)
+                t  = yf.Ticker(sym)
                 fi = t.fast_info
-                price = float(fi.get("last_price") or fi.get("regularMarketPrice") or 0)
-                prev  = float(fi.get("previous_close") or fi.get("regularMarketPreviousClose") or price)
+                # fast_info uses attribute access, not .get()
+                price = (getattr(fi, "last_price", None)
+                         or getattr(fi, "regularMarketPrice", None) or 0)
+                prev  = (getattr(fi, "previous_close", None)
+                         or getattr(fi, "regularMarketPreviousClose", None) or price)
+                price = float(price or 0)
+                prev  = float(prev  or price)
                 pct   = ((price - prev) / prev * 100) if prev else 0.0
                 if price > 0:
                     results.append({"symbol": sym, "price": price, "pct": pct, "up": pct >= 0})
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as e:
+                print(f"[YouTube] Ticker {sym} error: {e}")
+    except Exception as e:
+        print(f"[YouTube] yfinance import error: {e}")
     return results
 
 
@@ -387,16 +392,22 @@ def _generate_frame(data: dict, trigger: str):
     # ════════════════════════════════════════════════════════════════════════
     pnl_zone_y = max(pos_y + 30, 1390)
     d.line([(PAD, pnl_zone_y), (W - PAD, pnl_zone_y)], fill=(28, 40, 58), width=2)
-    d.text((PAD, pnl_zone_y + 8), "TODAY'S P&L", font=fnt_sub, fill=(107, 114, 128))
-
-    pnl_str = f"{pnl_sign}${abs(pnl):,.0f}"
-    d.text((PAD, pnl_zone_y + 68), pnl_str, font=fnt_pnl, fill=pnl_color)
-
-    eq = data["equity"]
-    if eq > 0:
-        pct_day = (pnl / max(eq - pnl, 1)) * 100
-        d.text((W - PAD, pnl_zone_y + 100), f"{pnl_sign}{abs(pct_day):.2f}%",
-               font=fnt_pct_sm, fill=pnl_color, anchor="ra")
+    if trigger == "premarket" and abs(pnl) < 1:
+        # Pre-market: market hasn't opened yet, show account equity instead
+        eq = data["equity"]
+        d.text((PAD, pnl_zone_y + 8), "ACCOUNT EQUITY", font=fnt_sub, fill=(107, 114, 128))
+        d.text((PAD, pnl_zone_y + 68), f"${eq:,.0f}", font=fnt_pnl, fill=(255, 255, 255))
+        d.text((W - PAD, pnl_zone_y + 100), "Market opens 9:30 AM ET",
+               font=fnt_pos_dt, fill=(80, 95, 115), anchor="ra")
+    else:
+        d.text((PAD, pnl_zone_y + 8), "TODAY'S P&L", font=fnt_sub, fill=(107, 114, 128))
+        pnl_str = f"{pnl_sign}${abs(pnl):,.0f}"
+        d.text((PAD, pnl_zone_y + 68), pnl_str, font=fnt_pnl, fill=pnl_color)
+        eq = data["equity"]
+        if eq > 0:
+            pct_day = (pnl / max(eq - pnl, 1)) * 100
+            d.text((W - PAD, pnl_zone_y + 100), f"{pnl_sign}{abs(pct_day):.2f}%",
+                   font=fnt_pct_sm, fill=pnl_color, anchor="ra")
 
     # Viral hook
     hook_y = pnl_zone_y + 260
@@ -537,16 +548,18 @@ def post_market_update(trigger: str = "midday"):
     regime    = f"{data['regime']} {data['regime_score']}"
 
     hot  = data.get("hot_tickers", [])
-    top2 = " | ".join(
+    # Build ticker snippet — only include tickers with real data
+    top_tickers = [
         f"{t['symbol']} {'+' if t['up'] else ''}{t['pct']:.1f}%"
-        for t in hot[:2]
-    ) if hot else ""
+        for t in hot[:3] if t.get("price", 0) > 0
+    ]
+    ticker_str = "  |  ".join(top_tickers)
 
     titles = {
-        "premarket":  f"🤖 AI Trader Pre-Market | {regime} Regime | Top Picks: {top2} | {date_str}",
-        "midday":     f"🤖 AI Made {pnl_sign}${abs(pnl):,.0f} Today | {top2} | {date_str}",
-        "eod":        f"🤖 AI Finished {pnl_sign}${abs(pnl):,.0f} | {regime} Day | {top2} | {date_str}",
-        "afterhours": f"🤖 After Hours: {pnl_sign}${abs(pnl):,.0f} P&L | {top2} | {date_str}",
+        "premarket":  f"🤖 Pre-Market Brief {date_str} | {regime} | {ticker_str or 'Top Movers'}",
+        "midday":     f"🤖 AI Midday: {pnl_sign}${abs(pnl):,.0f} P&L | {ticker_str or regime} | {date_str}",
+        "eod":        f"🤖 AI Closed {pnl_sign}${abs(pnl):,.0f} Today | {regime} | {ticker_str or 'Top Movers'}",
+        "afterhours": f"🤖 After-Hours Wrap | {pnl_sign}${abs(pnl):,.0f} Final | {ticker_str or regime} | {date_str}",
     }
     title = titles.get(trigger, f"AI Trader Update | {date_str}")
 
