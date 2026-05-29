@@ -9226,6 +9226,21 @@ def _alp_execute_signal(res: dict):
     if not _ALP_ENABLED and not _is_forced:
         print(f"[Alpaca] {sym} — SKIPPED: executor disabled (ALPACA_EXEC_ENABLED=false)")
         return
+
+    # ── Strategy gate (strategy_engine.py) — data-driven entry selectivity ──
+    # Layered on top of all existing gates; only ever makes entries MORE
+    # selective. Benches chronic-loser symbols, enforces an edge-score floor,
+    # and raises the quality bar inside the 10am/1pm ET chop windows.
+    # Forced/manual trades bypass it. Toggle off with STRAT_GATE_ENABLED=false.
+    if not _is_forced and os.getenv("STRAT_GATE_ENABLED", "true").lower() != "false":
+        try:
+            from strategy_engine import strategy_gate
+            _sg_ok, _sg_why = strategy_gate(res)
+            if not _sg_ok:
+                print(f"[StratGate] {sym} — SKIPPED: {_sg_why}")
+                return
+        except Exception as _sg_err:
+            print(f"[StratGate] {sym} — gate error (non-fatal, allowing): {_sg_err}")
     # Allow function to run during extended hours (4 AM – 8 PM ET, weekdays) so
     # signals reach the extended-hours log block below and appear on dashboard.
     # Overnight / weekends are still gated by _us_market_open() below.
