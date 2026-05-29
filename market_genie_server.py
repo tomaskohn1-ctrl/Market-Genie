@@ -11247,6 +11247,46 @@ def api_alpaca_test():
         return jsonify({"error": str(e)})
 
 
+@app.route("/api/strat/status")
+def api_strat_status():
+    """
+    Strategy-gate telemetry + progress toward the daily profit goal.
+    Shows how many entries the gate filtered today (and why), and how far
+    today's P&L is from STRAT_DAILY_GOAL (default $780).
+    """
+    goal = float(os.getenv("STRAT_DAILY_GOAL", "780"))
+    avg_target_win = float(os.getenv("STRAT_AVG_TARGET_WIN", "250"))
+    out = {
+        "goal": goal,
+        "gate_enabled": os.getenv("STRAT_GATE_ENABLED", "true").lower() != "false",
+        "pnl_today": None,
+        "pct_to_goal": None,
+        "target_hits_to_goal": round(goal / avg_target_win, 1) if avg_target_win else None,
+        "gate": {"allowed": 0, "skipped": 0, "by_reason": {}},
+    }
+    try:
+        from strategy_engine import get_stats
+        s = get_stats()
+        out["gate"] = {"date": s.get("date"), "allowed": s.get("allowed", 0),
+                       "skipped": s.get("skipped", 0), "by_reason": s.get("by_reason", {})}
+    except Exception as e:
+        out["gate_error"] = str(e)
+    try:
+        if _ALPACA_KEY and _ALPACA_SECRET:
+            acc = requests.get(f"{_ALPACA_BASE_URL}/v2/account",
+                               headers=_alp_headers(), timeout=8)
+            if acc.status_code == 200:
+                a = acc.json()
+                pnl = float(a.get("equity", 0)) - float(a.get("last_equity", 0))
+                out["pnl_today"] = round(pnl, 2)
+                out["pct_to_goal"] = round(100 * pnl / goal, 1) if goal else None
+                out["goal_met"] = pnl >= goal
+                out["remaining_to_goal"] = round(max(goal - pnl, 0), 2)
+    except Exception as e:
+        out["pnl_error"] = str(e)
+    return jsonify(out)
+
+
 @app.route("/api/alpaca/status")
 def api_alpaca_status():
     """Return Alpaca account status and open positions — used by dashboard."""

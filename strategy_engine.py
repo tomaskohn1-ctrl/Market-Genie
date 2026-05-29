@@ -106,6 +106,31 @@ STRAT_PARTIAL1_FRAC= _f("STRAT_PARTIAL1_FRAC", 0.50)
 STRAT_TRAIL_PCT    = _f("STRAT_TRAIL_PCT", 0.004)        # trail remainder 0.4%
 
 
+# ── Filter telemetry — counts how many entries the gate skipped today ──────
+import threading as _threading
+_stats_lock = _threading.Lock()
+STRAT_STATS = {"date": None, "allowed": 0, "skipped": 0, "by_reason": {}}
+
+
+def _stat_record(allowed, reason):
+    today = datetime.now(_ET).strftime("%Y-%m-%d")
+    with _stats_lock:
+        if STRAT_STATS["date"] != today:
+            STRAT_STATS.update(date=today, allowed=0, skipped=0, by_reason={})
+        if allowed:
+            STRAT_STATS["allowed"] += 1
+        else:
+            STRAT_STATS["skipped"] += 1
+            tag = reason.split("(")[0].split(";")[0].strip()[:48]
+            STRAT_STATS["by_reason"][tag] = STRAT_STATS["by_reason"].get(tag, 0) + 1
+
+
+def get_stats():
+    """Snapshot of today's gate activity (for /api/strat/status)."""
+    with _stats_lock:
+        return dict(STRAT_STATS, by_reason=dict(STRAT_STATS["by_reason"]))
+
+
 def _now_et():
     return datetime.now(_ET)
 
@@ -132,21 +157,26 @@ def strategy_gate(res, now=None):
     edge = res.get("edge_score")
     proven = sym in STRAT_PROVEN
 
+    def _deny(reason):
+        _stat_record(False, reason)
+        return False, reason
+
     # 1) Bench chronic losers (unless they're also on the proven list).
     if sym in STRAT_BENCH and not proven:
-        return False, f"{sym} benched (net loser in logs); set STRAT_BENCH_SYMBOLS to override"
+        return _deny(f"benched: {sym} net loser in logs")
 
     # 2) Edge-score floor — the marginal-signal filter.
     if edge is not None and float(edge) < STRAT_MIN_EDGE and not proven:
-        return False, f"edge {float(edge):.0f} < {STRAT_MIN_EDGE:.0f} floor"
+        return _deny(f"edge below floor ({float(edge):.0f} < {STRAT_MIN_EDGE:.0f})")
 
     # 3) Chop-window quality bar (10am / 1pm ET).
     if _in_chop(now):
         if STRAT_REQUIRE_AGREE and both_agree != 1:
-            return False, "chop window (10am/1pm ET) requires both_agree=1"
+            return _deny("chop window (10am/1pm ET) requires both_agree=1")
         if conf < STRAT_CHOP_MIN_CONF:
-            return False, f"chop window requires conf>={STRAT_CHOP_MIN_CONF:.0f} (got {conf:.0f})"
+            return _deny(f"chop window requires conf>={STRAT_CHOP_MIN_CONF:.0f} (got {conf:.0f})")
 
+    _stat_record(True, "ok")
     return True, "ok"
 
 
