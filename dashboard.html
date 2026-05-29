@@ -8341,5 +8341,63 @@ window.addEventListener('appinstalled', () => {
   transition:opacity 0.4s ease;white-space:nowrap;pointer-events:none;
   max-width:90vw;text-align:center"></div>
 
+
+<!-- ===== Strategy $780 Goal Panel (injected) ===== -->
+<div id="strat-goal-panel" style="position:fixed;bottom:16px;right:16px;z-index:99999;width:230px;
+  font-family:system-ui,Segoe UI,sans-serif;background:#0f172a;color:#e2e8f0;border:1px solid #1e293b;
+  border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.4);padding:12px 14px;font-size:13px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+    <span style="font-weight:700;letter-spacing:.3px;">🎯 Daily Goal</span>
+    <span id="sgp-toggle" style="cursor:pointer;opacity:.6;">–</span>
+  </div>
+  <div id="sgp-body">
+    <div style="font-size:22px;font-weight:800;margin:2px 0;"><span id="sgp-pnl">—</span>
+      <span style="font-size:12px;font-weight:500;opacity:.6;"> / $780</span></div>
+    <div style="background:#1e293b;border-radius:6px;height:8px;overflow:hidden;margin:8px 0;">
+      <div id="sgp-bar" style="height:100%;width:0%;background:#22c55e;transition:width .4s;"></div>
+    </div>
+    <div id="sgp-pct" style="font-size:11px;opacity:.75;">0% to goal</div>
+    <div style="border-top:1px solid #1e293b;margin-top:8px;padding-top:6px;font-size:11px;opacity:.75;">
+      Gate today: <b id="sgp-allowed">0</b> taken · <b id="sgp-skipped">0</b> filtered
+    </div>
+    <div id="sgp-reasons" style="font-size:10px;opacity:.6;margin-top:3px;"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var collapsed=false;
+  document.getElementById('sgp-toggle').onclick=function(){
+    collapsed=!collapsed;
+    document.getElementById('sgp-body').style.display=collapsed?'none':'block';
+    this.textContent=collapsed?'+':'–';
+  };
+  function fmt(n){return (n>=0?'+$':'-$')+Math.abs(n).toFixed(0);}
+  function refresh(){
+    fetch('/api/strat/status').then(function(r){return r.json();}).then(function(d){
+      var goal=d.goal||780, pnl=d.pnl_today;
+      var pnlEl=document.getElementById('sgp-pnl');
+      if(pnl===null||pnl===undefined){pnlEl.textContent='—';}
+      else{
+        pnlEl.textContent=fmt(pnl);
+        pnlEl.style.color=pnl>=0?'#22c55e':'#ef4444';
+        var pct=Math.max(0,Math.min(100,(pnl/goal)*100));
+        var bar=document.getElementById('sgp-bar');
+        bar.style.width=pct+'%';
+        bar.style.background=pnl>=goal?'#facc15':(pnl>=0?'#22c55e':'#ef4444');
+        document.getElementById('sgp-pct').textContent=
+          d.goal_met?'🏆 Goal hit!':(pct.toFixed(0)+'% to goal · $'+(Math.max(goal-pnl,0)).toFixed(0)+' left');
+      }
+      var g=d.gate||{};
+      document.getElementById('sgp-allowed').textContent=g.allowed||0;
+      document.getElementById('sgp-skipped').textContent=g.skipped||0;
+      var br=g.by_reason||{}, parts=[];
+      for(var k in br){parts.push(br[k]+'× '+k);}
+      document.getElementById('sgp-reasons').textContent=parts.slice(0,3).join(' · ');
+    }).catch(function(){});
+  }
+  refresh(); setInterval(refresh,30000);
+})();
+</script>
+
 </body>
 </html>
