@@ -1,0 +1,489 @@
+[
+  {
+    "timestamp": "2026-05-08T14:09:00.279011+00:00",
+    "runs_at_local": "14:09 UTC",
+    "equity": 97695.24,
+    "day_pnl": 150.04,
+    "cash": 52774.71,
+    "open_positions": [
+      {
+        "sym": "ERX",
+        "side": "long",
+        "qty": "177",
+        "entry_px": 84.24,
+        "current_px": 84.39,
+        "pnl": 26.55,
+        "pnl_pct": 0.178
+      },
+      {
+        "sym": "SOXL",
+        "side": "long",
+        "qty": "89",
+        "entry_px": 166.915056,
+        "current_px": 168.47,
+        "pnl": 138.390016,
+        "pnl_pct": 0.932
+      },
+      {
+        "sym": "UDOW",
+        "side": "long",
+        "qty": "246",
+        "entry_px": 60.946342,
+        "current_px": 60.9499,
+        "pnl": 0.875268,
+        "pnl_pct": 0.006
+      }
+    ],
+    "completed_trades": [
+      {
+        "sym": "NVDL",
+        "entry_px": 109.36,
+        "exit_px": 109.274088,
+        "qty": 137.0,
+        "pnl": -11.77,
+        "pct": -0.079,
+        "dur_s": 0,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T13:45"
+      }
+    ],
+    "trade_stats": {
+      "total": 1,
+      "wins": 0,
+      "losses": 1,
+      "win_rate": 0.0,
+      "total_pnl": -11.77,
+      "avg_win": 0,
+      "avg_loss": -11.77,
+      "stops": 0,
+      "targets": 0,
+      "time_exits": 1,
+      "instant_stops_under_2min": 0
+    },
+    "breadth": {
+      "score": 66.0,
+      "regime": "BULLISH",
+      "bull_conf": 65,
+      "bear_conf": 80,
+      "spy_chg": 0.682,
+      "qqq_chg": 1.461
+    }
+  },
+  {
+    "timestamp": "2026-05-08T16:10:21.773259+00:00",
+    "runs_at_local": "16:10 UTC",
+    "equity": 96854.01,
+    "day_pnl": -691.19,
+    "cash": 52171.57,
+    "open_positions": [
+      {
+        "sym": "NVDL",
+        "side": "long",
+        "qty": "138",
+        "entry_px": 108.3,
+        "current_px": 108.07,
+        "pnl": -31.74,
+        "pnl_pct": -0.212
+      },
+      {
+        "sym": "SOXL",
+        "side": "long",
+        "qty": "87",
+        "entry_px": 170.68,
+        "current_px": 169.98,
+        "pnl": -60.9,
+        "pnl_pct": -0.41
+      },
+      {
+        "sym": "TSLL",
+        "side": "long",
+        "qty": "956",
+        "entry_px": 15.68,
+        "current_px": 15.67,
+        "pnl": -9.56,
+        "pnl_pct": -0.064
+      }
+    ],
+    "completed_trades": [
+      {
+        "sym": "NVDL",
+        "entry_px": 109.36,
+        "exit_px": 109.274088,
+        "qty": 137.0,
+        "pnl": -11.77,
+        "pct": -0.079,
+        "dur_s": 0,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T13:45"
+      },
+      {
+        "sym": "UDOW",
+        "entry_px": 60.946342,
+        "exit_px": 60.88,
+        "qty": 246.0,
+        "pnl": -16.32,
+        "pct": -0.109,
+        "dur_s": 1415,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T13:45"
+      },
+      {
+        "sym": "SOXL",
+        "entry_px": 166.915056,
+        "exit_px": 166.508539,
+        "qty": 89.0,
+        "pnl": -36.18,
+        "pct": -0.244,
+        "dur_s": 0,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T13:45"
+      },
+      {
+        "sym": "ERX",
+        "entry_px": 84.24,
+        "exit_px": 84.96,
+        "qty": 177.0,
+        "pnl": 127.44,
+        "pct": 0.855,
+        "dur_s": 3707,
+        "exit_type": "TARGET",
+        "entry_ts": "2026-05-08T13:58"
+      },
+      {
+        "sym": "LABU",
+        "entry_px": 190.0,
+        "exit_px": 189.708846,
+        "qty": 78.0,
+        "pnl": -22.71,
+        "pct": -0.153,
+        "dur_s": 1816,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T14:32"
+      },
+      {
+        "sym": "SOXL",
+        "entry_px": 169.475341,
+        "exit_px": 168.696818,
+        "qty": 88.0,
+        "pnl": -68.51,
+        "pct": -0.459,
+        "dur_s": 0,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T15:12"
+      },
+      {
+        "sym": "FAS",
+        "entry_px": 131.41,
+        "exit_px": 131.03,
+        "qty": 114.0,
+        "pnl": -43.32,
+        "pct": -0.289,
+        "dur_s": 4022,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T14:09"
+      },
+      {
+        "sym": "NUGT",
+        "entry_px": 191.61,
+        "exit_px": 188.58,
+        "qty": 78.0,
+        "pnl": -236.34,
+        "pct": -1.581,
+        "dur_s": 984,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-08T15:05"
+      },
+      {
+        "sym": "ERX",
+        "entry_px": 84.99,
+        "exit_px": 84.75,
+        "qty": 176.0,
+        "pnl": -42.24,
+        "pct": -0.282,
+        "dur_s": 1321,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T15:14"
+      },
+      {
+        "sym": "FAS",
+        "entry_px": 131.026491,
+        "exit_px": 130.87,
+        "qty": 114.0,
+        "pnl": -17.84,
+        "pct": -0.119,
+        "dur_s": 1247,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T15:38"
+      },
+      {
+        "sym": "LABU",
+        "entry_px": 188.32,
+        "exit_px": 186.92,
+        "qty": 79.0,
+        "pnl": -110.6,
+        "pct": -0.743,
+        "dur_s": 1252,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-08T15:40"
+      },
+      {
+        "sym": "NUGT",
+        "entry_px": 189.79,
+        "exit_px": 188.39,
+        "qty": 79.0,
+        "pnl": -110.6,
+        "pct": -0.738,
+        "dur_s": 1252,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-08T15:40"
+      }
+    ],
+    "trade_stats": {
+      "total": 12,
+      "wins": 1,
+      "losses": 11,
+      "win_rate": 8.3,
+      "total_pnl": -588.99,
+      "avg_win": 127.44,
+      "avg_loss": -65.13,
+      "stops": 3,
+      "targets": 1,
+      "time_exits": 8,
+      "instant_stops_under_2min": 0
+    },
+    "breadth": {
+      "score": 83.0,
+      "regime": "BULLISH",
+      "bull_conf": 60,
+      "bear_conf": 80,
+      "spy_chg": 0.787,
+      "qqq_chg": 1.82
+    }
+  },
+  {
+    "timestamp": "2026-05-08T17:09:44.911990+00:00",
+    "runs_at_local": "17:09 UTC",
+    "equity": 97296.1,
+    "day_pnl": -249.1,
+    "cash": 67361.82,
+    "open_positions": [
+      {
+        "sym": "FNGU",
+        "side": "long",
+        "qty": "518",
+        "entry_px": 28.924729,
+        "current_px": 29.0,
+        "pnl": 38.990378,
+        "pnl_pct": 0.26
+      },
+      {
+        "sym": "NVDL",
+        "side": "long",
+        "qty": "138",
+        "entry_px": 108.19,
+        "current_px": 108.06,
+        "pnl": -17.94,
+        "pnl_pct": -0.12
+      }
+    ],
+    "completed_trades": [
+      {
+        "sym": "NVDL",
+        "entry_px": 109.36,
+        "exit_px": 109.274088,
+        "qty": 137.0,
+        "pnl": -11.77,
+        "pct": -0.079,
+        "dur_s": 0,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T13:45"
+      },
+      {
+        "sym": "UDOW",
+        "entry_px": 60.946342,
+        "exit_px": 60.88,
+        "qty": 246.0,
+        "pnl": -16.32,
+        "pct": -0.109,
+        "dur_s": 1415,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T13:45"
+      },
+      {
+        "sym": "SOXL",
+        "entry_px": 166.915056,
+        "exit_px": 166.508539,
+        "qty": 89.0,
+        "pnl": -36.18,
+        "pct": -0.244,
+        "dur_s": 0,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T13:45"
+      },
+      {
+        "sym": "ERX",
+        "entry_px": 84.24,
+        "exit_px": 84.96,
+        "qty": 177.0,
+        "pnl": 127.44,
+        "pct": 0.855,
+        "dur_s": 3707,
+        "exit_type": "TARGET",
+        "entry_ts": "2026-05-08T13:58"
+      },
+      {
+        "sym": "LABU",
+        "entry_px": 190.0,
+        "exit_px": 189.708846,
+        "qty": 78.0,
+        "pnl": -22.71,
+        "pct": -0.153,
+        "dur_s": 1816,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T14:32"
+      },
+      {
+        "sym": "SOXL",
+        "entry_px": 169.475341,
+        "exit_px": 168.696818,
+        "qty": 88.0,
+        "pnl": -68.51,
+        "pct": -0.459,
+        "dur_s": 0,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T15:12"
+      },
+      {
+        "sym": "FAS",
+        "entry_px": 131.41,
+        "exit_px": 131.03,
+        "qty": 114.0,
+        "pnl": -43.32,
+        "pct": -0.289,
+        "dur_s": 4022,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T14:09"
+      },
+      {
+        "sym": "NUGT",
+        "entry_px": 191.61,
+        "exit_px": 188.58,
+        "qty": 78.0,
+        "pnl": -236.34,
+        "pct": -1.581,
+        "dur_s": 984,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-08T15:05"
+      },
+      {
+        "sym": "ERX",
+        "entry_px": 84.99,
+        "exit_px": 84.75,
+        "qty": 176.0,
+        "pnl": -42.24,
+        "pct": -0.282,
+        "dur_s": 1321,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T15:14"
+      },
+      {
+        "sym": "FAS",
+        "entry_px": 131.026491,
+        "exit_px": 130.87,
+        "qty": 114.0,
+        "pnl": -17.84,
+        "pct": -0.119,
+        "dur_s": 1247,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T15:38"
+      },
+      {
+        "sym": "LABU",
+        "entry_px": 188.32,
+        "exit_px": 186.92,
+        "qty": 79.0,
+        "pnl": -110.6,
+        "pct": -0.743,
+        "dur_s": 1252,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-08T15:40"
+      },
+      {
+        "sym": "NUGT",
+        "entry_px": 189.79,
+        "exit_px": 188.39,
+        "qty": 79.0,
+        "pnl": -110.6,
+        "pct": -0.738,
+        "dur_s": 1252,
+        "exit_type": "STOP",
+        "entry_ts": "2026-05-08T15:40"
+      },
+      {
+        "sym": "SOXL",
+        "entry_px": 170.68,
+        "exit_px": 175.82,
+        "qty": 87.0,
+        "pnl": 447.18,
+        "pct": 3.011,
+        "dur_s": 3777,
+        "exit_type": "TARGET",
+        "entry_ts": "2026-05-08T16:02"
+      },
+      {
+        "sym": "TSLL",
+        "entry_px": 15.68,
+        "exit_px": 15.62,
+        "qty": 956.0,
+        "pnl": -57.36,
+        "pct": -0.383,
+        "dur_s": 1224,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T16:07"
+      },
+      {
+        "sym": "NVDL",
+        "entry_px": 108.3,
+        "exit_px": 108.13,
+        "qty": 138.0,
+        "pnl": -23.46,
+        "pct": -0.157,
+        "dur_s": 1826,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T16:05"
+      },
+      {
+        "sym": "ERX",
+        "entry_px": 85.08,
+        "exit_px": 84.81,
+        "qty": 176.0,
+        "pnl": -47.52,
+        "pct": -0.317,
+        "dur_s": 1220,
+        "exit_type": "TIME/CONV",
+        "entry_ts": "2026-05-08T16:38"
+      }
+    ],
+    "trade_stats": {
+      "total": 16,
+      "wins": 2,
+      "losses": 14,
+      "win_rate": 12.5,
+      "total_pnl": -270.15,
+      "avg_win": 287.31,
+      "avg_loss": -60.34,
+      "stops": 3,
+      "targets": 2,
+      "time_exits": 11,
+      "instant_stops_under_2min": 0
+    },
+    "breadth": {
+      "score": 83.0,
+      "regime": "BULLISH",
+      "bull_conf": 60,
+      "bear_conf": 80,
+      "spy_chg": 0.779,
+      "qqq_chg": 2.094
+    }
+  }
+]

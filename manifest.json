@@ -1,0 +1,42 @@
+{
+  "name": "Market Genie",
+  "short_name": "Market Genie",
+  "description": "Real-time day trading intelligence — social sentiment, gap scanner, Kronos forecast",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#080810",
+  "theme_color": "#5b7fff",
+  "scope": "/",
+  "lang": "en-US",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "Gap Scanner",
+      "short_name": "Gaps",
+      "description": "Open the pre-market gap scanner",
+      "url": "/?tab=signal"
+    },
+    {
+      "name": "Kronos Signals",
+      "short_name": "Kronos",
+      "description": "Open Kronos top signals",
+      "url": "/?tab=signal"
+    }
+  ]
+}
