@@ -10901,6 +10901,28 @@ def api_youtube_post():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/youtube/thumbnail", methods=["POST"])
+def api_youtube_thumbnail():
+    """Upload a custom thumbnail for an existing video. Body: {"video_id": "abc123"}"""
+    video_id = (request.json or {}).get("video_id", "").strip()
+    if not video_id:
+        return jsonify({"ok": False, "error": "video_id required"}), 400
+    try:
+        from youtube_poster import (
+            _get_yt_service, _fetch_market_data,
+            _generate_hook_frame, _upload_thumbnail
+        )
+        service = _get_yt_service()
+        if not service:
+            return jsonify({"ok": False, "error": "YouTube credentials not set"}), 500
+        data = _fetch_market_data()
+        hook_frame = _generate_hook_frame(data, "afterhours")
+        _upload_thumbnail(service, video_id, hook_frame)
+        return jsonify({"ok": True, "video_id": video_id, "message": "Thumbnail uploaded"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/alpaca/force/<sym>", methods=["POST"])
 def api_alpaca_force(sym):
     """
