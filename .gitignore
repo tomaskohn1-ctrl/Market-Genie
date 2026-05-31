@@ -1,0 +1,28 @@
+# API keys — never commit these
+.env
+client_secret.json
+youtube_token.json
+*.json.bak
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# yfinance cache
+.cache/
+
+# Backup files
+*.bak
+*.backup

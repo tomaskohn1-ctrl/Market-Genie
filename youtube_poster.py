@@ -4,6 +4,11 @@ youtube_poster.py — Market Genie → YouTube Shorts auto-poster
 Generates a 30-second Short from live Alpaca + breadth data and uploads
 to YouTube 3× per day:  9:15 AM (pre-market)  ·  12:00 PM (midday)  ·  4:15 PM (EOD)
 
+Improvements over v1:
+  • 3-slide video (hook → dashboard → P&L close-up) with xfade transitions
+  • TTS voiceover via gTTS (reads regime, top mover, P&L, CTA)
+  • Viral-style title hooks optimised for Shorts discovery
+
 Setup (one-time):
   1. Run youtube_setup.py locally → follow browser OAuth flow
   2. Copy the printed YOUTUBE_TOKEN_JSON value into Railway env vars
@@ -11,7 +16,7 @@ Setup (one-time):
   4. Redeploy — scheduler starts automatically
 
 Dependencies (already in requirements.txt after update):
-  google-api-python-client  google-auth-oauthlib  Pillow
+  google-api-python-client  google-auth-oauthlib  Pillow  gtts
 """
 
 import os, json, base64, time, threading, subprocess, tempfile
@@ -25,7 +30,13 @@ _YT_SCOPES   = ["https://www.googleapis.com/auth/youtube.upload"]
 _VIDEO_W     = 1080
 _VIDEO_H     = 1920
 _VIDEO_SECS  = 30
-_CATEGORY_ID = "25"   # News & Politics — best fit for finance updates
+_CATEGORY_ID = "25"   # News & Politics
+
+# Slide durations (must sum to _VIDEO_SECS)
+_SLIDE1_SECS = 9    # hook
+_SLIDE2_SECS = 13   # dashboard
+_SLIDE3_SECS = 8    # P&L / CTA
+_FADE_SECS   = 0.5  # xfade duration
 
 # ── Credentials ──────────────────────────────────────────────────────────────
 def _get_yt_credentials():
@@ -39,12 +50,10 @@ def _get_yt_credentials():
             print("[YouTube] ⚠️  YOUTUBE_TOKEN_JSON not set — posting disabled")
             return None
 
-        # Strip whitespace + fix base64 padding (Railway sometimes trims trailing =)
         token_b64 = token_b64.strip()
         padding   = 4 - (len(token_b64) % 4)
         if padding != 4:
             token_b64 += "=" * padding
-        # Try standard then URL-safe base64
         try:
             raw = base64.b64decode(token_b64)
         except Exception:
@@ -86,7 +95,6 @@ def _fetch_ticker_moves(symbols: list) -> list:
             try:
                 t  = yf.Ticker(sym)
                 fi = t.fast_info
-                # fast_info uses attribute access, not .get()
                 price = (getattr(fi, "last_price", None)
                          or getattr(fi, "regularMarketPrice", None) or 0)
                 prev  = (getattr(fi, "previous_close", None)
@@ -116,13 +124,11 @@ def _fetch_market_data() -> dict:
         "timestamp": datetime.now().strftime("%b %d, %Y  ·  %I:%M %p ET"),
     }
 
-    # One call to the server's rich data endpoint
     try:
         r = requests.get(f"http://localhost:{port}/api/youtube/data", timeout=8)
         if r.status_code == 200:
             srv = r.json()
             defaults.update({k: srv[k] for k in srv if k in defaults})
-            # social_hot → hot_tickers (add price/pct via yfinance)
             social_syms = [t["symbol"] for t in srv.get("social_hot", [])[:8]
                            if t.get("symbol")]
             if social_syms:
@@ -130,7 +136,6 @@ def _fetch_market_data() -> dict:
     except Exception as e:
         print(f"[YouTube] Data fetch error: {e}")
 
-    # Fallback: if still no hot tickers, use mega-cap list
     if not defaults["hot_tickers"]:
         defaults["hot_tickers"] = _fetch_ticker_moves(_HOT_FALLBACK[:6])
 
@@ -141,10 +146,9 @@ def _fetch_market_data() -> dict:
 def _load_font(size: int, bold: bool = False):
     from PIL import ImageFont
     suffix = "-Bold" if bold else ""
-    # Bundled fonts (committed to repo) — always available on Railway
     _here = Path(__file__).parent
     candidates = [
-        str(_here / "fonts" / f"DejaVuSans{suffix}.ttf"),   # bundled ← first priority
+        str(_here / "fonts" / f"DejaVuSans{suffix}.ttf"),
         f"/usr/share/fonts/truetype/dejavu/DejaVuSans{suffix}.ttf",
         f"/usr/share/fonts/truetype/liberation/LiberationSans{suffix}.ttf",
         f"/usr/share/fonts/truetype/ubuntu/Ubuntu-{'B' if bold else 'R'}.ttf",
@@ -156,12 +160,11 @@ def _load_font(size: int, bold: bool = False):
                 return ImageFont.truetype(path, size)
         except Exception:
             pass
-    # Last resort: PIL default (11px bitmap) — text will be tiny but won't crash
     print(f"[YouTube] ⚠️  No truetype font found — text will render small")
     return ImageFont.load_default()
 
 
-# ── Image generation ──────────────────────────────────────────────────────────
+# ── Colour helpers ────────────────────────────────────────────────────────────
 def _regime_rgb(regime: str):
     return {
         "BULLISH": (74, 222, 128),
@@ -170,14 +173,135 @@ def _regime_rgb(regime: str):
     }.get(regime, (156, 163, 175))
 
 
-def _draw_bar(d, x, y, w, h, pct, max_pct=5.0, color=(74,222,128), bg=(20,30,46)):
-    """Draw a horizontal % bar for visual impact."""
-    d.rounded_rectangle([x, y, x+w, y+h], radius=4, fill=bg)
-    fill_w = int(w * min(abs(pct)/max(max_pct,0.01), 1.0))
-    if fill_w > 4:
-        d.rounded_rectangle([x, y, x+fill_w, y+h], radius=4, fill=color)
+def _ic(v):
+    GREEN = (74, 222, 128)
+    RED   = (248, 113, 113)
+    return GREEN if v >= 0 else RED
 
 
+def _dim_color(rgb, factor=7):
+    return (rgb[0] // factor, rgb[1] // factor, rgb[2] // factor)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SLIDE 1 — HOOK FRAME
+# Bold opener: regime pill, top mover giant %, timestamp
+# ═════════════════════════════════════════════════════════════════════════════
+def _generate_hook_frame(data: dict, trigger: str):
+    from PIL import Image, ImageDraw
+
+    W, H  = _VIDEO_W, _VIDEO_H
+    BG    = (8, 11, 16)
+    PANEL = (13, 18, 27)
+    DIV   = (30, 42, 58)
+    AMBER = (220, 155, 40)
+    WHITE = (225, 235, 248)
+    DIM   = (110, 128, 150)
+    GREEN = (74, 222, 128)
+    RED   = (248, 113, 113)
+    ACCENT = (56, 189, 248)   # sky blue accent for hook
+
+    img = Image.new("RGB", (W, H), BG)
+    d   = ImageDraw.Draw(img)
+    PAD = 56
+
+    hot    = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
+    regime = data["regime"]
+    score  = data["regime_score"]
+    rc     = _regime_rgb(regime)
+
+    trigger_lbl = {
+        "premarket":  "PRE-MARKET BRIEF",
+        "midday":     "MIDDAY UPDATE",
+        "eod":        "END OF DAY",
+        "afterhours": "AFTER-HOURS WRAP",
+    }.get(trigger, "LIVE UPDATE")
+
+    fnt_nano = _load_font(36)
+    fnt_xs   = _load_font(44)
+    fnt_sm   = _load_font(54)
+    fnt_md   = _load_font(64, bold=True)
+    fnt_lg   = _load_font(80, bold=True)
+    fnt_xl   = _load_font(100, bold=True)
+    fnt_hero = _load_font(200, bold=True)
+    fnt_logo = _load_font(86, bold=True)
+
+    def div(y):
+        d.line([(0, y), (W, y)], fill=DIV, width=1)
+
+    # ── Header bar ────────────────────────────────────────────────────────────
+    d.rectangle([0, 0, W, 110], fill=(10, 14, 22))
+    d.text((PAD, 14), "MARKET GENIE", font=fnt_logo, fill=WHITE)
+    d.text((W - PAD, 14), trigger_lbl, font=fnt_xs, fill=ACCENT, anchor="ra")
+    d.text((W - PAD, 66), data["timestamp"], font=_load_font(38), fill=DIM, anchor="ra")
+    div(110)
+
+    # ── "AI DAILY BRIEF" label ────────────────────────────────────────────────
+    d.rectangle([0, 111, W, 200], fill=PANEL)
+    brief_lbl = "TODAY'S AI MARKET BRIEF"
+    d.text((W // 2, 155), brief_lbl, font=fnt_sm, fill=DIM, anchor="mm")
+    div(200)
+
+    # ── Regime pill (centred, large) ───────────────────────────────────────────
+    y = 240
+    rtext = f"  {regime}  {score}  "
+    try:    rw = int(d.textlength(rtext, font=fnt_xl))
+    except: rw = len(rtext) * 60
+    rx = (W - rw) // 2
+    d.rounded_rectangle([rx - 10, y, rx + rw + 10, y + 100], radius=18,
+                         fill=_dim_color(rc, 6))
+    d.rounded_rectangle([rx - 10, y, rx + rw + 10, y + 100], radius=18,
+                         outline=rc, width=3)
+    d.text((W // 2, y + 50), rtext, font=fnt_xl, fill=rc, anchor="mm")
+
+    # ── Indices row ────────────────────────────────────────────────────────────
+    nq  = data["nq_pct"]
+    spy = data.get("spy_pct", 0.0)
+    vix = data["vix"]
+    y_idx = y + 130
+    d.text((PAD,       y_idx), f"NQ {nq:+.2f}%",  font=fnt_md, fill=_ic(nq))
+    d.text((W // 2,    y_idx), f"SPY {spy:+.2f}%", font=fnt_md, fill=_ic(spy), anchor="la")
+    vc = RED if vix > 20 else DIM
+    d.text((W - PAD,   y_idx), f"VIX {vix:.1f}",  font=fnt_md, fill=vc, anchor="ra")
+
+    # ── "BIGGEST MOVER" hero section ──────────────────────────────────────────
+    y_hero = y_idx + 100
+    div(y_hero)
+    d.rectangle([0, y_hero + 1, W, y_hero + 52], fill=(17, 24, 36))
+    d.text((W // 2, y_hero + 26), "BIGGEST MOVER", font=fnt_xs, fill=AMBER, anchor="mm")
+
+    if hot:
+        h0  = hot[0]
+        hc  = GREEN if h0["up"] else RED
+        ha  = "+" if h0["up"] else "-"
+        sym_y = y_hero + 70
+        d.text((W // 2, sym_y), h0["symbol"], font=fnt_xl, fill=WHITE, anchor="mm")
+        hero_txt = f"{ha}{abs(h0['pct']):.2f}%"
+        d.text((W // 2, sym_y + 220), hero_txt, font=fnt_hero, fill=hc, anchor="mm")
+        d.text((W // 2, sym_y + 380), f"${h0['price']:,.2f}", font=fnt_lg, fill=DIM, anchor="mm")
+        # accent bar
+        bfill = int((W - PAD * 2) * min(abs(h0["pct"]) / 10, 1.0))
+        bar_y = sym_y + 430
+        d.rectangle([PAD, bar_y, W - PAD, bar_y + 10], fill=DIV)
+        if bfill > 4:
+            d.rectangle([PAD, bar_y, PAD + bfill, bar_y + 10], fill=hc)
+    else:
+        d.text((W // 2, y_hero + 300), "Awaiting data", font=fnt_lg, fill=DIM, anchor="mm")
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    div(H - 64)
+    d.rectangle([0, H - 64, W, H], fill=(10, 14, 22))
+    d.text((W // 2, H - 38), "Follow @marketgenie.ai for daily AI signals",
+           font=fnt_xs, fill=DIM, anchor="mm")
+    d.text((W // 2, H - 10), "PAPER TRADING  |  NOT FINANCIAL ADVICE",
+           font=fnt_nano, fill=DIV, anchor="mm")
+
+    return img
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SLIDE 2 — FULL DASHBOARD (Bloomberg terminal grid, unchanged from v1)
+# ═════════════════════════════════════════════════════════════════════════════
 def _generate_frame(data: dict, trigger: str):
     """
     Bloomberg-terminal-inspired grid dashboard.
@@ -186,13 +310,13 @@ def _generate_frame(data: dict, trigger: str):
     from PIL import Image, ImageDraw
 
     W, H  = _VIDEO_W, _VIDEO_H
-    BG    = (8, 11, 16)           # near-black
-    PANEL = (13, 18, 27)          # panel background
-    ALT   = (17, 24, 36)          # alternate row
-    DIV   = (30, 42, 58)          # divider line
-    AMBER = (220, 155, 40)        # Bloomberg-style section labels
-    WHITE = (225, 235, 248)       # primary data text
-    DIM   = (110, 128, 150)       # secondary/muted text
+    BG    = (8, 11, 16)
+    PANEL = (13, 18, 27)
+    ALT   = (17, 24, 36)
+    DIV   = (30, 42, 58)
+    AMBER = (220, 155, 40)
+    WHITE = (225, 235, 248)
+    DIM   = (110, 128, 150)
     GREEN = (74, 222, 128)
     RED   = (248, 113, 113)
 
@@ -209,7 +333,7 @@ def _generate_frame(data: dict, trigger: str):
     fnt_lg    = _load_font(70, bold=True)
     fnt_xl    = _load_font(88, bold=True)
     fnt_hero  = _load_font(172, bold=True)
-    fnt_lbl   = _load_font(36)     # amber section label
+    fnt_lbl   = _load_font(36)
     fnt_logo  = _load_font(82, bold=True)
 
     rc  = _regime_rgb(data["regime"])
@@ -217,191 +341,466 @@ def _generate_frame(data: dict, trigger: str):
     pcs = "+" if pnl >= 0 else "-"
     pc  = ic(pnl)
 
-    hot     = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct",0)), reverse=True)
-    signals = [s for s in data.get("ai_signals",[]) if s.get("confidence",0) > 65][:3]
+    hot     = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
+    signals = [s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 65][:3]
     pos     = data.get("positions", [])
-    trigger_lbl = {"premarket":"PRE-MARKET","midday":"MIDDAY",
-                   "eod":"END OF DAY","afterhours":"AFTER HOURS"}.get(trigger,"LIVE")
+    trigger_lbl = {"premarket": "PRE-MARKET", "midday": "MIDDAY",
+                   "eod": "END OF DAY", "afterhours": "AFTER HOURS"}.get(trigger, "LIVE")
 
     def div(y):
-        d.line([(0,y),(W,y)], fill=DIV, width=1)
+        d.line([(0, y), (W, y)], fill=DIV, width=1)
 
     def sec(y, left, right="", right_col=DIM):
-        d.rectangle([0, y, W, y+40], fill=ALT)
-        d.text((PAD, y+4), left.upper(), font=fnt_lbl, fill=AMBER)
+        d.rectangle([0, y, W, y + 40], fill=ALT)
+        d.text((PAD, y + 4), left.upper(), font=fnt_lbl, fill=AMBER)
         if right:
-            d.text((W-PAD, y+4), right.upper(), font=fnt_lbl, fill=right_col, anchor="ra")
+            d.text((W - PAD, y + 4), right.upper(), font=fnt_lbl, fill=right_col, anchor="ra")
         return y + 40
 
-    # ══ HEADER (h=106) ═══════════════════════════════════════════
+    # ══ HEADER ════════════════════════════════════════════════════════════════
     d.rectangle([0, 0, W, 106], fill=(10, 14, 22))
     d.text((PAD, 10), "MARKET GENIE", font=fnt_logo, fill=WHITE)
-    d.text((W-PAD, 10), trigger_lbl, font=fnt_sm, fill=rc, anchor="ra")
-    d.text((W-PAD, 62), data["timestamp"], font=fnt_xs, fill=DIM, anchor="ra")
+    d.text((W - PAD, 10), trigger_lbl, font=fnt_sm, fill=rc, anchor="ra")
+    d.text((W - PAD, 62), data["timestamp"], font=fnt_xs, fill=DIM, anchor="ra")
     div(106)
 
-    # ══ REGIME + INDICES (h=130) ══════════════════════════════════
+    # ══ REGIME + INDICES ══════════════════════════════════════════════════════
     d.rectangle([0, 107, W, 237], fill=PANEL)
     regime = data["regime"];  score = data["regime_score"]
     nq = data["nq_pct"];  spy = data.get("spy_pct", 0.0);  vix = data["vix"]
-    # Regime pill
     rtext = f" {regime}  {score} "
     try:    rw = int(d.textlength(rtext, font=fnt_lg))
-    except: rw = len(rtext)*42
-    d.rounded_rectangle([PAD, 120, PAD+rw+4, 192], radius=10,
-                         fill=(rc[0]//7,rc[1]//7,rc[2]//7))
-    d.rounded_rectangle([PAD, 120, PAD+rw+4, 192], radius=10, outline=rc, width=2)
-    d.text((PAD+8, 126), rtext, font=fnt_lg, fill=rc)
-    # Indices inline
+    except: rw = len(rtext) * 42
+    d.rounded_rectangle([PAD, 120, PAD + rw + 4, 192], radius=10,
+                         fill=(rc[0] // 7, rc[1] // 7, rc[2] // 7))
+    d.rounded_rectangle([PAD, 120, PAD + rw + 4, 192], radius=10, outline=rc, width=2)
+    d.text((PAD + 8, 126), rtext, font=fnt_lg, fill=rc)
     ix = PAD + rw + 36
     d.text((ix,      126), f"NQ {nq:+.2f}%",  font=fnt_sm, fill=ic(nq))
-    d.text((ix+240,  126), f"SPY {spy:+.2f}%", font=fnt_sm, fill=ic(spy))
+    d.text((ix + 240, 126), f"SPY {spy:+.2f}%", font=fnt_sm, fill=ic(spy))
     vc = RED if vix > 20 else DIM
-    d.text((W-PAD,   126), f"VIX {vix:.1f}",  font=fnt_sm, fill=vc, anchor="ra")
+    d.text((W - PAD, 126), f"VIX {vix:.1f}",  font=fnt_sm, fill=vc, anchor="ra")
     div(237)
 
-    # ══ BIGGEST MOVER (h=240) ═════════════════════════════════════
+    # ══ BIGGEST MOVER ═════════════════════════════════════════════════════════
     y = sec(238, "Biggest mover today")
-    d.rectangle([0, y, W, y+200], fill=PANEL)
+    d.rectangle([0, y, W, y + 200], fill=PANEL)
     if hot:
         h0 = hot[0]
         hc = GREEN if h0["up"] else RED
         ha = "+" if h0["up"] else "-"
-        d.text((PAD+12, y+12), h0["symbol"], font=fnt_xl, fill=WHITE)
-        d.text((W-PAD-12, y+18), f"${h0['price']:,.2f}", font=fnt_md, fill=DIM, anchor="ra")
+        d.text((PAD + 12, y + 12), h0["symbol"], font=fnt_xl, fill=WHITE)
+        d.text((W - PAD - 12, y + 18), f"${h0['price']:,.2f}", font=fnt_md, fill=DIM, anchor="ra")
         hero_txt = f"{ha}{abs(h0['pct']):.2f}%"
-        d.text((W//2, y+106), hero_txt, font=fnt_hero, fill=hc, anchor="mm")
-        # Thin accent bar at bottom of panel
-        bfill = int((W-PAD*2) * min(abs(h0["pct"])/10, 1.0))
-        d.rectangle([PAD, y+184, W-PAD, y+192], fill=DIV)
+        d.text((W // 2, y + 106), hero_txt, font=fnt_hero, fill=hc, anchor="mm")
+        bfill = int((W - PAD * 2) * min(abs(h0["pct"]) / 10, 1.0))
+        d.rectangle([PAD, y + 184, W - PAD, y + 192], fill=DIV)
         if bfill > 4:
-            d.rectangle([PAD, y+184, PAD+bfill, y+192], fill=hc)
+            d.rectangle([PAD, y + 184, PAD + bfill, y + 192], fill=hc)
     else:
-        d.text((W//2, y+100), "Awaiting data", font=fnt_lg, fill=DIM, anchor="mm")
+        d.text((W // 2, y + 100), "Awaiting data", font=fnt_lg, fill=DIM, anchor="mm")
     y += 200
     div(y)
 
-    # ══ MOVERS TABLE (4 rows × 82px) ═════════════════════════════
-    y = sec(y+1, "Market movers", "Change")
+    # ══ MOVERS TABLE ══════════════════════════════════════════════════════════
+    y = sec(y + 1, "Market movers", "Change")
     for i, tk in enumerate(hot[1:5]):
-        rb = ALT if i%2==0 else PANEL
-        d.rectangle([0, y, W, y+82], fill=rb)
+        rb = ALT if i % 2 == 0 else PANEL
+        d.rectangle([0, y, W, y + 82], fill=rb)
         tc  = GREEN if tk["up"] else RED
         ar  = "+" if tk["up"] else "-"
-        # Left: symbol
-        d.text((PAD+12, y+16), tk["symbol"], font=fnt_lg, fill=WHITE)
-        # Center: %
-        d.text((W//2, y+20), f"{ar}{abs(tk['pct']):.2f}%", font=fnt_md, fill=tc, anchor="mm")
-        # Right: price
-        d.text((W-PAD-12, y+16), f"${tk['price']:,.2f}", font=fnt_md, fill=DIM, anchor="ra")
-        # mini bar
-        bw2 = int((W-PAD*2-24) * min(abs(tk["pct"])/8, 1.0))
-        d.rectangle([PAD+12, y+68, W-PAD-12, y+74], fill=DIV)
-        if bw2>2: d.rectangle([PAD+12, y+68, PAD+12+bw2, y+74], fill=tc)
+        d.text((PAD + 12, y + 16), tk["symbol"], font=fnt_lg, fill=WHITE)
+        d.text((W // 2, y + 20), f"{ar}{abs(tk['pct']):.2f}%", font=fnt_md, fill=tc, anchor="mm")
+        d.text((W - PAD - 12, y + 16), f"${tk['price']:,.2f}", font=fnt_md, fill=DIM, anchor="ra")
+        bw2 = int((W - PAD * 2 - 24) * min(abs(tk["pct"]) / 8, 1.0))
+        d.rectangle([PAD + 12, y + 68, W - PAD - 12, y + 74], fill=DIV)
+        if bw2 > 2: d.rectangle([PAD + 12, y + 68, PAD + 12 + bw2, y + 74], fill=tc)
         y += 82
     div(y)
 
-    # ══ AI SIGNALS ════════════════════════════════════════════════
+    # ══ AI SIGNALS ════════════════════════════════════════════════════════════
     if signals:
-        y = sec(y+1, "AI signals", "Conf")
+        y = sec(y + 1, "AI signals", "Conf")
         for i, sig in enumerate(signals):
-            rb = ALT if i%2==0 else PANEL
-            d.rectangle([0, y, W, y+74], fill=rb)
-            bull = "bull" in sig.get("direction","bull").lower()
+            rb = ALT if i % 2 == 0 else PANEL
+            d.rectangle([0, y, W, y + 74], fill=rb)
+            bull = "bull" in sig.get("direction", "bull").lower()
             sc2  = GREEN if bull else RED
             conf = sig.get("confidence", 70)
             lbl2 = "BULL" if bull else "BEAR"
-            d.text((PAD+12, y+14), sig["symbol"], font=fnt_lg, fill=WHITE)
-            try:    sx = d.textbbox((PAD+12,y+14),sig["symbol"],font=fnt_lg)[2]+16
-            except: sx = PAD+12+len(sig["symbol"])*44+16
-            d.rounded_rectangle([sx,y+18,sx+100,y+58],radius=6,fill=(sc2[0]//5,sc2[1]//5,sc2[2]//5))
-            d.text((sx+8,y+21),lbl2,font=fnt_xs,fill=sc2)
-            bx3 = sx+118; bw3 = W-PAD-12-bx3-80
-            d.rectangle([bx3, y+26, bx3+bw3, y+46], fill=DIV)
-            fb = int(bw3*min(conf/100,1))
-            if fb>2: d.rectangle([bx3,y+26,bx3+fb,y+46],fill=sc2)
-            d.text((W-PAD-12,y+14),f"{conf:.0f}%",font=fnt_md,fill=sc2,anchor="ra")
+            d.text((PAD + 12, y + 14), sig["symbol"], font=fnt_lg, fill=WHITE)
+            try:    sx = d.textbbox((PAD + 12, y + 14), sig["symbol"], font=fnt_lg)[2] + 16
+            except: sx = PAD + 12 + len(sig["symbol"]) * 44 + 16
+            d.rounded_rectangle([sx, y + 18, sx + 100, y + 58], radius=6,
+                                 fill=(sc2[0] // 5, sc2[1] // 5, sc2[2] // 5))
+            d.text((sx + 8, y + 21), lbl2, font=fnt_xs, fill=sc2)
+            bx3 = sx + 118; bw3 = W - PAD - 12 - bx3 - 80
+            d.rectangle([bx3, y + 26, bx3 + bw3, y + 46], fill=DIV)
+            fb = int(bw3 * min(conf / 100, 1))
+            if fb > 2: d.rectangle([bx3, y + 26, bx3 + fb, y + 46], fill=sc2)
+            d.text((W - PAD - 12, y + 14), f"{conf:.0f}%", font=fnt_md, fill=sc2, anchor="ra")
             y += 74
         div(y)
 
-    # ══ OPEN TRADES ════════════════════════════════════════════════
+    # ══ OPEN TRADES ═══════════════════════════════════════════════════════════
     if pos:
-        y = sec(y+1, "AI open trades")
+        y = sec(y + 1, "AI open trades")
         for p2 in pos[:2]:
-            d.rectangle([0, y, W, y+78], fill=PANEL)
+            d.rectangle([0, y, W, y + 78], fill=PANEL)
             s2  = p2["symbol"]; sd = p2["side"]
             ul  = p2["unrealized_pl"]; up = p2["unrealized_plpc"]
-            sc3 = GREEN if sd=="LONG" else RED
-            pc3 = GREEN if ul>=0 else RED
-            ps3 = "+" if ul>=0 else "-"
-            d.text((PAD+12, y+14), s2, font=fnt_lg, fill=WHITE)
-            try:    bx4 = d.textbbox((PAD+12,y+14),s2,font=fnt_lg)[2]+14
-            except: bx4 = PAD+12+len(s2)*44+14
-            d.rounded_rectangle([bx4,y+18,bx4+108,y+58],radius=6,fill=(sc3[0]//5,sc3[1]//5,sc3[2]//5))
-            d.text((bx4+8,y+21),sd,font=fnt_xs,fill=sc3)
-            d.text((W-PAD-12,y+12),f"{ps3}${abs(ul):,.0f}",font=fnt_lg,fill=pc3,anchor="ra")
-            d.text((W-PAD-12,y+56),f"({ps3}{abs(up):.2f}%)",font=fnt_xs,fill=pc3,anchor="ra")
+            sc3 = GREEN if sd == "LONG" else RED
+            pc3 = GREEN if ul >= 0 else RED
+            ps3 = "+" if ul >= 0 else "-"
+            d.text((PAD + 12, y + 14), s2, font=fnt_lg, fill=WHITE)
+            try:    bx4 = d.textbbox((PAD + 12, y + 14), s2, font=fnt_lg)[2] + 14
+            except: bx4 = PAD + 12 + len(s2) * 44 + 14
+            d.rounded_rectangle([bx4, y + 18, bx4 + 108, y + 58], radius=6,
+                                 fill=(sc3[0] // 5, sc3[1] // 5, sc3[2] // 5))
+            d.text((bx4 + 8, y + 21), sd, font=fnt_xs, fill=sc3)
+            d.text((W - PAD - 12, y + 12), f"{ps3}${abs(ul):,.0f}", font=fnt_lg, fill=pc3, anchor="ra")
+            d.text((W - PAD - 12, y + 56), f"({ps3}{abs(up):.2f}%)", font=fnt_xs, fill=pc3, anchor="ra")
             y += 78
         div(y)
 
-    # ══ P&L (pinned near bottom) ══════════════════════════════════
-    pnl_top = max(y+1, H-250)
-    d.rectangle([0, pnl_top, W, H-64], fill=PANEL)
-    d.text((PAD+12, pnl_top+10), "TODAY'S P&L", font=fnt_lbl, fill=AMBER)
+    # ══ P&L ═══════════════════════════════════════════════════════════════════
+    pnl_top = max(y + 1, H - 250)
+    d.rectangle([0, pnl_top, W, H - 64], fill=PANEL)
+    d.text((PAD + 12, pnl_top + 10), "TODAY'S P&L", font=fnt_lbl, fill=AMBER)
     if trigger == "premarket" and abs(pnl) < 1:
-        d.text((PAD+12, pnl_top+52), f"${data['equity']:,.0f}",
+        d.text((PAD + 12, pnl_top + 52), f"${data['equity']:,.0f}",
                font=_load_font(134, bold=True), fill=WHITE)
-        d.text((W-PAD-12, pnl_top+80), "Opens 9:30 AM ET",
+        d.text((W - PAD - 12, pnl_top + 80), "Opens 9:30 AM ET",
                font=fnt_sm, fill=DIM, anchor="ra")
     else:
-        d.text((PAD+12, pnl_top+52), f"{pcs}${abs(pnl):,.0f}",
+        d.text((PAD + 12, pnl_top + 52), f"{pcs}${abs(pnl):,.0f}",
                font=_load_font(134, bold=True), fill=pc)
         if data["equity"] > 0:
-            pd = (pnl / max(data["equity"]-pnl, 1)) * 100
-            d.text((W-PAD-12, pnl_top+80), f"{pcs}{abs(pd):.2f}%",
+            pd = (pnl / max(data["equity"] - pnl, 1)) * 100
+            d.text((W - PAD - 12, pnl_top + 80), f"{pcs}{abs(pd):.2f}%",
                    font=fnt_xl, fill=pc, anchor="ra")
 
-    # ══ FOOTER ════════════════════════════════════════════════════
-    div(H-64)
-    d.rectangle([0, H-64, W, H], fill=(10, 14, 22))
-    d.text((W//2, H-44), "Follow @marketgenie.ai for daily AI signals",
+    # ══ FOOTER ════════════════════════════════════════════════════════════════
+    div(H - 64)
+    d.rectangle([0, H - 64, W, H], fill=(10, 14, 22))
+    d.text((W // 2, H - 44), "Follow @marketgenie.ai for daily AI signals",
            font=fnt_xs, fill=DIM, anchor="mm")
-    d.text((W//2, H-14), "PAPER TRADING  |  NOT FINANCIAL ADVICE",
+    d.text((W // 2, H - 14), "PAPER TRADING  |  NOT FINANCIAL ADVICE",
            font=fnt_nano, fill=DIV, anchor="mm")
 
     return img
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# SLIDE 3 — P&L CLOSE-UP / CTA
+# ═════════════════════════════════════════════════════════════════════════════
+def _generate_cta_frame(data: dict, trigger: str):
+    from PIL import Image, ImageDraw
 
-def _create_short(frame, output_path: str) -> bool:
-    """Write a 30-second MP4 Short using ffmpeg Ken-Burns zoom from a still frame."""
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-        frame.save(tmp.name, "PNG")
-        png_path = tmp.name
+    W, H  = _VIDEO_W, _VIDEO_H
+    BG    = (8, 11, 16)
+    PANEL = (13, 18, 27)
+    DIV   = (30, 42, 58)
+    AMBER = (220, 155, 40)
+    WHITE = (225, 235, 248)
+    DIM   = (110, 128, 150)
+    GREEN = (74, 222, 128)
+    RED   = (248, 113, 113)
+    ACCENT = (56, 189, 248)
 
-    fps    = 25
-    frames = _VIDEO_SECS * fps  # 750 frames
+    img = Image.new("RGB", (W, H), BG)
+    d   = ImageDraw.Draw(img)
+    PAD = 56
 
-    # Use bundled ffmpeg from imageio-ffmpeg (no system install needed)
+    pnl  = data["pnl_today"]
+    pc   = GREEN if pnl >= 0 else RED
+    pcs  = "+" if pnl >= 0 else "-"
+    eq   = data["equity"]
+    pd   = (pnl / max(eq - pnl, 1)) * 100 if eq > 0 else 0.0
+
+    fnt_nano = _load_font(36)
+    fnt_xs   = _load_font(44)
+    fnt_sm   = _load_font(54)
+    fnt_md   = _load_font(66, bold=True)
+    fnt_lg   = _load_font(84, bold=True)
+    fnt_xl   = _load_font(108, bold=True)
+    fnt_hero = _load_font(220, bold=True)
+    fnt_logo = _load_font(86, bold=True)
+
+    def div(y):
+        d.line([(0, y), (W, y)], fill=DIV, width=1)
+
+    # Header
+    d.rectangle([0, 0, W, 110], fill=(10, 14, 22))
+    d.text((PAD, 14), "MARKET GENIE", font=fnt_logo, fill=WHITE)
+    d.text((W - PAD, 14), "RESULTS", font=fnt_xs, fill=ACCENT, anchor="ra")
+    d.text((W - PAD, 66), data["timestamp"], font=_load_font(38), fill=DIM, anchor="ra")
+    div(110)
+
+    # P&L label
+    d.rectangle([0, 111, W, 180], fill=PANEL)
+    d.text((W // 2, 145), "TODAY'S P&L", font=fnt_sm, fill=AMBER, anchor="mm")
+
+    # Giant P&L number
+    y_pnl = 230
+    if trigger == "premarket" and abs(pnl) < 1:
+        pnl_str = f"${eq:,.0f}"
+        sub_str = "Capital · Opens 9:30 AM ET"
+        sub_col = DIM
+    else:
+        pnl_str = f"{pcs}${abs(pnl):,.0f}"
+        sub_str = f"({pcs}{abs(pd):.2f}% daily return)"
+        sub_col = pc
+
+    d.text((W // 2, y_pnl + 180), pnl_str, font=fnt_hero, fill=pc, anchor="mm")
+    d.text((W // 2, y_pnl + 340), sub_str, font=fnt_lg, fill=sub_col, anchor="mm")
+
+    # Divider + equity bar
+    div(y_pnl + 400)
+    d.rectangle([0, y_pnl + 401, W, y_pnl + 461], fill=PANEL)
+    d.text((W // 2, y_pnl + 431), f"Account Equity: ${eq:,.0f}", font=fnt_md, fill=DIM, anchor="mm")
+
+    # Open positions summary
+    pos = data.get("positions", [])
+    y_pos = y_pnl + 510
+    if pos:
+        div(y_pos - 50)
+        d.rectangle([0, y_pos - 50, W, y_pos - 10], fill=(17, 24, 36))
+        d.text((W // 2, y_pos - 30), "OPEN POSITIONS", font=fnt_xs, fill=AMBER, anchor="mm")
+        for i, p in enumerate(pos[:3]):
+            ul = p["unrealized_pl"]
+            uc = GREEN if ul >= 0 else RED
+            us = "+" if ul >= 0 else "-"
+            row_y = y_pos + i * 80
+            d.rectangle([0, row_y, W, row_y + 76], fill=(PANEL if i % 2 else (17, 24, 36)))
+            d.text((PAD + 12, row_y + 14), p["symbol"], font=fnt_lg, fill=WHITE)
+            d.text((W - PAD - 12, row_y + 14), f"{us}${abs(ul):,.0f}",
+                   font=fnt_lg, fill=uc, anchor="ra")
+        y_pos += len(pos[:3]) * 80 + 20
+
+    # CTA block
+    cta_top = max(y_pos + 40, H - 340)
+    d.rectangle([0, cta_top, W, H - 64], fill=(14, 22, 38))
+    d.rounded_rectangle([PAD, cta_top + 20, W - PAD, cta_top + 130], radius=14,
+                         fill=(20, 40, 70), outline=ACCENT, width=2)
+    d.text((W // 2, cta_top + 75), "👆 FOLLOW FOR DAILY AI SIGNALS", font=fnt_md,
+           fill=WHITE, anchor="mm")
+    d.text((W // 2, cta_top + 165), "@marketgenie.ai", font=fnt_xl, fill=ACCENT, anchor="mm")
+    d.text((W // 2, cta_top + 260), "Free AI-powered trading signals every day",
+           font=fnt_sm, fill=DIM, anchor="mm")
+
+    div(H - 64)
+    d.rectangle([0, H - 64, W, H], fill=(10, 14, 22))
+    d.text((W // 2, H - 38), "Follow @marketgenie.ai for daily AI signals",
+           font=fnt_xs, fill=DIM, anchor="mm")
+    d.text((W // 2, H - 10), "PAPER TRADING  |  NOT FINANCIAL ADVICE",
+           font=fnt_nano, fill=DIV, anchor="mm")
+
+    return img
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TTS VOICEOVER
+# ═════════════════════════════════════════════════════════════════════════════
+def _generate_voiceover(data: dict, trigger: str) -> str | None:
+    """
+    Generate a spoken voiceover MP3 using gTTS.
+    Returns the path to the MP3 file, or None on failure.
+    """
+    try:
+        from gtts import gTTS
+    except ImportError:
+        print("[YouTube] ⚠️  gtts not installed — skipping voiceover")
+        return None
+
+    regime = data["regime"].lower()
+    score  = data["regime_score"]
+    pnl    = data["pnl_today"]
+    pcs    = "up" if pnl >= 0 else "down"
+    hot    = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
+    vix    = data["vix"]
+    nq     = data["nq_pct"]
+
+    date_str = datetime.now().strftime("%B %d")
+
+    # Build spoken script
+    trigger_phrase = {
+        "premarket":  "pre-market brief",
+        "midday":     "midday update",
+        "eod":        "end of day wrap",
+        "afterhours": "after-hours summary",
+    }.get(trigger, "live update")
+
+    script_parts = [
+        f"Market Genie A.I. {trigger_phrase} for {date_str}.",
+        f"Market regime is {regime}, scoring {score} out of 100.",
+    ]
+
+    if nq != 0:
+        nq_dir = "up" if nq >= 0 else "down"
+        script_parts.append(f"NASDAQ futures are {nq_dir} {abs(nq):.1f} percent.")
+
+    if vix > 20:
+        script_parts.append(f"Watch out — VIX is elevated at {vix:.0f}.")
+
+    if hot:
+        h0   = hot[0]
+        hdir = "up" if h0["up"] else "down"
+        script_parts.append(
+            f"Biggest mover: {h0['symbol']}, {hdir} {abs(h0['pct']):.1f} percent."
+        )
+
+    signals = [s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 65][:1]
+    if signals:
+        sig  = signals[0]
+        bull = "bull" in sig.get("direction", "bull").lower()
+        script_parts.append(
+            f"A.I. signal: {'bullish' if bull else 'bearish'} on {sig['symbol']} "
+            f"with {sig.get('confidence', 70):.0f} percent confidence."
+        )
+
+    if trigger != "premarket" and abs(pnl) >= 1:
+        script_parts.append(
+            f"Today's P and L: {pcs} ${abs(pnl):,.0f}."
+        )
+
+    script_parts.append("Follow Market Genie for free A.I. signals every trading day.")
+
+    script = "  ".join(script_parts)
+    print(f"[YouTube] 🎙️  Voiceover script: {script[:120]}...")
+
+    try:
+        tts = gTTS(text=script, lang="en", slow=False)
+        tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+        tts.save(tmp.name)
+        tmp.close()
+        print(f"[YouTube] ✅ Voiceover saved: {tmp.name}")
+        return tmp.name
+    except Exception as e:
+        print(f"[YouTube] ❌ gTTS error: {e}")
+        return None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# VIDEO CREATION — multi-slide with xfade + optional audio
+# ═════════════════════════════════════════════════════════════════════════════
+def _get_ffmpeg():
     try:
         import imageio_ffmpeg
-        ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+        return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
-        ffmpeg_bin = "ffmpeg"   # fallback to PATH if imageio-ffmpeg unavailable
+        return "ffmpeg"
+
+
+def _create_short(frame, output_path: str, *, hook_frame=None, cta_frame=None,
+                  audio_path: str | None = None) -> bool:
+    """
+    Write a 30-second MP4 Short.
+    If hook_frame and cta_frame are provided, creates a 3-slide video with
+    xfade transitions.  Falls back to single-slide Ken-Burns if needed.
+    Mixes in audio_path if supplied.
+    """
+    # Save all frames to temp PNGs
+    tmp_files = []
+
+    def save_tmp(img):
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            img.save(f.name, "PNG")
+            tmp_files.append(f.name)
+            return f.name
+
+    ffmpeg_bin = _get_ffmpeg()
+    fps = 25
+
+    # ── Multi-slide path ──────────────────────────────────────────────────────
+    if hook_frame is not None and cta_frame is not None:
+        p1 = save_tmp(hook_frame)
+        p2 = save_tmp(frame)
+        p3 = save_tmp(cta_frame)
+
+        # xfade offsets: slide1 ends at _SLIDE1_SECS, fade starts _FADE_SECS before
+        fade1_offset = _SLIDE1_SECS - _FADE_SECS          # ~8.5
+        fade2_offset = _SLIDE1_SECS + _SLIDE2_SECS - _FADE_SECS  # ~21.5
+        total = _SLIDE1_SECS + _SLIDE2_SECS + _SLIDE3_SECS  # 30
+
+        # Build filter_complex
+        fc = (
+            f"[0:v]scale={_VIDEO_W}:{_VIDEO_H},setsar=1,fps={fps}[v0];"
+            f"[1:v]scale={_VIDEO_W}:{_VIDEO_H},setsar=1,fps={fps}[v1];"
+            f"[2:v]scale={_VIDEO_W}:{_VIDEO_H},setsar=1,fps={fps}[v2];"
+            f"[v0][v1]xfade=transition=fade:duration={_FADE_SECS}:offset={fade1_offset}[x1];"
+            f"[x1][v2]xfade=transition=fade:duration={_FADE_SECS}:offset={fade2_offset}[vout]"
+        )
+
+        cmd = [
+            ffmpeg_bin, "-y",
+            "-loop", "1", "-t", str(_SLIDE1_SECS + 1), "-i", p1,
+            "-loop", "1", "-t", str(_SLIDE2_SECS + 1), "-i", p2,
+            "-loop", "1", "-t", str(_SLIDE3_SECS + 1), "-i", p3,
+        ]
+
+        if audio_path:
+            cmd += ["-i", audio_path]
+
+        cmd += [
+            "-filter_complex", fc,
+            "-map", "[vout]",
+        ]
+
+        if audio_path:
+            cmd += ["-map", f"{3}:a", "-c:a", "aac", "-b:a", "128k",
+                    "-shortest"]
+
+        cmd += [
+            "-t", str(total),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-preset", "fast",
+            "-crf", "22",
+            output_path,
+        ]
+
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
+            _cleanup(tmp_files, audio_path)
+            if res.returncode == 0:
+                print(f"[YouTube] ✅ Multi-slide video created: {output_path}")
+                return True
+            print(f"[YouTube] ⚠️  xfade failed, falling back to single-slide\n{res.stderr[-400:]}")
+        except Exception as e:
+            print(f"[YouTube] ⚠️  Multi-slide exception: {e} — falling back")
+            _cleanup(tmp_files, audio_path)
+
+    # ── Single-slide fallback (original Ken-Burns) ────────────────────────────
+    print("[YouTube] Using single-slide Ken-Burns fallback")
+    p = save_tmp(frame)
+    frames_total = _VIDEO_SECS * fps
 
     cmd = [
         ffmpeg_bin, "-y",
-        "-loop", "1", "-i", png_path,
-        "-vf",
-        (
-            f"zoompan="
-            f"z='min(zoom+0.0006,1.12)':"
-            f"x='iw/2-(iw/zoom/2)':"
-            f"y='ih/2-(ih/zoom/2)':"
-            f"d={frames}:"
-            f"s={_VIDEO_W}x{_VIDEO_H}:"
-            f"fps={fps}"
-        ),
+        "-loop", "1", "-i", p,
+    ]
+
+    if audio_path:
+        cmd += ["-i", audio_path]
+
+    zoom_filter = (
+        f"zoompan="
+        f"z='min(zoom+0.0006,1.12)':"
+        f"x='iw/2-(iw/zoom/2)':"
+        f"y='ih/2-(ih/zoom/2)':"
+        f"d={frames_total}:"
+        f"s={_VIDEO_W}x{_VIDEO_H}:"
+        f"fps={fps}"
+    )
+
+    cmd += ["-vf", zoom_filter]
+
+    if audio_path:
+        cmd += ["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "128k",
+                "-shortest"]
+
+    cmd += [
         "-t", str(_VIDEO_SECS),
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
@@ -411,19 +810,28 @@ def _create_short(frame, output_path: str) -> bool:
     ]
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        os.unlink(png_path)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
+        _cleanup(tmp_files, audio_path)
         if res.returncode == 0:
-            print(f"[YouTube] ✅ Video created: {output_path}")
+            print(f"[YouTube] ✅ Video created (fallback): {output_path}")
             return True
         print(f"[YouTube] ❌ ffmpeg error:\n{res.stderr[-600:]}")
         return False
     except subprocess.TimeoutExpired:
-        print("[YouTube] ❌ ffmpeg timed out after 180s")
+        print("[YouTube] ❌ ffmpeg timed out after 240s")
         return False
     except Exception as e:
         print(f"[YouTube] ❌ ffmpeg exception: {e}")
         return False
+
+
+def _cleanup(paths: list, *extra):
+    for p in list(paths) + list(extra):
+        if p:
+            try:
+                os.unlink(p)
+            except Exception:
+                pass
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────
@@ -434,11 +842,12 @@ def _upload_to_youtube(service, video_path: str, title: str, description: str) -
         "day trading", "stock market", "algo trading", "AI trading",
         "paper trading", "finance", "investing", "stocks", "trading bot",
         "market analysis", "automated trading", "quant trading",
+        "market genie", "AI signals", "stock signals",
     ]
 
     body = {
         "snippet": {
-            "title":       title[:100],   # YouTube 100-char limit
+            "title":       title[:100],
             "description": description,
             "tags":        tags,
             "categoryId":  _CATEGORY_ID,
@@ -471,7 +880,7 @@ def _upload_to_youtube(service, video_path: str, title: str, description: str) -
 def post_market_update(trigger: str = "midday"):
     """
     Generate and upload one Market Genie Short.
-    trigger: "premarket" | "midday" | "eod"
+    trigger: "premarket" | "midday" | "eod" | "afterhours"
     """
     print(f"[YouTube] 🎬 Starting {trigger} post...")
 
@@ -479,52 +888,91 @@ def post_market_update(trigger: str = "midday"):
     if not service:
         return False
 
-    data  = _fetch_market_data()
-    frame = _generate_frame(data, trigger)
+    data = _fetch_market_data()
+
+    # Generate all three slides
+    hook_frame = _generate_hook_frame(data, trigger)
+    dash_frame = _generate_frame(data, trigger)
+    cta_frame  = _generate_cta_frame(data, trigger)
+
+    # Generate TTS voiceover (best-effort — None if unavailable)
+    audio_path = _generate_voiceover(data, trigger)
 
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         mp4_path = tmp.name
 
-    if not _create_short(frame, mp4_path):
+    if not _create_short(dash_frame, mp4_path,
+                         hook_frame=hook_frame,
+                         cta_frame=cta_frame,
+                         audio_path=audio_path):
         return False
 
-    # ── Build title & description ─────────────────────────────────────────────
-    date_str  = datetime.now().strftime("%b %d, %Y")
-    pnl       = data["pnl_today"]
-    pnl_sign  = "+" if pnl >= 0 else "-"
-    regime    = f"{data['regime']} {data['regime_score']}"
+    # ── Title & description ───────────────────────────────────────────────────
+    date_str = datetime.now().strftime("%b %d")
+    pnl      = data["pnl_today"]
+    pnl_sign = "+" if pnl >= 0 else "-"
+    regime   = data["regime"]
+    score    = data["regime_score"]
 
-    hot  = data.get("hot_tickers", [])
-    # Build ticker snippet — only include tickers with real data
+    hot = data.get("hot_tickers", [])
+    hot_sorted = sorted(hot, key=lambda t: abs(t.get("pct", 0)), reverse=True)
     top_tickers = [
         f"{t['symbol']} {'+' if t['up'] else ''}{t['pct']:.1f}%"
-        for t in hot[:3] if t.get("price", 0) > 0
+        for t in hot_sorted[:3] if t.get("price", 0) > 0
     ]
     ticker_str = "  |  ".join(top_tickers)
 
+    # Viral-hook titles — punchy, numbers first, curiosity gap
+    regime_emoji = {"BULLISH": "🟢", "BEARISH": "🔴", "NEUTRAL": "🟡"}.get(regime, "⚪")
+    vix = data["vix"]
+    vix_note = f"  ⚡VIX {vix:.0f}" if vix > 22 else ""
+
     titles = {
-        "premarket":  f"🤖 Pre-Market Brief {date_str} | {regime} | {ticker_str or 'Top Movers'}",
-        "midday":     f"🤖 AI Midday: {pnl_sign}${abs(pnl):,.0f} P&L | {ticker_str or regime} | {date_str}",
-        "eod":        f"🤖 AI Closed {pnl_sign}${abs(pnl):,.0f} Today | {regime} | {ticker_str or 'Top Movers'}",
-        "afterhours": f"🤖 After-Hours Wrap | {pnl_sign}${abs(pnl):,.0f} Final | {ticker_str or regime} | {date_str}",
+        "premarket": (
+            f"🤖 AI Pre-Market {date_str}: {regime_emoji}{regime} {score}/100{vix_note}"
+            + (f"  |  {hot_sorted[0]['symbol']} {'+' if hot_sorted[0]['up'] else ''}{hot_sorted[0]['pct']:.1f}%"
+               if hot_sorted else "")
+        ),
+        "midday": (
+            f"🤖 AI Midday P&L: {pnl_sign}${abs(pnl):,.0f} — {regime_emoji}{regime} {score}"
+            + (f"  |  {ticker_str}" if ticker_str else "")
+        ),
+        "eod": (
+            f"🤖 AI Closed {pnl_sign}${abs(pnl):,.0f} Today — {regime_emoji}{regime}"
+            + (f"  |  {ticker_str}" if ticker_str else f"  |  {date_str}")
+        ),
+        "afterhours": (
+            f"🤖 After-Hours: AI Final P&L {pnl_sign}${abs(pnl):,.0f}"
+            + (f"  |  {ticker_str}" if ticker_str else f"  |  {regime_emoji}{regime}")
+        ),
     }
-    title = titles.get(trigger, f"AI Trader Update | {date_str}")
+    title = titles.get(trigger, f"🤖 Market Genie AI Update | {date_str}")[:100]
 
     pos_lines = "\n".join(
         f"  {p['symbol']} {p['side']}: {'+' if p['unrealized_pl'] >= 0 else '-'}${abs(p['unrealized_pl']):,.0f}"
         for p in data["positions"]
     ) or "  No open positions"
 
+    signals = [s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 65]
+    sig_lines = "\n".join(
+        f"  {'🟢 BULL' if 'bull' in s.get('direction','').lower() else '🔴 BEAR'} {s['symbol']} — {s.get('confidence',70):.0f}% confidence"
+        for s in signals[:3]
+    ) or "  No high-confidence signals"
+
     description = (
-        f"Market Genie AI Auto-Trader — {trigger.upper()} UPDATE\n\n"
-        f"Regime: {regime}\n"
-        f"Today's P&L: {pnl_sign}${abs(pnl):,.2f}\n"
-        f"NQ Futures: {data['nq_pct']:+.2f}%\n"
-        f"VIX: {data['vix']:.1f}\n\n"
-        f"Open Positions ({len(data['positions'])}):\n{pos_lines}\n\n"
+        f"📊 Market Genie AI Auto-Trader — {trigger.upper()} UPDATE\n\n"
+        f"🧠 Regime: {regime_emoji} {regime} ({score}/100)\n"
+        f"💰 Today's P&L: {pnl_sign}${abs(pnl):,.2f}\n"
+        f"📈 NQ Futures: {data['nq_pct']:+.2f}%\n"
+        f"🌡️ VIX: {data['vix']:.1f}\n\n"
+        f"🤖 AI Signals:\n{sig_lines}\n\n"
+        f"📂 Open Positions ({len(data['positions'])}):\n{pos_lines}\n\n"
+        f"🔔 Subscribe for free AI market signals every trading day!\n"
+        f"👆 Follow @marketgenie.ai\n\n"
         f"⚠️ PAPER TRADING ONLY — NOT FINANCIAL ADVICE\n"
         f"This is an AI-powered paper trading simulation for educational purposes only.\n\n"
-        f"#daytrading #stocks #algotrading #AItrading #stockmarket #finance #investing"
+        f"#daytrading #stocks #algotrading #AItrading #stockmarket #finance #investing "
+        f"#marketgenie #tradingsignals #stocksignals #wallstreet #nasdaq #sp500"
     )
 
     success = _upload_to_youtube(service, mp4_path, title, description)
@@ -538,14 +986,10 @@ def post_market_update(trigger: str = "midday"):
 
 
 # ── Scheduler loop ────────────────────────────────────────────────────────────
-# Fires 3× per trading day using the same while-True pattern as _alp_eod_loop.
-# Times (all ET):  9:15 AM pre-market  |  12:00 PM midday  |  4:15 PM EOD
-
 _YT_POSTED_FILE = "/tmp/youtube_posted.json"
 
 
 def _load_posted() -> dict:
-    """Load posted-keys dict from disk (survives process restarts / redeploys)."""
     try:
         if Path(_YT_POSTED_FILE).exists():
             with open(_YT_POSTED_FILE) as f:
@@ -556,9 +1000,7 @@ def _load_posted() -> dict:
 
 
 def _save_posted(d: dict):
-    """Persist posted-keys dict to disk."""
     try:
-        # Keep only keys from the last 7 days to avoid unbounded growth
         from datetime import datetime as _dt, timedelta
         cutoff = (_dt.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         pruned = {k: v for k, v in d.items() if k[:10] >= cutoff}
@@ -569,13 +1011,10 @@ def _save_posted(d: dict):
 
 
 def _youtube_scheduler_loop():
-    """Background thread: posts to YouTube at 9:15, 12:00, 16:15, 17:30 ET on weekdays.
-    Uses a disk-persisted posted-keys dict so Railway redeploys don't cause duplicate posts.
-    """
+    """Background thread: posts at 9:15, 12:00, 16:15, 17:30 ET on weekdays."""
     import pytz
     from datetime import time as dtime
 
-    # Load history from disk — survives restarts within the same day
     _posted = _load_posted()
 
     slots = [
@@ -590,7 +1029,7 @@ def _youtube_scheduler_loop():
             et_now   = datetime.now(pytz.timezone("America/New_York"))
             date_key = et_now.strftime("%Y-%m-%d")
             t        = et_now.time()
-            is_wday  = et_now.weekday() <= 4   # Mon–Fri
+            is_wday  = et_now.weekday() <= 4
 
             if not os.getenv("YOUTUBE_TOKEN_JSON"):
                 time.sleep(60)
@@ -601,7 +1040,7 @@ def _youtube_scheduler_loop():
                     key = f"{date_key}_{trigger}"
                     if start <= t < end and key not in _posted:
                         _posted[key] = True
-                        _save_posted(_posted)   # ← persist before spawning thread
+                        _save_posted(_posted)
                         threading.Thread(
                             target=post_market_update,
                             args=(trigger,),
@@ -623,4 +1062,4 @@ def start_youtube_scheduler():
         return
     t = threading.Thread(target=_youtube_scheduler_loop, daemon=True, name="YouTubeScheduler")
     t.start()
-    print("[YouTube] ✅ Scheduler started — posts at 9:15 AM, 12:00 PM, 4:15 PM ET (weekdays)")
+    print("[YouTube] ✅ Scheduler started — posts at 9:15 AM, 12:00 PM, 4:15 PM, 5:30 PM ET (weekdays)")
