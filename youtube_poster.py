@@ -802,63 +802,63 @@ def _create_short(frame, output_path, hook_frame=None, cta_frame=None, audio_pat
     ffmpeg_bin = _get_ffmpeg()
     fps = 25
 
-    # ── Multi-slide path ──────────────────────────────────────────────────────
+    # ── Multi-slide path — encode each slide then concat ─────────────────────
     if hook_frame is not None and cta_frame is not None:
-        p1 = save_tmp(hook_frame)
-        p2 = save_tmp(frame)
-        p3 = save_tmp(cta_frame)
-
-        # xfade offsets: slide1 ends at _SLIDE1_SECS, fade starts _FADE_SECS before
-        fade1_offset = _SLIDE1_SECS - _FADE_SECS          # ~8.5
-        fade2_offset = _SLIDE1_SECS + _SLIDE2_SECS - _FADE_SECS  # ~21.5
-        total = _SLIDE1_SECS + _SLIDE2_SECS + _SLIDE3_SECS  # 30
-
-        # Build filter_complex
-        fc = (
-            f"[0:v]scale={_VIDEO_W}:{_VIDEO_H},setsar=1,fps={fps}[v0];"
-            f"[1:v]scale={_VIDEO_W}:{_VIDEO_H},setsar=1,fps={fps}[v1];"
-            f"[2:v]scale={_VIDEO_W}:{_VIDEO_H},setsar=1,fps={fps}[v2];"
-            f"[v0][v1]xfade=transition=fade:duration={_FADE_SECS}:offset={fade1_offset}[x1];"
-            f"[x1][v2]xfade=transition=fade:duration={_FADE_SECS}:offset={fade2_offset}[vout]"
-        )
-
-        cmd = [
-            ffmpeg_bin, "-y",
-            "-loop", "1", "-t", str(_SLIDE1_SECS + 1), "-i", p1,
-            "-loop", "1", "-t", str(_SLIDE2_SECS + 1), "-i", p2,
-            "-loop", "1", "-t", str(_SLIDE3_SECS + 1), "-i", p3,
+        slides = [
+            (hook_frame, _SLIDE1_SECS),
+            (frame,      _SLIDE2_SECS),
+            (cta_frame,  _SLIDE3_SECS),
         ]
+        clip_paths = []
+        ok = True
+        for img, secs in slides:
+            png = save_tmp(img)
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as cf:
+                clip_path = cf.name
+            tmp_files.append(clip_path)
+            clip_cmd = [
+                ffmpeg_bin, "-y",
+                "-loop", "1", "-t", str(secs), "-i", png,
+                "-vf", f"scale={_VIDEO_W}:{_VIDEO_H},setsar=1",
+                "-r", str(fps),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-preset", "fast", "-crf", "22",
+                "-an", clip_path,
+            ]
+            res = subprocess.run(clip_cmd, capture_output=True, text=True, timeout=120)
+            if res.returncode != 0:
+                print(f"[YouTube] Slide encode failed: {res.stderr[-300:]}")
+                ok = False; break
+            clip_paths.append(clip_path)
 
-        if audio_path:
-            cmd += ["-i", audio_path]
+        if ok and len(clip_paths) == 3:
+            # Write concat list file
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as lf:
+                for cp in clip_paths:
+                    lf.write(f"file '{cp}'\n")
+                list_path = lf.name
+            tmp_files.append(list_path)
 
-        cmd += [
-            "-filter_complex", fc,
-            "-map", "[vout]",
-        ]
+            concat_cmd = [ffmpeg_bin, "-y",
+                          "-f", "concat", "-safe", "0", "-i", list_path]
+            if audio_path:
+                concat_cmd += ["-i", audio_path]
+            concat_cmd += ["-c:v", "copy"]
+            if audio_path:
+                concat_cmd += ["-c:a", "aac", "-b:a", "128k", "-shortest"]
+            concat_cmd += ["-movflags", "+faststart", output_path]
 
-        if audio_path:
-            cmd += ["-map", f"{3}:a", "-c:a", "aac", "-b:a", "128k",
-                    "-shortest"]
-
-        cmd += [
-            "-t", str(total),
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-preset", "fast",
-            "-crf", "22",
-            output_path,
-        ]
-
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
-            _cleanup(tmp_files, audio_path)
-            if res.returncode == 0:
-                print(f"[YouTube] ✅ Multi-slide video created: {output_path}")
-                return True
-            print(f"[YouTube] ⚠️  xfade failed, falling back to single-slide\n{res.stderr[-400:]}")
-        except Exception as e:
-            print(f"[YouTube] ⚠️  Multi-slide exception: {e} — falling back")
+            try:
+                res = subprocess.run(concat_cmd, capture_output=True, text=True, timeout=120)
+                _cleanup(tmp_files, audio_path)
+                if res.returncode == 0:
+                    print(f"[YouTube] Multi-slide video created: {output_path}")
+                    return True
+                print(f"[YouTube] Concat failed, falling back\n{res.stderr[-400:]}")
+            except Exception as e:
+                print(f"[YouTube] Concat exception: {e}")
+                _cleanup(tmp_files, audio_path)
+        else:
             _cleanup(tmp_files, audio_path)
 
     # ── Single-slide fallback (original Ken-Burns) ────────────────────────────
