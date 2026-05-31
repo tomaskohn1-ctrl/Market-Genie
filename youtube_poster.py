@@ -454,24 +454,30 @@ def _generate_frame(data: dict, trigger: str):
     d.text((W - PAD, 126), f"VIX {vix:.1f}",  font=fnt_sm, fill=vc, anchor="ra")
     div(237)
 
-    # ══ BIGGEST MOVER ═════════════════════════════════════════════════════════
+    # ══ BIGGEST MOVER — alert card style ═════════════════════════════════════
     y = sec(238, "Biggest mover today")
-    d.rectangle([0, y, W, y + 200], fill=PANEL)
+    CARD_H = 240
+    d.rectangle([0, y, W, y + CARD_H], fill=PANEL)
     if hot:
         h0 = hot[0]
         hc = GREEN if h0["up"] else RED
         ha = "+" if h0["up"] else "-"
-        d.text((PAD + 12, y + 12), h0["symbol"], font=fnt_xl, fill=WHITE)
-        d.text((W - PAD - 12, y + 18), f"${h0['price']:,.2f}", font=fnt_md, fill=DIM, anchor="ra")
+        # Left accent border
+        d.rectangle([0, y, 8, y + CARD_H], fill=hc)
+        # Symbol + price on same line
+        d.text((PAD + 12, y + 20), h0["symbol"], font=fnt_xl, fill=WHITE)
+        d.text((W - PAD - 12, y + 24), f"${h0['price']:,.2f}", font=fnt_md, fill=DIM, anchor="ra")
+        # Hero % — bigger and centred
         hero_txt = f"{ha}{abs(h0['pct']):.2f}%"
-        d.text((W // 2, y + 106), hero_txt, font=fnt_hero, fill=hc, anchor="mm")
+        d.text((W // 2, y + 148), hero_txt, font=_load_font(190, bold=True), fill=hc, anchor="mm")
+        # Accent bar
         bfill = int((W - PAD * 2) * min(abs(h0["pct"]) / 10, 1.0))
-        d.rectangle([PAD, y + 184, W - PAD, y + 192], fill=DIV)
+        d.rectangle([PAD, y + CARD_H - 14, W - PAD, y + CARD_H - 6], fill=DIV)
         if bfill > 4:
-            d.rectangle([PAD, y + 184, PAD + bfill, y + 192], fill=hc)
+            d.rectangle([PAD, y + CARD_H - 14, PAD + bfill, y + CARD_H - 6], fill=hc)
     else:
-        d.text((W // 2, y + 100), "Awaiting data", font=fnt_lg, fill=DIM, anchor="mm")
-    y += 200
+        d.text((W // 2, y + 120), "Awaiting data", font=fnt_lg, fill=DIM, anchor="mm")
+    y += CARD_H
     div(y)
 
     # ══ MOVERS TABLE ══════════════════════════════════════════════════════════
@@ -535,22 +541,33 @@ def _generate_frame(data: dict, trigger: str):
             y += 78
         div(y)
 
-    # ══ P&L ═══════════════════════════════════════════════════════════════════
+    # ══ P&L — only show when real, otherwise show follow CTA ═════════════════
     pnl_top = max(y + 1, H - 250)
     d.rectangle([0, pnl_top, W, H - 64], fill=PANEL)
-    d.text((PAD + 12, pnl_top + 10), "TODAY'S P&L", font=fnt_lbl, fill=AMBER)
-    if trigger == "premarket" and abs(pnl) < 1:
+    has_pnl = abs(pnl) >= 1 and trigger != "premarket"
+    if has_pnl:
+        d.text((PAD + 12, pnl_top + 10), "TODAY'S P&L", font=fnt_lbl, fill=AMBER)
+        d.text((PAD + 12, pnl_top + 52), f"{pcs}${abs(pnl):,.0f}",
+               font=_load_font(134, bold=True), fill=pc)
+        if data["equity"] > 0:
+            pd_val = (pnl / max(data["equity"] - pnl, 1)) * 100
+            d.text((W - PAD - 12, pnl_top + 80), f"{pcs}{abs(pd_val):.2f}%",
+                   font=fnt_xl, fill=pc, anchor="ra")
+    elif trigger == "premarket":
+        d.text((PAD + 12, pnl_top + 10), "CAPITAL READY", font=fnt_lbl, fill=AMBER)
         d.text((PAD + 12, pnl_top + 52), f"${data['equity']:,.0f}",
                font=_load_font(134, bold=True), fill=WHITE)
         d.text((W - PAD - 12, pnl_top + 80), "Opens 9:30 AM ET",
                font=fnt_sm, fill=DIM, anchor="ra")
     else:
-        d.text((PAD + 12, pnl_top + 52), f"{pcs}${abs(pnl):,.0f}",
-               font=_load_font(134, bold=True), fill=pc)
-        if data["equity"] > 0:
-            pd = (pnl / max(data["equity"] - pnl, 1)) * 100
-            d.text((W - PAD - 12, pnl_top + 80), f"{pcs}{abs(pd):.2f}%",
-                   font=fnt_xl, fill=pc, anchor="ra")
+        # No P&L — show follow CTA in this space
+        ACCENT = (56, 189, 248)
+        d.rounded_rectangle([PAD, pnl_top + 16, W - PAD, pnl_top + 170],
+                             radius=14, fill=(14, 28, 50), outline=ACCENT, width=2)
+        d.text((W // 2, pnl_top + 70), "FREE DAILY AI SIGNALS",
+               font=fnt_md, fill=WHITE, anchor="mm")
+        d.text((W // 2, pnl_top + 130), "@marketgenie.ai",
+               font=fnt_lg, fill=ACCENT, anchor="mm")
 
     # ══ FOOTER ════════════════════════════════════════════════════════════════
     div(H - 64)
@@ -959,11 +976,26 @@ def _upload_to_youtube(service, video_path: str, title: str, description: str) -
                 pct = int(status.progress() * 100)
                 print(f"[YouTube] Upload progress: {pct}%")
         vid_id = response.get("id", "?")
-        print(f"[YouTube] ✅ Published: https://youtube.com/shorts/{vid_id}")
-        return True
+        print(f"[YouTube] Published: https://youtube.com/shorts/{vid_id}")
+        return vid_id
     except Exception as e:
-        print(f"[YouTube] ❌ Upload error: {e}")
-        return False
+        print(f"[YouTube] Upload error: {e}")
+        return None
+
+
+def _upload_thumbnail(service, video_id, thumbnail_img):
+    """Upload the hook frame as the custom thumbnail."""
+    try:
+        from googleapiclient.http import MediaIoBaseUpload
+        import io
+        buf = io.BytesIO()
+        thumbnail_img.save(buf, format="JPEG", quality=92)
+        buf.seek(0)
+        media = MediaIoBaseUpload(buf, mimetype="image/jpeg", resumable=False)
+        service.thumbnails().set(videoId=video_id, media_body=media).execute()
+        print(f"[YouTube] Custom thumbnail set for {video_id}")
+    except Exception as e:
+        print(f"[YouTube] Thumbnail upload failed (non-fatal): {e}")
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -1066,14 +1098,19 @@ def post_market_update(trigger: str = "midday"):
         f"#marketgenie #tradingsignals #stocksignals #wallstreet #nasdaq #sp500"
     )
 
-    success = _upload_to_youtube(service, mp4_path, title, description)
+    vid_id = _upload_to_youtube(service, mp4_path, title, description)
 
     try:
         os.unlink(mp4_path)
     except Exception:
         pass
 
-    return success
+    if vid_id:
+        # Upload hook frame as custom thumbnail — what people see before clicking
+        _upload_thumbnail(service, vid_id, hook_frame)
+        return True
+
+    return False
 
 
 # ── Scheduler loop ────────────────────────────────────────────────────────────
