@@ -498,26 +498,48 @@ def _generate_frame(data: dict, trigger: str):
 
     # ══ AI SIGNALS ════════════════════════════════════════════════════════════
     if signals:
-        y = sec(y + 1, "AI signals", "Conf")
+        y = sec(y + 1, "AI signals")
         for i, sig in enumerate(signals):
             rb = ALT if i % 2 == 0 else PANEL
-            d.rectangle([0, y, W, y + 74], fill=rb)
+            ROW = 96
+            d.rectangle([0, y, W, y + ROW], fill=rb)
             bull = "bull" in sig.get("direction", "bull").lower()
             sc2  = GREEN if bull else RED
             conf = sig.get("confidence", 70)
             lbl2 = "BULL" if bull else "BEAR"
-            d.text((PAD + 12, y + 14), sig["symbol"], font=fnt_lg, fill=WHITE)
-            try:    sx = d.textbbox((PAD + 12, y + 14), sig["symbol"], font=fnt_lg)[2] + 16
-            except: sx = PAD + 12 + len(sig["symbol"]) * 44 + 16
-            d.rounded_rectangle([sx, y + 18, sx + 100, y + 58], radius=6,
-                                 fill=(sc2[0] // 5, sc2[1] // 5, sc2[2] // 5))
-            d.text((sx + 8, y + 21), lbl2, font=fnt_xs, fill=sc2)
-            bx3 = sx + 118; bw3 = W - PAD - 12 - bx3 - 80
-            d.rectangle([bx3, y + 26, bx3 + bw3, y + 46], fill=DIV)
-            fb = int(bw3 * min(conf / 100, 1))
-            if fb > 2: d.rectangle([bx3, y + 26, bx3 + fb, y + 46], fill=sc2)
-            d.text((W - PAD - 12, y + 14), f"{conf:.0f}%", font=fnt_md, fill=sc2, anchor="ra")
-            y += 74
+
+            # Left accent border
+            d.rectangle([0, y, 6, y + ROW], fill=sc2)
+
+            # Symbol — fixed left column
+            d.text((PAD + 12, y + ROW // 2 - 8), sig["symbol"], font=fnt_lg, fill=WHITE, anchor="lm")
+
+            # BULL/BEAR badge — next to symbol
+            try:    sym_end = d.textbbox((PAD + 12, y), sig["symbol"], font=fnt_lg)[2] + 20
+            except: sym_end = PAD + 12 + len(sig["symbol"]) * 42 + 20
+            badge_w = 110
+            d.rounded_rectangle([sym_end, y + 22, sym_end + badge_w, y + 68],
+                                 radius=8, fill=(sc2[0]//5, sc2[1]//5, sc2[2]//5),
+                                 outline=sc2, width=2)
+            d.text((sym_end + badge_w // 2, y + 45), lbl2, font=fnt_xs, fill=sc2, anchor="mm")
+
+            # Confidence % — right side, large and clear
+            conf_x = W - PAD - 12
+            d.text((conf_x, y + 20), f"{conf:.0f}%", font=fnt_md, fill=sc2, anchor="ra")
+
+            # Confidence bar — between badge and % number, with clear padding
+            bar_x1 = sym_end + badge_w + 16
+            try:    conf_w = int(d.textlength(f"{conf:.0f}%", font=fnt_md)) + 20
+            except: conf_w = 100
+            bar_x2 = conf_x - conf_w - 16
+            bar_y  = y + 56
+            if bar_x2 > bar_x1 + 20:
+                d.rounded_rectangle([bar_x1, bar_y, bar_x2, bar_y + 16], radius=6, fill=DIV)
+                fb = int((bar_x2 - bar_x1) * min(conf / 100, 1.0))
+                if fb > 4:
+                    d.rounded_rectangle([bar_x1, bar_y, bar_x1 + fb, bar_y + 16], radius=6, fill=sc2)
+
+            y += ROW
         div(y)
 
     # ══ OPEN TRADES ═══════════════════════════════════════════════════════════
@@ -542,7 +564,7 @@ def _generate_frame(data: dict, trigger: str):
         div(y)
 
     # ══ P&L — only show when real, otherwise show follow CTA ═════════════════
-    pnl_top = max(y + 1, H - 250)
+    pnl_top = y + 1
     d.rectangle([0, pnl_top, W, H - 64], fill=PANEL)
     has_pnl = abs(pnl) >= 1 and trigger != "premarket"
     if has_pnl:
