@@ -102,7 +102,7 @@ def _fetch_ticker_moves(symbols: list) -> list:
                 price = float(price or 0)
                 prev  = float(prev  or price)
                 pct   = ((price - prev) / prev * 100) if prev else 0.0
-                if price > 0:
+                if price >= 5:   # filter penny stocks — they pollute movers list
                     results.append({"symbol": sym, "price": price, "pct": pct, "up": pct >= 0})
             except Exception as e:
                 print(f"[YouTube] Ticker {sym} error: {e}")
@@ -293,7 +293,7 @@ def _generate_hook_frame(data: dict, trigger: str):
     d.rectangle([0, H - 64, W, H], fill=(10, 14, 22))
     d.text((W // 2, H - 38), "Follow @marketgenie.ai for daily AI signals",
            font=fnt_xs, fill=DIM, anchor="mm")
-    d.text((W // 2, H - 10), "PAPER TRADING  |  NOT FINANCIAL ADVICE",
+    d.text((W // 2, H - 10), "AI SIGNALS  |  NOT FINANCIAL ADVICE",
            font=fnt_nano, fill=DIV, anchor="mm")
 
     return img
@@ -485,7 +485,7 @@ def _generate_frame(data: dict, trigger: str):
     d.rectangle([0, H - 64, W, H], fill=(10, 14, 22))
     d.text((W // 2, H - 44), "Follow @marketgenie.ai for daily AI signals",
            font=fnt_xs, fill=DIM, anchor="mm")
-    d.text((W // 2, H - 14), "PAPER TRADING  |  NOT FINANCIAL ADVICE",
+    d.text((W // 2, H - 14), "AI SIGNALS  |  NOT FINANCIAL ADVICE",
            font=fnt_nano, fill=DIV, anchor="mm")
 
     return img
@@ -537,23 +537,35 @@ def _generate_cta_frame(data: dict, trigger: str):
     d.text((W - PAD, 66), data["timestamp"], font=_load_font(38), fill=DIM, anchor="ra")
     div(110)
 
-    # P&L label
-    d.rectangle([0, 111, W, 180], fill=PANEL)
-    d.text((W // 2, 145), "TODAY'S P&L", font=fnt_sm, fill=AMBER, anchor="mm")
+    hot = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
+    show_pnl = abs(pnl) >= 1 and trigger != "premarket"
 
-    # Giant P&L number
     y_pnl = 230
-    if trigger == "premarket" and abs(pnl) < 1:
-        pnl_str = f"${eq:,.0f}"
-        sub_str = "Capital · Opens 9:30 AM ET"
-        sub_col = DIM
-    else:
+    if show_pnl:
+        # Giant P&L number
+        d.rectangle([0, 111, W, 180], fill=PANEL)
+        d.text((W // 2, 145), "TODAY'S P&L", font=fnt_sm, fill=AMBER, anchor="mm")
         pnl_str = f"{pcs}${abs(pnl):,.0f}"
         sub_str = f"({pcs}{abs(pd):.2f}% daily return)"
-        sub_col = pc
-
-    d.text((W // 2, y_pnl + 180), pnl_str, font=fnt_hero, fill=pc, anchor="mm")
-    d.text((W // 2, y_pnl + 340), sub_str, font=fnt_lg, fill=sub_col, anchor="mm")
+        d.text((W // 2, y_pnl + 180), pnl_str, font=fnt_hero, fill=pc, anchor="mm")
+        d.text((W // 2, y_pnl + 340), sub_str, font=fnt_lg, fill=pc, anchor="mm")
+    elif trigger == "premarket":
+        # Pre-market: show capital ready
+        d.rectangle([0, 111, W, 180], fill=PANEL)
+        d.text((W // 2, 145), "CAPITAL READY", font=fnt_sm, fill=AMBER, anchor="mm")
+        d.text((W // 2, y_pnl + 180), f"${eq:,.0f}", font=fnt_hero, fill=WHITE, anchor="mm")
+        d.text((W // 2, y_pnl + 340), "Market opens 9:30 AM ET", font=fnt_lg, fill=DIM, anchor="mm")
+    else:
+        # No P&L (market closed / weekend) — show top mover instead
+        d.rectangle([0, 111, W, 180], fill=PANEL)
+        d.text((W // 2, 145), "TOP MOVER TODAY", font=fnt_sm, fill=AMBER, anchor="mm")
+        if hot:
+            h0 = hot[0]; hc = GREEN if h0["up"] else RED; ha = "+" if h0["up"] else "-"
+            d.text((W // 2, y_pnl + 120), h0["symbol"], font=fnt_xl, fill=WHITE, anchor="mm")
+            d.text((W // 2, y_pnl + 280), f"{ha}{abs(h0['pct']):.2f}%", font=fnt_hero, fill=hc, anchor="mm")
+            d.text((W // 2, y_pnl + 420), f"${h0['price']:,.2f}", font=fnt_lg, fill=DIM, anchor="mm")
+        else:
+            d.text((W // 2, y_pnl + 280), "Market closed", font=fnt_xl, fill=DIM, anchor="mm")
 
     # Divider + equity bar
     div(y_pnl + 400)
@@ -593,7 +605,7 @@ def _generate_cta_frame(data: dict, trigger: str):
     d.rectangle([0, H - 64, W, H], fill=(10, 14, 22))
     d.text((W // 2, H - 38), "Follow @marketgenie.ai for daily AI signals",
            font=fnt_xs, fill=DIM, anchor="mm")
-    d.text((W // 2, H - 10), "PAPER TRADING  |  NOT FINANCIAL ADVICE",
+    d.text((W // 2, H - 10), "AI SIGNALS  |  NOT FINANCIAL ADVICE",
            font=fnt_nano, fill=DIV, anchor="mm")
 
     return img
@@ -602,7 +614,7 @@ def _generate_cta_frame(data: dict, trigger: str):
 # ═════════════════════════════════════════════════════════════════════════════
 # TTS VOICEOVER
 # ═════════════════════════════════════════════════════════════════════════════
-def _generate_voiceover(data: dict, trigger: str) -> str | None:
+def _generate_voiceover(data, trigger):
     """
     Generate a spoken voiceover MP3 using gTTS.
     Returns the path to the MP3 file, or None on failure.
@@ -660,11 +672,11 @@ def _generate_voiceover(data: dict, trigger: str) -> str | None:
         )
 
     if trigger != "premarket" and abs(pnl) >= 1:
-        script_parts.append(
-            f"Today's P and L: {pcs} ${abs(pnl):,.0f}."
-        )
+        script_parts.append(f"Today's P and L: {pcs} ${abs(pnl):,.0f}.")
+    elif trigger == "afterhours" and abs(pnl) < 1:
+        script_parts.append("No trades today. Signals reset tomorrow at market open.")
 
-    script_parts.append("Follow Market Genie for free A.I. signals every trading day.")
+    script_parts.append("Follow Market Genie for free A.I. signals every single trading day.")
 
     script = "  ".join(script_parts)
     print(f"[YouTube] 🎙️  Voiceover script: {script[:120]}...")
@@ -692,8 +704,7 @@ def _get_ffmpeg():
         return "ffmpeg"
 
 
-def _create_short(frame, output_path: str, *, hook_frame=None, cta_frame=None,
-                  audio_path: str | None = None) -> bool:
+def _create_short(frame, output_path, hook_frame=None, cta_frame=None, audio_path=None):
     """
     Write a 30-second MP4 Short.
     If hook_frame and cta_frame are provided, creates a 3-slide video with
@@ -916,37 +927,40 @@ def post_market_update(trigger: str = "midday"):
 
     hot = data.get("hot_tickers", [])
     hot_sorted = sorted(hot, key=lambda t: abs(t.get("pct", 0)), reverse=True)
+    # Only include stocks >= $5 in title tickers
     top_tickers = [
         f"{t['symbol']} {'+' if t['up'] else ''}{t['pct']:.1f}%"
-        for t in hot_sorted[:3] if t.get("price", 0) > 0
+        for t in hot_sorted[:3] if t.get("price", 0) >= 5
     ]
     ticker_str = "  |  ".join(top_tickers)
+    top_mover = (f"{hot_sorted[0]['symbol']} {'+' if hot_sorted[0]['up'] else ''}{hot_sorted[0]['pct']:.1f}%"
+                 if hot_sorted else "")
 
-    # Viral-hook titles — punchy, numbers first, curiosity gap
     regime_emoji = {"BULLISH": "🟢", "BEARISH": "🔴", "NEUTRAL": "🟡"}.get(regime, "⚪")
     vix = data["vix"]
-    vix_note = f"  ⚡VIX {vix:.0f}" if vix > 22 else ""
+    vix_note = f" ⚡VIX {vix:.0f}" if vix > 22 else ""
+    has_pnl = abs(pnl) >= 1
 
     titles = {
         "premarket": (
-            f"🤖 AI Pre-Market {date_str}: {regime_emoji}{regime} {score}/100{vix_note}"
-            + (f"  |  {hot_sorted[0]['symbol']} {'+' if hot_sorted[0]['up'] else ''}{hot_sorted[0]['pct']:.1f}%"
-               if hot_sorted else "")
+            f"{top_mover + '  |  ' if top_mover else ''}"
+            f"AI Pre-Market {date_str} {regime_emoji}{regime} {score}/100{vix_note}"
         ),
         "midday": (
-            f"🤖 AI Midday P&L: {pnl_sign}${abs(pnl):,.0f} — {regime_emoji}{regime} {score}"
-            + (f"  |  {ticker_str}" if ticker_str else "")
+            f"{'AI Midday: ' + pnl_sign + '$' + f'{abs(pnl):,.0f}' + '  |  ' if has_pnl else ''}"
+            f"{ticker_str or (regime_emoji + regime + ' ' + str(score))}  [{date_str}]"
         ),
         "eod": (
-            f"🤖 AI Closed {pnl_sign}${abs(pnl):,.0f} Today — {regime_emoji}{regime}"
-            + (f"  |  {ticker_str}" if ticker_str else f"  |  {date_str}")
+            f"{'AI closed ' + pnl_sign + '$' + f'{abs(pnl):,.0f}' + ' today  |  ' if has_pnl else ''}"
+            f"{ticker_str or top_mover or (regime_emoji + regime)}  [{date_str}]"
         ),
         "afterhours": (
-            f"🤖 After-Hours: AI Final P&L {pnl_sign}${abs(pnl):,.0f}"
-            + (f"  |  {ticker_str}" if ticker_str else f"  |  {regime_emoji}{regime}")
+            f"{ticker_str + '  |  ' if ticker_str else ''}"
+            f"{'AI P&L: ' + pnl_sign + '$' + f'{abs(pnl):,.0f}' + '  |  ' if has_pnl else ''}"
+            f"After-Hours {date_str} {regime_emoji}{regime}"
         ),
     }
-    title = titles.get(trigger, f"🤖 Market Genie AI Update | {date_str}")[:100]
+    title = titles.get(trigger, f"Market Genie AI Signals | {date_str}")[:100]
 
     pos_lines = "\n".join(
         f"  {p['symbol']} {p['side']}: {'+' if p['unrealized_pl'] >= 0 else '-'}${abs(p['unrealized_pl']):,.0f}"
@@ -969,8 +983,7 @@ def post_market_update(trigger: str = "midday"):
         f"📂 Open Positions ({len(data['positions'])}):\n{pos_lines}\n\n"
         f"🔔 Subscribe for free AI market signals every trading day!\n"
         f"👆 Follow @marketgenie.ai\n\n"
-        f"⚠️ PAPER TRADING ONLY — NOT FINANCIAL ADVICE\n"
-        f"This is an AI-powered paper trading simulation for educational purposes only.\n\n"
+        f"⚠️ NOT FINANCIAL ADVICE — for educational & informational purposes only.\n\n"
         f"#daytrading #stocks #algotrading #AItrading #stockmarket #finance #investing "
         f"#marketgenie #tradingsignals #stocksignals #wallstreet #nasdaq #sp500"
     )
