@@ -308,7 +308,7 @@ def _generate_hook_frame(data, trigger):
     d.rounded_rectangle([PAD, y + 12, PAD + 56, y + 68], radius=8,
                          fill=(20, 50, 80), outline=ACCENT, width=2)
     d.text((PAD + 28, y + 40), "⚡", font=fnt_md, fill=ACCENT, anchor="mm")
-    alert_text = f"{n_alerts} SIGNAL{'S' if n_alerts != 1 else ''} TRIGGERED"
+    alert_text = f"{n_alerts} SIGNAL{'S' if n_alerts != 1 else ''} TRIGGERED" if trigger != "premarket" else f"{n_alerts} STOCKS TO WATCH"
     d.text((PAD + 74, y + 40), alert_text, font=fnt_md, fill=WHITE, anchor="lm")
     y += 80
 
@@ -349,7 +349,7 @@ def _generate_hook_frame(data, trigger):
     # Mover alert cards
     if n_mov:
         d.text((PAD, y + 8), "TOP MOVERS", font=fnt_xs, fill=AMBER)
-        d.text((W - PAD, y + 8), "TODAY", font=fnt_xs, fill=DIM, anchor="ra")
+        d.text((W - PAD, y + 8), "PRE-MKT" if trigger == "premarket" else "TODAY", font=fnt_xs, fill=DIM, anchor="ra")
         y += LBL_H + 8
         for tk in hot[:n_mov]:
             color = GREEN if tk["up"] else RED
@@ -507,7 +507,7 @@ def _generate_frame(data: dict, trigger: str):
     y += HERO_H; div(y)
 
     # ══ MOVERS TABLE ══════════════════════════════════════════════════════════
-    y = sec(y + 1, "Market movers", "Change")
+    y = sec(y + 1, "Pre-mkt movers" if trigger == "premarket" else "Market movers", "Pre-mkt %" if trigger == "premarket" else "Change")
     for i, tk in enumerate(hot[1:5]):
         rb = ALT if i % 2 == 0 else PANEL
         d.rectangle([0, y, W, y + MOV_ROW], fill=rb)
