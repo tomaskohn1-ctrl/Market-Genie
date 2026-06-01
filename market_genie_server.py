@@ -7217,8 +7217,8 @@ _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.40"))   # ma
 _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
 _ALP_DEDUP_SECS       = 600    # 10 min dedup — reduced 25→10 min: with 9-ticker universe and 20-40 min holds, 25 min was blocking same-ticker re-entry in the same hour entirely; 10 min allows a fresh setup after the position exits while preventing immediate same-bar re-entry
-_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "15"))  # min wait after a losing exit — reduced 30→15 min: with expanded universe, 30 min was cutting too many afternoon setups; 15 min still blocks immediate re-entry churn while allowing a second attempt per hour
-_ALP_EXIT_COOLDOWN_MINS = int(os.getenv("ALPACA_EXIT_COOLDOWN_MINS", "30"))  # min wait after ANY exit (win or lose) — prevents churn re-entry after trailing stops and target hits; longer than loss cooldown because a winning exit signals the setup is exhausted
+_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "60"))  # min wait after a losing exit — raised 15→60 min: MGM shorted twice in a row both losers, DOCU churned 3x all losers on Jun 1; 60 min blocks same-direction re-entry after a loss for a full hour
+_ALP_EXIT_COOLDOWN_MINS = int(os.getenv("ALPACA_EXIT_COOLDOWN_MINS", "45"))  # min wait after ANY exit (win or lose) — raised 30→45 min: prevents churn re-entry; 45 min allows ~2 trades per ticker per session max
 _ALP_MAX_BULL_POSITIONS = int(os.getenv("ALPACA_MAX_BULL_POSITIONS", "5"))  # max simultaneous bull/long positions (up to 5 of 6 slots)
 _ALP_MAX_BEAR_POSITIONS = int(os.getenv("ALPACA_MAX_BEAR_POSITIONS", "5"))  # max simultaneous bear/short positions (up to 5 of 6 slots)
 
