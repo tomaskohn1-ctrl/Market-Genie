@@ -129,10 +129,15 @@ def _fetch_market_data() -> dict:
         if r.status_code == 200:
             srv = r.json()
             defaults.update({k: srv[k] for k in srv if k in defaults})
-            social_syms = [t["symbol"] for t in srv.get("social_hot", [])[:8]
-                           if t.get("symbol")]
-            if social_syms:
-                defaults["hot_tickers"] = _fetch_ticker_moves(social_syms)
+            # hot_tickers now comes directly from server's live Alpaca cache (real intraday %)
+            # Only fall back to yfinance if the server didn't provide it
+            if srv.get("hot_tickers"):
+                defaults["hot_tickers"] = srv["hot_tickers"]
+            else:
+                social_syms = [t["symbol"] for t in srv.get("social_hot", [])[:8]
+                               if t.get("symbol")]
+                if social_syms:
+                    defaults["hot_tickers"] = _fetch_ticker_moves(social_syms)
     except Exception as e:
         print(f"[YouTube] Data fetch error: {e}")
 

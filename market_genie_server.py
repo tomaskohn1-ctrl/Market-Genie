@@ -10869,11 +10869,25 @@ def api_youtube_data():
                 ]
         except Exception: pass
 
+        # ── Hot tickers from live Alpaca snapshot cache (real intraday %) ───
+        with _alp_snap_lock:
+            snap_copy = dict(_alp_snap_cache)
+        hot_tickers = []
+        for sym, q in snap_copy.items():
+            price = float(q.get("c") or 0)
+            dp    = float(q.get("dp") or 0)
+            if price >= 15 and abs(dp) >= 1.0:
+                hot_tickers.append({"symbol": sym, "price": round(price, 2),
+                                    "pct": round(dp, 2), "up": dp >= 0})
+        hot_tickers.sort(key=lambda x: abs(x["pct"]), reverse=True)
+        hot_tickers = hot_tickers[:8]
+
         return jsonify({
             "regime": regime, "regime_score": int(score),
             "nq_pct": nq_pct, "spy_pct": spy_pct, "qqq_pct": qqq_pct, "vix": vix,
             "social_hot": social_tickers,
             "ai_signals": top_signals,
+            "hot_tickers": hot_tickers,
             "pnl_today": round(pnl_today, 2),
             "equity": round(equity, 2),
             "positions": positions,
