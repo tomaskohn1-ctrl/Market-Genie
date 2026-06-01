@@ -383,7 +383,7 @@ def _generate_hook_frame(data, trigger):
             parts.append(f"{'BULL' if bull else 'BEAR'} {s['symbol']} {s.get('confidence',70):.0f}%")
         d.text((W//2, H-38), "  |  ".join(parts), font=fnt_nano, fill=DIM, anchor="mm")
     else:
-        d.text((W//2, H-38), "Real-time AI signals  |  marketgenie.ai", font=fnt_nano, fill=DIM, anchor="mm")
+        d.text((W//2, H-38), f"VIX {data.get('vix',16.5):.1f}  |  P/C {data.get('put_call_ratio',1.0):.2f}  |  Score {data.get('regime_score',50)}", font=fnt_nano, fill=DIM, anchor="mm")
     d.text((W//2, H-10), "AI SIGNALS  |  NOT FINANCIAL ADVICE", font=fnt_nano, fill=DIV, anchor="mm")
     return img
 
@@ -449,7 +449,7 @@ def _generate_frame(data: dict, trigger: str):
     # ══ HEADER ════════════════════════════════════════════════════════════════
     d.rectangle([0, 0, W, 148], fill=(10, 14, 22))
     d.text((PAD, 12), "MARKET GENIE", font=fnt_logo, fill=WHITE)
-    d.text((W - PAD, 12), trigger_lbl, font=fnt_sm, fill=rc, anchor="ra")
+    d.text((W - PAD, 12), trigger_lbl, font=fnt_md, fill=rc, anchor="ra")
     d.text((PAD, 96), data["timestamp"], font=fnt_xs, fill=DIM)
     d.rectangle([0, 145, W, 148], fill=rc)
     div(148)
@@ -512,6 +512,7 @@ def _generate_frame(data: dict, trigger: str):
         rb = ALT if i % 2 == 0 else PANEL
         d.rectangle([0, y, W, y + MOV_ROW], fill=rb)
         tc = GREEN if tk["up"] else RED; ar = "+" if tk["up"] else "-"
+        d.rectangle([0, y, 5, y + MOV_ROW], fill=tc)  # direction accent bar
         mid = y + MOV_ROW // 2 - 10
         d.text((PAD + 12, mid), tk["symbol"], font=fnt_lg, fill=WHITE)
         d.text((W // 2,   mid), f"{ar}{abs(tk['pct']):.2f}%", font=fnt_md, fill=tc, anchor="mm")
@@ -636,7 +637,7 @@ def _generate_frame(data: dict, trigger: str):
             parts_f.append(f"{'BULL' if bull else 'BEAR'} {s['symbol']} {s.get('confidence',70):.0f}%")
         d.text((W//2, H-44), "  |  ".join(parts_f), font=fnt_nano, fill=DIM, anchor="mm")
     else:
-        d.text((W//2, H-44), "Real-time AI signals  |  marketgenie.ai", font=fnt_nano, fill=DIM, anchor="mm")
+        d.text((W//2, H-44), f"VIX {data.get('vix',16.5):.1f}  |  P/C {data.get('put_call_ratio',1.0):.2f}  |  Score {data.get('regime_score',50)}", font=fnt_nano, fill=DIM, anchor="mm")
     d.text((W // 2, H - 14), "AI SIGNALS  |  NOT FINANCIAL ADVICE",
            font=fnt_nano, fill=DIV, anchor="mm")
 
@@ -813,7 +814,7 @@ def _generate_cta_frame(data, trigger):
             parts_f2.append(f"{'BULL' if bull else 'BEAR'} {s['symbol']} {s.get('confidence',70):.0f}%")
         d.text((W//2, H-38), "  |  ".join(parts_f2), font=fnt_nano, fill=DIM, anchor="mm")
     else:
-        d.text((W//2, H-38), "Real-time AI signals  |  marketgenie.ai", font=fnt_nano, fill=DIM, anchor="mm")
+        d.text((W//2, H-38), f"VIX {data.get('vix',16.5):.1f}  |  P/C {data.get('put_call_ratio',1.0):.2f}  |  Score {data.get('regime_score',50)}", font=fnt_nano, fill=DIM, anchor="mm")
     d.text((W // 2, H - 10), "AI SIGNALS  |  NOT FINANCIAL ADVICE", font=fnt_nano, fill=DIV, anchor="mm")
     return img
 
@@ -1202,8 +1203,6 @@ def post_market_update(trigger: str = "midday"):
         f"🌡️ VIX: {data['vix']:.1f}\n\n"
         f"🤖 AI Signals:\n{sig_lines}\n\n"
         f"📂 Open Positions ({len(data['positions'])}):\n{pos_lines}\n\n"
-        f"🔔 Subscribe for free AI market signals every trading day!\n"
-        f"👆 Follow @marketgenie.ai\n\n"
         f"⚠️ NOT FINANCIAL ADVICE — for educational & informational purposes only.\n\n"
         f"#daytrading #stocks #algotrading #AItrading #stockmarket #finance #investing "
         f"#marketgenie #tradingsignals #stocksignals #wallstreet #nasdaq #sp500"
@@ -1259,7 +1258,7 @@ def _youtube_scheduler_loop():
     slots = [
         (dtime(9,  15), dtime(9,  30), "premarket"),
         (dtime(12,  0), dtime(12, 15), "midday"),
-        (dtime(16, 15), dtime(16, 30), "eod"),
+        (dtime(16, 20), dtime(16, 35), "eod"),  # delayed: flattener runs 3:55, capture after close
         (dtime(17, 30), dtime(17, 45), "afterhours"),
     ]
 
