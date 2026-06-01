@@ -7213,7 +7213,7 @@ _PAIR_TARGET_HIGH_PCT = float(os.getenv("PAIR_TARGET_HIGH_PCT", "0.025"))  # 2.5
 _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "90"))             # min confidence floor — raised 72→90 for concentrated $80K single-position strategy; only elite setups
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
 _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "10.0"))        # min stock price — lowered $15→$10: opens AAL ($12.75), NTLA ($11.97), NCLH etc; sub-$10 names (CLOV $2.62, SNAP $6.18) still blocked
-_ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.10"))   # max bid-ask spread % — tightened 0.20→0.10 for $80K+ concentrated positions; 0.10% on $100K = $100 max spread cost
+_ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.40"))   # max bid-ask spread % — loosened 0.10→0.40: 0.1% was blocking every trade during opening hour (natural spreads 0.2-0.5%); 0.4% on $100K = $400 max spread cost, still reasonable
 _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
 _ALP_DEDUP_SECS       = 600    # 10 min dedup — reduced 25→10 min: with 9-ticker universe and 20-40 min holds, 25 min was blocking same-ticker re-entry in the same hour entirely; 10 min allows a fresh setup after the position exits while preventing immediate same-bar re-entry
@@ -7923,11 +7923,11 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
                 # midday NUGT/LABU spreads clear easily.
                 _is_etf_sym = sym in (_ETF_BULL_UNIVERSE | _ETF_BEAR_UNIVERSE)
                 if _is_etf_sym and price >= 30:
-                    _spread_cap = 0.20   # tightened 0.35→0.20: max $0.40 on $200 ETF
+                    _spread_cap = 0.40   # loosened: opening-hour spreads on $100+ ETFs routinely 0.2-0.4%
                 elif _is_etf_sym and price >= 10:
-                    _spread_cap = 0.15   # tightened 0.30→0.15: $10-30 ETFs
+                    _spread_cap = 0.40   # loosened: match default
                 else:
-                    _spread_cap = _ALP_MAX_SPREAD_PCT  # default 0.10%
+                    _spread_cap = _ALP_MAX_SPREAD_PCT  # default 0.40%
                 _spread_dollar = ask_px - bid_px
                 _spread_ok = (spread_pct <= _spread_cap) or (_spread_dollar <= 0.02) or forced
                 if ask_px > 0 and bid_px > 0 and not _spread_ok:
@@ -7951,10 +7951,10 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
                     _stop_pct_here = _ALP_ETF_STOP_PCT if _is_etf_sym else _ALP_STOP_PCT
                     _stop_dollar   = price * _stop_pct_here
                     _spread_ratio  = _spread_dollar / _stop_dollar if _stop_dollar > 0 else 0
-                    if _spread_ratio > 0.15:
+                    if _spread_ratio > 0.25:
                         print(f"[Alpaca] {sym} — SKIPPED: spread ${_spread_dollar:.3f} "
                               f"= {_spread_ratio:.0%} of stop ${_stop_dollar:.2f} "
-                              f"(>{15}% threshold — spread eats too much edge)")
+                              f"(>{25}% threshold — spread eats too much edge)")
                         return False
             else:
                 # Fallback to Finnhub if Alpaca quote is empty
