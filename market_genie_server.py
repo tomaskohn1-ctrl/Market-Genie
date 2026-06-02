@@ -7582,7 +7582,7 @@ _tech_snap_lock   = threading.Lock()
 
 # Gates — set to 0 in Railway Variables to disable
 _RSI_OVERBOUGHT   = int(os.getenv("TECH_RSI_OVERBOUGHT",  "75"))   # block BULL if RSI ≥ this (75 = avoid chasing extended moves)
-_RSI_OVERSOLD     = int(os.getenv("TECH_RSI_OVERSOLD",    "25"))   # block BEAR if RSI ≤ this (25 = avoid fading oversold bounces)
+_RSI_OVERSOLD     = int(os.getenv("TECH_RSI_OVERSOLD",    "35"))   # block BEAR if RSI ≤ this — raised 25->35: LYFT at 15.71 RSI got through because TechSnap was unavailable
 _VOL_SURGE_MIN    = float(os.getenv("TECH_VOL_SURGE_MIN",  "0.5")) # soft floor: 0.5× avg — 1.0× was too strict; compares current 1-min bar to avg of recent bars which includes opening spike, so midday always reads low
 _VWAP_BOOST       = int(os.getenv("TECH_VWAP_BOOST",       "5"))   # conf pts when price on right side of VWAP
 _EMA_BOOST        = int(os.getenv("TECH_EMA_BOOST",         "5"))   # conf pts when 5/13/34 stack aligned
@@ -9404,6 +9404,7 @@ def _alp_execute_signal(res: dict):
                       f"for bear entry (conf={_dl_eff_conf:.0f})")
                 return
 
+
     # ── Per-symbol loss cooldown ──────────────────────────────────────────────
     # ── Profit Guard pause — no new entries while guard is active ────────────
     if _alp_profit_guard_until and time.time() < _alp_profit_guard_until:
@@ -10397,6 +10398,17 @@ def _alp_execute_signal(res: dict):
     # ── Technical Hard Gates ──────────────────────────────────────────────────
     # Soft boosts (VWAP, EMA) already applied above before the conf gate.
     # Only hard rejections here: RSI extremes and volume confirmation.
+    # If TechSnap failed, use day-range position as RSI proxy for BEAR gate
+    if not tech and direction == "bear" and _snap:
+        _day_h = float(_snap.get("h") or 0)
+        _day_l = float(_snap.get("l") or 0)
+        if _day_h > _day_l and price > 0:
+            _range_pos = (price - _day_l) / (_day_h - _day_l) * 100  # 0=day low, 100=day high
+            if _range_pos <= 15:  # price in bottom 15% of day range = oversold proxy
+                print(f"[TechGate] {sym} — SKIPPED: no RSI data but price is {_range_pos:.0f}% "
+                      f"of day range (oversold proxy, BEAR entry blocked)")
+                return
+
     if tech:
         rsi       = tech.get("rsi", 50.0)
         vol_ratio = tech.get("vol_ratio", 1.0)
