@@ -6712,9 +6712,9 @@ print("[TLT/PC/TICK] Treasury + P/C + TICK thread started (TLT/TICK every 2 min,
 # Lowered from 75/65/85 — original values were too conservative given:
 #   a) data showed conf inversion (higher conf = worse WR in 70-80% range)
 #   b) system was consistently stuck at 1-2/5 slots on bullish days
-_BREADTH_EASY_CONF_NEUTRAL = int(os.getenv("BREADTH_EASY_CONF_NEUTRAL", "65"))   # floor at regime boundary (was 75)
+_BREADTH_EASY_CONF_NEUTRAL = int(os.getenv("BREADTH_EASY_CONF_NEUTRAL", "82"))  # raised 65->82: NEUTRAL regime means no edge; only elite signals   # floor at regime boundary (was 75)
 _BREADTH_EASY_CONF_EXTREME = int(os.getenv("BREADTH_EASY_CONF_EXTREME", "55"))   # floor at max trend strength (was 65)
-_BREADTH_COUNTER_CONF      = int(os.getenv("BREADTH_COUNTER_CONF",      "80"))   # counter-regime always (was 85)
+_BREADTH_COUNTER_CONF      = int(os.getenv("BREADTH_COUNTER_CONF",      "88"))  # raised 80->88: counter-trend trades burn most P&L; need very high bar   # counter-regime always (was 85)
 
 def _dynamic_conf_floors(score: float):
     """
@@ -7166,8 +7166,8 @@ _ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.market
 
 # Execution settings (override via Railway Variables)
 _ALP_ENABLED          = os.getenv("ALPACA_EXEC_ENABLED", "false").lower() == "true"  # default OFF — use Trade Now button for manual entry
-_ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "80000"))  # $80K per trade — up to 2 concurrent positions ($160K max deployed)
-_ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "2"))         # 2 positions at a time — allows second elite setup while first is open (was 1: missed ZS/ALAB/SNOW/CRDO while BMY blocked the slot)
+_ALP_POSITION_SIZE_USD = float(os.getenv("ALPACA_POSITION_USD", "30000"))  # $30K per trade — risk ~35% of equity per position; 2 positions = 70% max deployed
+_ALP_MAX_POSITIONS    = int(os.getenv("ALPACA_MAX_POSITIONS", "1"))  # 1 position: focus on single best signal; reduces churn and over-exposure         # 2 positions at a time — allows second elite setup while first is open (was 1: missed ZS/ALAB/SNOW/CRDO while BMY blocked the slot)
 _ALP_STOP_PCT         = float(os.getenv("ALPACA_STOP_PCT", "0.0075"))       # 0.75% stop loss — wider room for intraday noise (was 0.5%, too tight for $50-150 stocks)
 _ALP_TARGET_PCT       = float(os.getenv("ALPACA_TARGET_PCT", "0.015"))      # 1.5% target — maintains 2:1 R:R with wider stop
 _ALP_STRONG_TARGET_PCT= float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.020"))# 2.0% for STRONG — lowered from 3.0% (3% targets almost never hit in 40 min; 2% maintains 2.7:1 R:R vs 0.75% stop)
@@ -7210,7 +7210,7 @@ _PAIR_TARGET_HIGH_PCT = float(os.getenv("PAIR_TARGET_HIGH_PCT", "0.025"))  # 2.5
 # R:R at 2.5%: 1.47:1 (TQQQ stop 1.7%), break-even WR = 40% — meaningfully better.
 # With new gates (both_agree, dead zones, blacklist, NEUTRAL block) win rate
 # should comfortably exceed 45%, making both tiers profitable.
-_ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "90"))             # min confidence floor — raised 72→90 for concentrated $80K single-position strategy; only elite setups
+_ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "88"))  # 88: matches counter-regime floor; elite-only but not over-restrictive             # min confidence floor — raised 72→90 for concentrated $80K single-position strategy; only elite setups
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
 _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "10.0"))        # min stock price — lowered $15→$10: opens AAL ($12.75), NTLA ($11.97), NCLH etc; sub-$10 names (CLOV $2.62, SNAP $6.18) still blocked
 _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.40"))   # max bid-ask spread % — loosened 0.10→0.40: 0.1% was blocking every trade during opening hour (natural spreads 0.2-0.5%); 0.4% on $100K = $400 max spread cost, still reasonable
@@ -7951,10 +7951,10 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
                     _stop_pct_here = _ALP_ETF_STOP_PCT if _is_etf_sym else _ALP_STOP_PCT
                     _stop_dollar   = price * _stop_pct_here
                     _spread_ratio  = _spread_dollar / _stop_dollar if _stop_dollar > 0 else 0
-                    if _spread_ratio > 0.40:
+                    if _spread_ratio > 0.50:
                         print(f"[Alpaca] {sym} — SKIPPED: spread ${_spread_dollar:.3f} "
                               f"= {_spread_ratio:.0%} of stop ${_stop_dollar:.2f} "
-                              f"(>{40}% threshold — spread eats too much edge)")
+                              f"(>{50}% threshold — spread eats too much edge)")
                         return False
             else:
                 # Fallback to Finnhub if Alpaca quote is empty
