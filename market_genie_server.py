@@ -10846,7 +10846,16 @@ def api_youtube_data():
         # ── Top AI signals from predict_results ───────────────────────────
         with _predict_lock:
             pr = dict(_predict_results)
-        top_signals = sorted(
+        _yt_preferred = {
+            "NVDA","AAPL","MSFT","AMZN","GOOGL","META","TSLA","AVGO","ORCL",
+            "CRM","ADBE","AMD","INTC","QCOM","MU","MRVL","PLTR","DDOG","SNOW",
+            "CRWD","ZS","NET","NOW","JPM","BAC","GS","MS","V","MA","PYPL",
+            "SPY","QQQ","SOXL","TQQQ","SQQQ","XLE","XLK","NFLX","DIS",
+            "SHOP","MELI","XOM","CVX","HPE","DELL","ACN","TGT","WMT","NKE",
+            "AAL","DAL","BA","MGM","DKNG","MSTR","IBIT","UNH","JNJ","MRK",
+            "ABBV","COIN","HUBS","MDB","APP","ABNB","RDDT","UBER","LYFT",
+        }
+        _all_sigs = sorted(
             [{"symbol": sym,
               "direction": v.get("consensus_dir", v.get("direction", "")),
               "confidence": round(float(v.get("confidence", 0) or 0), 1),
@@ -10855,7 +10864,10 @@ def api_youtube_data():
              for sym, v in pr.items()
              if v.get("confidence", 0) and v.get("consensus_dir", v.get("direction", ""))],
             key=lambda x: x["confidence"], reverse=True
-        )[:5]
+        )
+        top_signals = [s for s in _all_sigs if s["symbol"] in _yt_preferred][:5]
+        if len(top_signals) < 3:
+            top_signals = _all_sigs[:5]
 
         # ── Alpaca account + positions ─────────────────────────────────────
         alp_key  = os.getenv("ALPACA_API_KEY_ID", "")
