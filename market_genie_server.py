@@ -7951,10 +7951,10 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
                     _stop_pct_here = _ALP_ETF_STOP_PCT if _is_etf_sym else _ALP_STOP_PCT
                     _stop_dollar   = price * _stop_pct_here
                     _spread_ratio  = _spread_dollar / _stop_dollar if _stop_dollar > 0 else 0
-                    if _spread_ratio > 0.25:
+                    if _spread_ratio > 0.40:
                         print(f"[Alpaca] {sym} — SKIPPED: spread ${_spread_dollar:.3f} "
                               f"= {_spread_ratio:.0%} of stop ${_stop_dollar:.2f} "
-                              f"(>{25}% threshold — spread eats too much edge)")
+                              f"(>{40}% threshold — spread eats too much edge)")
                         return False
             else:
                 # Fallback to Finnhub if Alpaca quote is empty
@@ -8058,7 +8058,7 @@ def _alp_place_bracket(sym: str, direction: str, price: float, is_strong: bool, 
     # wrong (e.g. Alpaca quote API bug returning stale data). Skip rather than
     # deploy a severely undersized position that wastes a slot and dedup window.
     _notional = qty * price
-    if _notional < _pos_usd * 0.60 and signal_price > 0:
+    if _notional < _pos_usd * 0.45 and signal_price > 0:
         _alt_qty  = max(1, int(_pos_usd / signal_price))
         _alt_notl = _alt_qty * signal_price
         print(f"[Alpaca] {sym} — ⛔ NOTIONAL SANITY FAIL: "
@@ -10736,7 +10736,7 @@ def _alp_execute_signal(res: dict):
         # a 1.7% drop, when the move was done. That's still correctly blocked.
         # Configurable via EXTENDED_MOVE_MAX_PCT (base, default 1.5) and
         # EXTENDED_MOVE_TREND_PCT (trend-aligned, default 2.5) Railway vars.
-        _EXT_MOVE_MAX       = float(os.getenv("EXTENDED_MOVE_MAX_PCT",   "1.5"))
+        _EXT_MOVE_MAX       = float(os.getenv("EXTENDED_MOVE_MAX_PCT",   "3.0"))
         _EXT_MOVE_TREND_MAX = float(os.getenv("EXTENDED_MOVE_TREND_PCT", "2.5"))
         with _breadth_lock:
             _ext_regime = _breadth_state.get("regime", "NEUTRAL")
