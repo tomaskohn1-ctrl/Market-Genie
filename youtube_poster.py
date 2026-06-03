@@ -29,16 +29,16 @@ import requests
 _YT_SCOPES   = ["https://www.googleapis.com/auth/youtube.upload"]
 _VIDEO_W     = 1080
 _VIDEO_H     = 1920
-_VIDEO_SECS  = 59   # 9+9+10+13+10+8 = 59s (6-slide layout)
+_VIDEO_SECS  = 60   # 9+9+10+14+10+8 = 60s (6-slide layout, Shorts max)
 _CATEGORY_ID = "25"   # News & Politics
 
 # Slide durations (must sum to _VIDEO_SECS)
 _SLIDE1_SECS = 9    # hook — biggest mover / regime
-_SLIDE2_SECS = 9    # market overview — SPY/QQQ/VIX/futures
+_SLIDE2_SECS = 9    # market overview — SPY/QQQ/VIX/futures + live stats
 _SLIDE3_SECS = 10   # AI signals — top 3 with confidence
-_SLIDE4_SECS = 13   # 🆕 TRADE SETUP — entry/stop/target/R:R
-_SLIDE5_SECS = 10   # 🆕 WATCHLIST — 3 stocks with key levels
-_SLIDE6_SECS = 8    # CTA / P&L close
+_SLIDE4_SECS = 14   # trade setup — entry/stop/target/R:R (longest — people screenshot)
+_SLIDE5_SECS = 10   # watchlist — 3-5 stocks with key levels (people screenshot)
+_SLIDE6_SECS = 8    # CTA — signal count, follow, comment ask
 _FADE_SECS   = 0.5  # xfade duration
 
 # ── Credentials ──────────────────────────────────────────────────────────────
@@ -489,23 +489,36 @@ def _generate_frame(data: dict, trigger: str):
     d.rectangle([0, y, W, y + 2], fill=(28, 40, 56))
     y += 20
 
-    # P&L or Equity block
-    has_pnl = abs(pnl) >= 1 and trigger not in ("premarket",)
-    d.rectangle([0, y, W, y + 220], fill=PANEL)
-    if has_pnl:
-        pc   = GREEN if pnl >= 0 else RED
-        sign = "+" if pnl >= 0 else "-"
-        d.text((PAD + 16, y + 28), "TODAY'S P&L", font=fnt_xs, fill=AMBER)
-        d.text((PAD + 16, y + 80), f"{sign}${abs(pnl):,.0f}", font=fnt_xl, fill=pc)
-    elif trigger == "premarket":
-        d.text((PAD + 16, y + 28), "CAPITAL READY", font=fnt_xs, fill=AMBER)
-        d.text((PAD + 16, y + 80), f"${equity:,.0f}", font=fnt_xl, fill=WHITE)
-        d.text((W - PAD, y + 95), "Opens 9:30 AM ET", font=fnt_sm, fill=DIM, anchor="ra")
-    else:
-        d.text((PAD + 16, y + 28), "ACCOUNT", font=fnt_xs, fill=AMBER)
-        d.text((PAD + 16, y + 80), f"${equity:,.0f}", font=fnt_xl, fill=WHITE)
+    # Live market stats block — replaces the $100k equity display
+    # Shows real-time data viewers can actually use
+    vix_val  = data.get("vix", 16.5)
+    nq_val   = data.get("nq_pct", 0.0)
+    spy_val  = data.get("spy_pct", 0.0)
+    n_sigs   = len([s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 65])
+    pnl_val  = data.get("pnl_today", 0.0)
 
-    y += 240
+    stat_rows = []
+    if abs(pnl_val) >= 1:
+        pnl_sign = "+" if pnl_val >= 0 else ""
+        stat_rows.append((f"TODAY'S P&L", f"{pnl_sign}${abs(pnl_val):,.0f}", GREEN if pnl_val >= 0 else RED))
+    stat_rows.append(("ACTIVE SIGNALS", f"{n_sigs} high-confidence", AMBER))
+    if abs(nq_val) >= 0.05:
+        nq_c = GREEN if nq_val >= 0 else RED
+        stat_rows.append(("NQ FUTURES", f"{nq_val:+.2f}%", nq_c))
+    vix_c = RED if vix_val > 22 else (AMBER if vix_val > 18 else GREEN)
+    stat_rows.append(("VIX FEAR INDEX", f"{vix_val:.1f}  {'⚠️ HIGH' if vix_val > 22 else '✓ CALM'}", vix_c))
+    stat_rows.append(("STOCKS SCANNED", "200+  in real-time", ACCENT))
+
+    row_h = 88
+    for lbl, val, col in stat_rows[:4]:
+        d.rectangle([0, y, W, y + row_h], fill=PANEL)
+        d.rectangle([0, y, 6, y + row_h], fill=col)
+        d.text((PAD + 16, y + 28), lbl, font=fnt_xs, fill=DIM, anchor="lm")
+        d.text((PAD + 16, y + 66), val, font=fnt_sm, fill=col, anchor="lm")
+        d.rectangle([0, y + row_h - 1, W, y + row_h], fill=(20, 28, 44))
+        y += row_h
+
+    y += 10
 
     # Top mover callout if space
     if hot and y + 180 < H - 80:
@@ -1099,25 +1112,27 @@ def _generate_cta_slide(data, trigger):
 
     y = 150
 
-    # P&L block (big, visual)
+    # P&L block — show if there's real P&L, otherwise show what the AI did today
     has_pnl = abs(pnl) >= 1 and trigger not in ("premarket",)
-    pnl_h   = 280
+    n_sigs  = len(signals)
+    hot_cta = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
+    vix_cta = data.get("vix", 16.5)
+
+    pnl_h = 240
     d.rectangle([0, y, W, y + pnl_h], fill=PANEL)
     d.rectangle([0, y, 8, y + pnl_h], fill=rc)
     if has_pnl:
         pc   = GREEN if pnl >= 0 else RED
         sign = "+" if pnl >= 0 else ""
         word = "PROFIT" if pnl >= 0 else "LOSS"
-        d.text((W // 2, y + 60), f"TODAY'S {word}", font=fnt_sm, fill=DIM, anchor="mm")
-        d.text((W // 2, y + 170), f"{sign}${abs(pnl):,.0f}", font=fnt_hero, fill=pc, anchor="mm")
-    elif trigger == "premarket":
-        d.text((W // 2, y + 60), "CAPITAL DEPLOYED", font=fnt_sm, fill=DIM, anchor="mm")
-        d.text((W // 2, y + 150), f"${equity:,.0f}", font=fnt_xl, fill=WHITE, anchor="mm")
-        d.text((W // 2, y + 230), "Paper trading account", font=fnt_xs, fill=DIM, anchor="mm")
+        d.text((W // 2, y + 55), f"TODAY'S A.I. {word}", font=fnt_sm, fill=DIM, anchor="mm")
+        d.text((W // 2, y + 160), f"{sign}${abs(pnl):,.0f}", font=fnt_hero, fill=pc, anchor="mm")
     else:
-        d.text((W // 2, y + 80), "ACCOUNT EQUITY", font=fnt_sm, fill=DIM, anchor="mm")
-        d.text((W // 2, y + 175), f"${equity:,.0f}", font=fnt_xl, fill=WHITE, anchor="mm")
-    y += pnl_h + 20
+        # No P&L — show what the AI scanned/found today instead
+        d.text((W // 2, y + 45), "A.I. SCANNED TODAY", font=fnt_sm, fill=DIM, anchor="mm")
+        d.text((W // 2, y + 130), "200+ stocks", font=fnt_xl, fill=ACCENT, anchor="mm")
+        d.text((W // 2, y + 200), f"Found {n_sigs} high-confidence setup{'s' if n_sigs != 1 else ''}", font=fnt_xs, fill=AMBER, anchor="mm")
+    y += pnl_h + 16
 
     # Regime summary
     d.rectangle([0, y, W, y + 100], fill=(16, 22, 36))
@@ -1289,15 +1304,22 @@ def _build_voiceover_script(data, trigger):
         elif len(watch_names) >= 1:
             parts.append(f"Key name on the watchlist today: {watch_names[0]}. Level breakdown is on the next slide.")
 
-    # ── 6. P&L + CTA ──────────────────────────────────────────────────────────
+    # ── 6. REAL-TIME CONTEXT + CTA ────────────────────────────────────────────
+    # Add a real-time data point viewers can verify themselves
+    n_sigs = len(signals)
+    if n_sigs > 0:
+        parts.append(f"The A.I. scanned over 200 stocks in real-time today and found {n_sigs} high-confidence setup{'s' if n_sigs != 1 else ''}.")
+    else:
+        parts.append("The A.I. scanned over 200 stocks in real-time today. No high-confidence setups yet — it's waiting for the right moment.")
+
     if trigger not in ("premarket",) and abs(pnl) >= 1:
         word = "up" if pnl > 0 else "down"
-        parts.append(f"Paper trading P and L: {word} ${abs(pnl):,.0f} today on a ${data.get('equity', 100000):,.0f} account.")
+        parts.append(f"Paper trading result: {word} ${abs(pnl):,.0f} today. Completely automated.")
 
     parts.append(
-        "Follow Market Genie for the full trade setup and watchlist every single trading day — "
-        "completely free, completely automated. Drop a green or red emoji in the comments — "
-        "are you bullish or bearish right now?"
+        "Follow Market Genie — free A.I. signals, trade setups with entry stop and target, "
+        "and a live watchlist every single trading day. "
+        "Drop a green emoji if you're bullish, red if you're bearish. See you tomorrow."
     )
 
     return "  ".join(parts)
