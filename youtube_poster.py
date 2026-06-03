@@ -130,15 +130,19 @@ def _fetch_market_data() -> dict:
         if r.status_code == 200:
             srv = r.json()
             defaults.update({k: srv[k] for k in srv if k in defaults})
-            # hot_tickers now comes directly from server's live Alpaca cache (real intraday %)
-            # Only fall back to yfinance if the server didn't provide it
-            if srv.get("hot_tickers"):
-                defaults["hot_tickers"] = srv["hot_tickers"]
+            # hot_tickers: prefer Alpaca live cache; fall back to yfinance for real data
+            ht = srv.get("hot_tickers", [])
+            # If Alpaca cache has data but all moves are tiny/zero (outside hours), refresh via yfinance
+            if ht and all(abs(t.get("pct", 0)) < 0.1 for t in ht):
+                ht = []  # stale — force yfinance refresh
+            if ht:
+                defaults["hot_tickers"] = ht
             else:
-                social_syms = [t["symbol"] for t in srv.get("social_hot", [])[:8]
-                               if t.get("symbol")]
-                if social_syms:
-                    defaults["hot_tickers"] = _fetch_ticker_moves(social_syms)
+                # Prefer signal tickers first (most relevant for traders), then social, then fallback
+                sig_syms    = [s["symbol"] for s in srv.get("ai_signals", []) if s.get("symbol")][:5]
+                social_syms = [t["symbol"] for t in srv.get("social_hot", [])[:6] if t.get("symbol")]
+                candidates  = list(dict.fromkeys(sig_syms + social_syms + _HOT_FALLBACK))[:10]
+                defaults["hot_tickers"] = _fetch_ticker_moves(candidates)
     except Exception as e:
         print(f"[YouTube] Data fetch error: {e}")
 

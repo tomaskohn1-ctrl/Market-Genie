@@ -10887,6 +10887,36 @@ def api_youtube_data():
         qqq_pct = float(bd.get("qqq_pct", 0) or 0)
         vix     = float(bd.get("vix", 16.5) or 16.5)
 
+        # Fallback: if breadth snapshot has zeroes (e.g. pre-market / manual trigger),
+        # fetch live day-change directly from yfinance so the video shows real data.
+        if spy_pct == 0 or qqq_pct == 0:
+            try:
+                import yfinance as _yf
+                for _sym, _key in [("SPY", "spy_pct"), ("QQQ", "qqq_pct"), ("NQ=F", "nq_pct")]:
+                    try:
+                        _fi  = _yf.Ticker(_sym).fast_info
+                        _cur = float(getattr(_fi, "last_price", None) or getattr(_fi, "regularMarketPrice", None) or 0)
+                        _prv = float(getattr(_fi, "previous_close", None) or getattr(_fi, "regularMarketPreviousClose", None) or _cur)
+                        if _cur > 0 and _prv > 0:
+                            _pct = (_cur - _prv) / _prv * 100
+                            if _key == "spy_pct":   spy_pct = round(_pct, 2)
+                            elif _key == "qqq_pct": qqq_pct = round(_pct, 2)
+                            elif _key == "nq_pct":  nq_pct  = round(_pct, 2)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # Fallback VIX from live VIX state if breadth hasn't set it yet
+        if vix == 16.5:
+            try:
+                with _vix_lock:
+                    _vv = _vix_state.get("level", 0)
+                if _vv and _vv > 0:
+                    vix = float(_vv)
+            except Exception:
+                pass
+
         # ── Social hot tickers (ApeWisdom / Reddit) ───────────────────────
         with _social_hot_lock:
             social = dict(_social_hot_cache)
