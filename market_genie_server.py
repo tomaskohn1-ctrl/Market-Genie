@@ -338,6 +338,8 @@ def fh_get(path, params=None):
 _massive_403_paths = {}   # { path: last_log_ts } — rate-limit 403 noise per endpoint
 _massive_timeout_counts = {}  # { ticker: int } — consecutive timeout counter per ticker
 _massive_skip_until = {}      # { ticker: float } — skip Massive for ticker until this ts
+_massive_global_pause_until = 0  # if set, ALL Massive calls skip until this timestamp
+_massive_cb_count = 0            # how many tickers are currently circuit-broken
 
 def _massive_ticker_from_path(path: str) -> str:
     """Extract ticker symbol from a Massive API path like /v2/aggs/ticker/QQQ/range/..."""
@@ -356,6 +358,11 @@ def massive_get(path, params=None):
     if not MASSIVE_KEY:
         return None
 
+    # Global pause — if Massive is broadly down, skip all calls silently
+    global _massive_global_pause_until, _massive_cb_count
+    if time.time() < _massive_global_pause_until:
+        return None
+
     # Circuit breaker: if this ticker has failed too many times recently, skip
     _cb_ticker = _massive_ticker_from_path(path)
     if _cb_ticker:
@@ -368,7 +375,7 @@ def massive_get(path, params=None):
     with _MASSIVE_SEMAPHORE:           # blocks if 4 requests already in-flight
         for attempt in range(2):       # 2 attempts total (1 retry on timeout)
             try:
-                r = requests.get(f"{MASSIVE_BASE}{path}", params=p, timeout=8)
+                r = requests.get(f"{MASSIVE_BASE}{path}", params=p, timeout=4)  # 4s — fail fast
                 if r.status_code == 403:
                     _now_403 = time.time()
                     if _now_403 - _massive_403_paths.get(path, 0) > 1800:
@@ -382,17 +389,22 @@ def massive_get(path, params=None):
                 return r.json()
             except requests.exceptions.ReadTimeout:
                 if attempt == 0:
-                    print(f"[Massive] {path} read timeout — retrying in 3s")
-                    time.sleep(3)
+                    print(f"[Massive] {path} read timeout — retrying in 1s")
+                    time.sleep(1)  # short wait before retry
                 else:
                     print(f"[Massive] {path} read timeout after retry — giving up")
-                    # Circuit breaker: track consecutive failures, skip after 2
+                    # Circuit breaker: skip after FIRST consecutive pair of timeouts
                     if _cb_ticker:
                         _massive_timeout_counts[_cb_ticker] = _massive_timeout_counts.get(_cb_ticker, 0) + 1
                         if _massive_timeout_counts[_cb_ticker] >= 2:
-                            _massive_skip_until[_cb_ticker] = time.time() + 300  # 5-min cooldown
-                            print(f"[Massive] {_cb_ticker} — circuit breaker: {_massive_timeout_counts[_cb_ticker]} consecutive timeouts, skipping for 5 min")
+                            _massive_skip_until[_cb_ticker] = time.time() + 900  # 15-min cooldown
+                            _massive_cb_count += 1
+                            print(f"[Massive] {_cb_ticker} — circuit breaker: skipping for 15 min ({_massive_cb_count} tickers paused)")
                             _massive_timeout_counts.pop(_cb_ticker, None)
+                            # Global pause if Massive is broadly down (10+ tickers circuit-broken)
+                            if _massive_cb_count >= 10 and time.time() >= _massive_global_pause_until:
+                                _massive_global_pause_until = time.time() + 600  # 10-min global pause
+                                print(f"[Massive] ⚠️  {_massive_cb_count} tickers timed out — GLOBAL PAUSE for 10 min (API appears down)")
                     return None
             except Exception as e:
                 print(f"[Massive] {path} error: {e}")

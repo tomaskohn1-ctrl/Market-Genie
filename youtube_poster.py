@@ -1074,6 +1074,7 @@ def _generate_cta_slide(data, trigger):
     DIM   = (100, 118, 140)
     AMBER = (220, 155, 40)
     GREEN = (74, 222, 128)
+    ACCENT= (56, 189, 248)
     RED   = (248, 113, 113)
     PANEL = (12, 18, 30)
     GOLD  = (255, 200, 50)
