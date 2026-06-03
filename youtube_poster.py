@@ -29,13 +29,14 @@ import requests
 _YT_SCOPES   = ["https://www.googleapis.com/auth/youtube.upload"]
 _VIDEO_W     = 1080
 _VIDEO_H     = 1920
-_VIDEO_SECS  = 30
+_VIDEO_SECS  = 59
 _CATEGORY_ID = "25"   # News & Politics
 
 # Slide durations (must sum to _VIDEO_SECS)
-_SLIDE1_SECS = 9    # hook
-_SLIDE2_SECS = 13   # dashboard
-_SLIDE3_SECS = 8    # P&L / CTA
+_SLIDE1_SECS = 14   # hook
+_SLIDE2_SECS = 15   # dashboard
+_SLIDE3_SECS = 15   # signals watchlist
+_SLIDE4_SECS = 15   # context/insights
 _FADE_SECS   = 0.5  # xfade duration
 
 # ── Credentials ──────────────────────────────────────────────────────────────
@@ -597,6 +598,123 @@ def _generate_cta_frame(data, trigger):
 
 
 
+
+
+def _generate_context_frame(data, trigger):
+    """Slide 4 — Context & insights: market pulse, top signal, watchlist."""
+    from PIL import Image, ImageDraw
+    W, H  = _VIDEO_W, _VIDEO_H
+    BG    = (6, 8, 14)
+    WHITE = (230, 238, 250)
+    DIM   = (100, 118, 140)
+    AMBER = (220, 155, 40)
+    GREEN = (74, 222, 128)
+    RED   = (248, 113, 113)
+    PANEL = (14, 20, 32)
+    ACCENT= (56, 189, 248)
+    ALT   = (10, 14, 22)
+
+    regime  = data.get("regime", "NEUTRAL")
+    rc      = {"BULLISH": GREEN, "BEARISH": RED, "NEUTRAL": AMBER}.get(regime, AMBER)
+    hot     = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
+    signals = [s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 60]
+    vix     = data.get("vix", 16.5)
+    spy     = data.get("spy_pct", 0.0)
+    qqq     = data.get("qqq_pct", 0.0)
+    nq      = data.get("nq_pct", 0.0)
+
+    img = Image.new("RGB", (W, H), BG)
+    d   = ImageDraw.Draw(img)
+
+    fnt_nano = _load_font(30)
+    fnt_xs   = _load_font(40)
+    fnt_sm   = _load_font(52)
+    fnt_md   = _load_font(68, bold=True)
+    fnt_lg   = _load_font(90, bold=True)
+    fnt_xl   = _load_font(120, bold=True)
+
+    PAD = 48
+
+    # Header
+    d.rectangle([0, 0, W, 120], fill=(10, 14, 24))
+    d.text((PAD, 60), "MARKET GENIE", font=fnt_md, fill=WHITE, anchor="lm")
+    d.text((W - PAD, 60), "INSIGHTS", font=fnt_md, fill=AMBER, anchor="rm")
+    d.rectangle([0, 118, W, 122], fill=AMBER)
+    d.text((PAD, 152), data.get("timestamp", ""), font=fnt_xs, fill=DIM)
+    y = 195
+
+    # ── Market Pulse ──────────────────────────────────────────────────────────
+    d.text((PAD, y + 4), "MARKET PULSE", font=fnt_sm, fill=AMBER)
+    y += 58
+
+    regime_text = {
+        "BULLISH": "Bulls in control  |  Trend is UP",
+        "BEARISH": "Bears in control  |  Trend is DOWN",
+        "NEUTRAL": "Mixed signals  |  No clear edge",
+    }.get(regime, regime)
+
+    pulse_h = 100
+    d.rectangle([0, y, W, y + pulse_h], fill=PANEL)
+    d.rectangle([0, y, 6, y + pulse_h], fill=rc)
+    d.text((PAD + 16, y + pulse_h // 2), regime_text, font=fnt_sm, fill=rc, anchor="lm")
+    y += pulse_h + 8
+
+    # SPY / QQQ / NQ row
+    row_h = 90
+    index_rows = [
+        (f"SPY  {spy:+.2f}%",  GREEN if spy >= 0 else RED),
+        (f"QQQ  {qqq:+.2f}%",  GREEN if qqq >= 0 else RED),
+        (f"NQ   {nq:+.2f}%",   GREEN if nq  >= 0 else RED) if abs(nq) > 0.01
+        else (f"VIX  {vix:.1f}",  RED if vix > 20 else DIM),
+    ]
+    for txt, color in index_rows:
+        rb = PANEL if index_rows.index((txt,color)) % 2 == 0 else ALT
+        d.rectangle([0, y, W, y + row_h], fill=rb)
+        d.text((PAD + 16, y + row_h // 2), txt, font=fnt_md, fill=color, anchor="lm")
+        y += row_h
+
+    y += 10
+    d.rectangle([0, y, W, y + 2], fill=(28, 40, 56))
+    y += 18
+
+    # ── Top Signal deep-dive ──────────────────────────────────────────────────
+    d.text((PAD, y + 4), "TOP AI SIGNAL", font=fnt_sm, fill=AMBER)
+    y += 58
+
+    sig_h = max(200, (H - y - 80) // max(len(signals[:3]), 1))
+    for sig in signals[:3]:
+        bull = "bull" in sig.get("direction", "").lower()
+        sc   = GREEN if bull else RED
+        conf = sig.get("confidence", 70)
+        t_data = next((t for t in hot if t["symbol"] == sig["symbol"]), None)
+        pct    = t_data["pct"]   if t_data else 0
+        price  = t_data["price"] if t_data else 0
+
+        d.rectangle([0, y, W, y + sig_h], fill=PANEL if signals.index(sig) % 2 == 0 else ALT)
+        d.rectangle([0, y, 6, y + sig_h], fill=sc)
+        mid = y + sig_h // 2
+
+        # Symbol + label
+        d.text((PAD + 16, mid - 26), sig["symbol"], font=fnt_lg, fill=WHITE, anchor="lm")
+        lbl = "BULLISH" if bull else "BEARISH"
+        d.text((PAD + 16, mid + 28), f"AI: {lbl} — {conf:.0f}% confidence", font=fnt_xs, fill=sc, anchor="lm")
+
+        # Price + pct on right
+        if price > 0:
+            d.text((W - PAD, mid - 26), f"${price:,.2f}", font=fnt_md, fill=WHITE, anchor="ra")
+            sign = "+" if pct >= 0 else ""
+            d.text((W - PAD, mid + 28), f"{sign}{pct:.2f}%", font=fnt_sm, fill=sc, anchor="ra")
+
+        d.rectangle([0, y + sig_h - 1, W, y + sig_h], fill=(20, 28, 44))
+        y += sig_h
+
+    # Footer
+    d.rectangle([0, H - 64, W, H], fill=(8, 12, 20))
+    d.text((W // 2, H - 32), "NOT FINANCIAL ADVICE  |  AI SIGNALS  |  MARKET GENIE", font=fnt_nano, fill=DIM, anchor="mm")
+
+    return img
+
+
 def _generate_voiceover(data, trigger):
     """
     Generate a spoken voiceover MP3 using gTTS.
@@ -708,11 +826,15 @@ def _create_short(frame, output_path, hook_frame=None, cta_frame=None, audio_pat
 
     # ── Multi-slide path — encode each slide then concat ─────────────────────
     if hook_frame is not None and cta_frame is not None:
+        # context_frame is passed via cta_frame's slot when 4-slide mode active
+        _ctx = getattr(_create_short, "_context_frame", None)
         slides = [
             (hook_frame, _SLIDE1_SECS),
             (frame,      _SLIDE2_SECS),
             (cta_frame,  _SLIDE3_SECS),
         ]
+        if _ctx is not None:
+            slides.append((_ctx, _SLIDE4_SECS))
         clip_paths = []
         ok = True
         for img, secs in slides:
@@ -735,7 +857,7 @@ def _create_short(frame, output_path, hook_frame=None, cta_frame=None, audio_pat
                 ok = False; break
             clip_paths.append(clip_path)
 
-        if ok and len(clip_paths) == 3:
+        if ok and len(clip_paths) in (3, 4):
             # Write concat list file
             with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as lf:
                 for cp in clip_paths:
@@ -903,6 +1025,11 @@ def post_market_update(trigger: str = "midday"):
     hook_frame = _generate_hook_frame(data, trigger)
     dash_frame = _generate_frame(data, trigger)
     cta_frame  = _generate_cta_frame(data, trigger)
+
+    # Generate all 4 slides
+    context_frame = _generate_context_frame(data, trigger)
+    # Attach context frame so _create_short can pick it up
+    _create_short._context_frame = context_frame
 
     # Generate TTS voiceover (best-effort — None if unavailable)
     audio_path = _generate_voiceover(data, trigger)
