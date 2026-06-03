@@ -264,6 +264,34 @@ def _draw_signal_card(d, x, y, w, h, symbol, direction, confidence, fnt_sym, fnt
 # Breaking-news alert cards for top movers + regime
 # ═════════════════════════════════════════════════════════════════════════════
 
+def _draw_caption_bar(d, W, H, caption_text, fnt_caption, fnt_nano):
+    """
+    Draw a semi-transparent caption bar at the very bottom of the frame.
+    This ensures the key message is readable even with no sound.
+    """
+    WHITE = (230, 238, 250)
+    DIM   = (100, 118, 140)
+    BAR_H = 100
+    # Dark gradient bar
+    d.rectangle([0, H - BAR_H, W, H], fill=(6, 8, 14))
+    d.rectangle([0, H - BAR_H, W, H - BAR_H + 2], fill=(56, 189, 248))  # accent top border
+    # Caption text
+    d.text((W // 2, H - BAR_H + 32), caption_text,
+           font=fnt_caption, fill=WHITE, anchor="mm")
+    # Tiny sub-label
+    d.text((W // 2, H - 22), "marketgenie.ai  |  NOT FINANCIAL ADVICE",
+           font=fnt_nano, fill=DIM, anchor="mm")
+
+
+def _draw_breaking_badge(d, W, symbol, pct, fnt):
+    """Red BREAKING banner just below the header for big movers (≥5%)."""
+    d.rectangle([0, 132, W, 222], fill=(180, 15, 15))
+    sign = "+" if pct >= 0 else ""
+    d.text((W // 2, 177),
+           f"⚡ BREAKING  {symbol} {sign}{pct:.1f}%  ⚡",
+           font=fnt, fill=(255, 255, 255), anchor="mm")
+
+
 def _generate_hook_frame(data, trigger):
     """Slide 1 — Market overview. Clean, readable, no clutter."""
     from PIL import Image, ImageDraw
@@ -356,9 +384,14 @@ def _generate_hook_frame(data, trigger):
         d.rectangle([0, y + row_h - 1, W, y + row_h], fill=(20, 28, 44))
         y += row_h
 
-    # Footer
-    d.rectangle([0, H - 64, W, H], fill=(8, 12, 20))
-    d.text((W // 2, H - 32), "NOT FINANCIAL ADVICE  |  AI SIGNALS  |  MARKET GENIE", font=fnt_nano, fill=DIM, anchor="mm")
+    # BREAKING badge for big movers
+    if hot and abs(hot[0].get("pct", 0)) >= 5:
+        _draw_breaking_badge(d, W, hot[0]["symbol"], hot[0]["pct"], fnt_sm)
+
+    # Caption bar — readable on mute
+    regime_c  = {"BULLISH": "🟢", "BEARISH": "🔴", "NEUTRAL": "🟡"}.get(regime, "⚪")
+    caption   = f"{regime_c} {regime}  •  Score {score}/100  •  Follow for daily A.I. signals 🔔"
+    _draw_caption_bar(d, W, H, caption, fnt_xs, fnt_nano)
 
     return img
 
@@ -480,9 +513,14 @@ def _generate_frame(data: dict, trigger: str):
         d.text((W - PAD, y + 88), f"{sign}{h0['pct']:.2f}%", font=fnt_lg, fill=hc, anchor="ra")
         y += 230
 
-    # Footer
-    d.rectangle([0, H - 64, W, H], fill=(8, 12, 20))
-    d.text((W // 2, H - 32), "NOT FINANCIAL ADVICE  |  AI SIGNALS  |  MARKET GENIE", font=fnt_nano, fill=DIM, anchor="mm")
+    # Caption bar — readable on mute
+    top_sig_text = ""
+    if signals:
+        s0   = signals[0]
+        bull = "bull" in s0.get("direction", "").lower()
+        top_sig_text = f"{'🟢 BULL' if bull else '🔴 BEAR'} {s0['symbol']} {s0.get('confidence',70):.0f}%  •  "
+    caption = f"{top_sig_text}Follow Market Genie for free A.I. signals 🔔"
+    _draw_caption_bar(d, W, H, caption, fnt_xs, fnt_nano)
 
     return img
 
@@ -594,9 +632,8 @@ def _generate_cta_frame(data, trigger):
         d.rectangle([0, y + card_h - 1, W, y + card_h], fill=(20, 28, 44))
         y += card_h
 
-    # Footer
-    d.rectangle([0, H - 64, W, H], fill=(8, 12, 20))
-    d.text((W // 2, H - 32), "NOT FINANCIAL ADVICE  |  AI SIGNALS  |  MARKET GENIE", font=fnt_nano, fill=DIM, anchor="mm")
+    # Caption bar — readable on mute
+    _draw_caption_bar(d, W, H, "🔔 Follow Market Genie — free A.I. signals every trading day", fnt_xs, fnt_nano)
 
     return img
 
@@ -712,9 +749,11 @@ def _generate_context_frame(data, trigger):
         d.rectangle([0, y + sig_h - 1, W, y + sig_h], fill=(20, 28, 44))
         y += sig_h
 
-    # Footer
-    d.rectangle([0, H - 64, W, H], fill=(8, 12, 20))
-    d.text((W // 2, H - 32), "NOT FINANCIAL ADVICE  |  AI SIGNALS  |  MARKET GENIE", font=fnt_nano, fill=DIM, anchor="mm")
+    # Caption bar — readable on mute
+    regime_s  = data.get("regime", "NEUTRAL")
+    score_s   = data.get("regime_score", 50)
+    emoji_s   = {"BULLISH": "🟢", "BEARISH": "🔴", "NEUTRAL": "🟡"}.get(regime_s, "⚪")
+    _draw_caption_bar(d, W, H, f"{emoji_s} Regime {regime_s} {score_s}/100  •  Drop 🟢 or 🔴 below 👇", fnt_xs, fnt_nano)
 
     return img
 
@@ -1164,30 +1203,73 @@ def post_market_update(trigger: str = "midday"):
                  if hot_sorted else "")
 
     regime_emoji = {"BULLISH": "🟢", "BEARISH": "🔴", "NEUTRAL": "🟡"}.get(regime, "⚪")
-    vix = data["vix"]
-    vix_note = f" ⚡VIX {vix:.0f}" if vix > 22 else ""
-    has_pnl = abs(pnl) >= 1
+    vix  = data["vix"]
+    h0   = hot_sorted[0] if hot_sorted else None
+    sigs = [s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 65]
 
-    titles = {
-        "premarket": (
-            f"{top_mover + '  |  ' if top_mover else ''}"
-            f"AI Pre-Market {date_str} {regime_emoji}{regime} {score}/100{vix_note}"
-        ),
-        "midday": (
-            f"{'AI Midday: ' + pnl_sign + '$' + f'{abs(pnl):,.0f}' + '  |  ' if has_pnl else ''}"
-            f"{ticker_str or (regime_emoji + regime + ' ' + str(score))}  [{date_str}]"
-        ),
-        "eod": (
-            f"{'AI closed ' + pnl_sign + '$' + f'{abs(pnl):,.0f}' + ' today  |  ' if has_pnl else ''}"
-            f"{ticker_str or top_mover or (regime_emoji + regime)}  [{date_str}]"
-        ),
-        "afterhours": (
-            f"{ticker_str + '  |  ' if ticker_str else ''}"
-            f"{'AI P&L: ' + pnl_sign + '$' + f'{abs(pnl):,.0f}' + '  |  ' if has_pnl else ''}"
-            f"After-Hours {date_str} {regime_emoji}{regime}"
-        ),
-    }
-    title = titles.get(trigger, f"Market Genie AI Signals | {date_str}")[:100]
+    def _viral_title(trigger):
+        """Generate a click-optimised title with curiosity gap."""
+        # Premarket
+        if trigger == "premarket":
+            if h0 and abs(h0.get("pct", 0)) >= 2:
+                verb  = "SURGING" if h0["up"] else "CRASHING"
+                emoji = "🚀" if h0["up"] else "💥"
+                return f"{h0['symbol']} is {verb} pre-market {emoji} A.I. signals for {date_str}"
+            if regime == "BULLISH":
+                return f"🟢 Bullish setup brewing — A.I. pre-market brief {date_str}"
+            if regime == "BEARISH":
+                return f"⚠️ Danger zone pre-market — A.I. spotted {len(sigs)} bearish signals {date_str}"
+            return f"Market opens in minutes — A.I. scanning 200 stocks right now 📊 {date_str}"
+
+        # Midday
+        if trigger == "midday":
+            if h0 and abs(h0.get("pct", 0)) >= 4:
+                verb  = "RIPPING" if h0["up"] else "GETTING CRUSHED"
+                emoji = "🔥" if h0["up"] else "🔴"
+                return f"{h0['symbol']} is {verb} {abs(h0['pct']):.1f}% {emoji} A.I. midday update {date_str}"
+            if sigs:
+                top_sig = sigs[0]
+                bull    = "bull" in top_sig.get("direction", "").lower()
+                emoji   = "🟢" if bull else "🔴"
+                return f"A.I. just flagged {top_sig['symbol']} at {top_sig.get('confidence',70):.0f}% confidence {emoji} {date_str}"
+            return f"Midday signals — A.I. just re-scanned 200 stocks 🧠 {date_str}"
+
+        # EOD
+        if trigger == "eod":
+            if abs(pnl) >= 100:
+                emoji = "💰" if pnl > 0 else "📉"
+                word  = "made" if pnl > 0 else "lost"
+                return f"The A.I. {word} ${abs(pnl):,.0f} today {emoji} here's what it traded {date_str}"
+            if h0 and abs(h0.get("pct", 0)) >= 5:
+                verb  = "EXPLODED" if h0["up"] else "COLLAPSED"
+                emoji = "🚀" if h0["up"] else "💥"
+                return f"{h0['symbol']} {verb} {abs(h0['pct']):.1f}% at close {emoji} full A.I. wrap {date_str}"
+            if regime == "BULLISH":
+                return f"🟢 Bulls won today — A.I. end-of-day breakdown {date_str}"
+            if regime == "BEARISH":
+                return f"🔴 Market got wrecked — A.I. post-mortem {date_str}"
+            return f"A.I. close report: {len(sigs)} signals fired today 📊 {date_str}"
+
+        # After-hours
+        if trigger == "afterhours":
+            if h0 and abs(h0.get("pct", 0)) >= 5:
+                verb  = "RIPPING" if h0["up"] else "GETTING DESTROYED"
+                emoji = "🚀" if h0["up"] else "💣"
+                return f"{h0['symbol']} {verb} {abs(h0['pct']):.1f}% after hours {emoji} A.I. breakdown {date_str}"
+            if sigs:
+                top_sig = sigs[0]
+                bull    = "bull" in top_sig.get("direction", "").lower()
+                conf    = top_sig.get("confidence", 70)
+                emoji   = "🟢" if bull else "🔴"
+                if conf >= 90:
+                    return f"A.I. is {conf:.0f}% confident on {'BULL' if bull else 'BEAR'} {top_sig['symbol']} after hours {emoji} {date_str}"
+            if ticker_str:
+                return f"{ticker_str} | A.I. after-hours report {regime_emoji} {date_str}"
+            return f"After-hours A.I. signals — what to watch before tomorrow's open 👀 {date_str}"
+
+        return f"Market Genie A.I. Signals | {date_str}"
+
+    title = _viral_title(trigger)[:100]
 
     pos_lines = "\n".join(
         f"  {p['symbol']} {p['side']}: {'+' if p['unrealized_pl'] >= 0 else '-'}${abs(p['unrealized_pl']):,.0f}"
@@ -1200,17 +1282,39 @@ def post_market_update(trigger: str = "midday"):
         for s in signals[:3]
     ) or "  No high-confidence signals"
 
+    # Ticker-specific hashtags for searchability
+    ticker_tags = " ".join(
+        f"#{t['symbol'].lower()}" for t in hot_sorted[:5] if t.get("symbol")
+    )
+    sig_ticker_tags = " ".join(
+        f"#{s['symbol'].lower()}" for s in sigs[:3] if s.get("symbol")
+    )
+
+    # Comment CTA — comments are the #1 YouTube algorithm signal
+    comment_cta = (
+        "💬 DROP A COMMENT — are you bullish 🟢 or bearish 🔴 on the market right now?\n"
+        "Every comment helps the algorithm show this to more traders. 🙏\n\n"
+    )
+
     description = (
-        f"📊 Market Genie AI Auto-Trader — {trigger.upper()} UPDATE\n\n"
-        f"🧠 Regime: {regime_emoji} {regime} ({score}/100)\n"
+        f"📊 Market Genie AI — {trigger.upper()} UPDATE | {date_str}\n\n"
+        f"{comment_cta}"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🧠 AI Regime: {regime_emoji} {regime} ({score}/100)\n"
         f"💰 Today's P&L: {pnl_sign}${abs(pnl):,.2f}\n"
         f"📈 NQ Futures: {data['nq_pct']:+.2f}%\n"
-        f"🌡️ VIX: {data['vix']:.1f}\n\n"
+        f"🌡️ VIX: {data['vix']:.1f}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🤖 AI Signals:\n{sig_lines}\n\n"
         f"📂 Open Positions ({len(data['positions'])}):\n{pos_lines}\n\n"
-        f"⚠️ NOT FINANCIAL ADVICE — for educational & informational purposes only.\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔔 FOLLOW for free AI signals every single trading day.\n"
+        f"This bot scans 200+ stocks in real-time — completely automated.\n\n"
+        f"⚠️ NOT FINANCIAL ADVICE — educational & informational purposes only.\n\n"
         f"#daytrading #stocks #algotrading #AItrading #stockmarket #finance #investing "
-        f"#marketgenie #tradingsignals #stocksignals #wallstreet #nasdaq #sp500"
+        f"#marketgenie #tradingsignals #stocksignals #wallstreet #nasdaq #sp500 #trading "
+        f"#stocktrading #daytrader #technicalanalysis #options #swingtrading "
+        f"{ticker_tags} {sig_ticker_tags}"
     )
 
     vid_id = _upload_to_youtube(service, mp4_path, title, description)
