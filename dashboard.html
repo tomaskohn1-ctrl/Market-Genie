@@ -1442,6 +1442,12 @@
        style="display:flex;align-items:center;gap:5px;text-decoration:none;font-size:12px;font-weight:600;padding:8px 12px;">
       ◆ Predictor
     </a>
+    <!-- YouTube test post -->
+    <button id="ytPostBtn" class="btn secondary" onclick="triggerYouTubePost()"
+            title="Post a YouTube Short now"
+            style="padding:8px 10px;font-size:15px;line-height:1;border:none;background:none;cursor:pointer">
+      🎬
+    </button>
     <!-- Sleep mode toggle -->
     <button id="sleepModeBtn" class="btn secondary" onclick="toggleSleepMode()"
             title="Sleep mode — pause all polling"
@@ -7921,6 +7927,32 @@ function _beep(freq = 880, dur = 0.3) {
     osc.start(_audioCtx.currentTime);
     osc.stop(_audioCtx.currentTime + dur);
   } catch(e) {}
+}
+
+// ── YouTube Manual Post ───────────────────────────────────────────────────────
+async function triggerYouTubePost() {
+  const btn = document.getElementById('ytPostBtn');
+  const triggers = ['premarket','midday','eod','afterhours'];
+  const trigger  = prompt('Which trigger?\n\n' + triggers.join(' / '), 'afterhours');
+  if (!trigger) return;
+  btn.textContent = '⏳';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/youtube/post', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({trigger})
+    });
+    const d = await r.json();
+    btn.textContent = d.ok ? '✅' : '❌';
+    setTimeout(() => { btn.textContent = '🎬'; btn.disabled = false; }, 4000);
+    if (d.ok) alert(`✅ YouTube Short queued (${trigger})!\nCheck Railway logs for upload progress.`);
+    else      alert(`❌ Error: ${d.error || 'unknown'}`);
+  } catch(e) {
+    btn.textContent = '❌';
+    setTimeout(() => { btn.textContent = '🎬'; btn.disabled = false; }, 3000);
+    alert('❌ Could not reach server: ' + e.message);
+  }
 }
 
 // ── Sleep Mode Toggle ─────────────────────────────────────────────────────────
