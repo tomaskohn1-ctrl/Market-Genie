@@ -10244,6 +10244,20 @@ def _alp_execute_signal(res: dict):
     else:
         print(f"[TechSnap] {sym} — no tech data, proceeding without soft boosts")
 
+    # ── Deep-bearish hard block — no new LONG entries when tape is crushed ──────
+    # When regime score < 30 (deep BEARISH), the broad market is in confirmed
+    # downtrend. Counter-trend LONG entries at any confidence level are low
+    # probability — the tape pressure overrides individual stock signals.
+    # Tunable via DEEP_BEAR_BLOCK_SCORE (default 30). Set to 0 to disable.
+    _deep_bear_threshold = int(os.getenv("DEEP_BEAR_BLOCK_SCORE", "30"))
+    if _deep_bear_threshold > 0:
+        with _breadth_lock:
+            _cur_score = _breadth_state.get("score", 50)
+        if _cur_score < _deep_bear_threshold and direction == "bull" and not _is_forced:
+            print(f"[DeepBearBlock] {sym} — SKIPPED: regime score {_cur_score:.0f} < {_deep_bear_threshold} "
+                  f"(deep BEARISH tape — LONG entries blocked regardless of confidence)")
+            return
+
     # ── Dynamic breadth-adjusted confidence gate ──────────────────────────────
     # Threshold shifts based on market regime so the system naturally favors
     # the tape direction without manual overrides. e.g. bearish day → bulls
@@ -10743,7 +10757,7 @@ def _alp_execute_signal(res: dict):
                             _alp_close_position(worst_sym, worst_side)
                             with _alp_lock:
                                 _alp_last_traded.pop(worst_sym, None)
-                            time.sleep(1.5)   # brief pause for close to settle
+                            time.sleep(5.0)   # wait for Alpaca to fully settle the close before re-checking
                             # Re-check position count after close
                             open_positions = _alp_get_open_positions()
                             total_exposure = len(open_positions)
