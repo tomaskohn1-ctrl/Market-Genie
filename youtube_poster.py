@@ -29,14 +29,16 @@ import requests
 _YT_SCOPES   = ["https://www.googleapis.com/auth/youtube.upload"]
 _VIDEO_W     = 1080
 _VIDEO_H     = 1920
-_VIDEO_SECS  = 59
+_VIDEO_SECS  = 59   # 9+9+10+13+10+8 = 59s (6-slide layout)
 _CATEGORY_ID = "25"   # News & Politics
 
 # Slide durations (must sum to _VIDEO_SECS)
-_SLIDE1_SECS = 14   # hook
-_SLIDE2_SECS = 15   # dashboard
-_SLIDE3_SECS = 15   # signals watchlist
-_SLIDE4_SECS = 15   # context/insights
+_SLIDE1_SECS = 9    # hook — biggest mover / regime
+_SLIDE2_SECS = 9    # market overview — SPY/QQQ/VIX/futures
+_SLIDE3_SECS = 10   # AI signals — top 3 with confidence
+_SLIDE4_SECS = 13   # 🆕 TRADE SETUP — entry/stop/target/R:R
+_SLIDE5_SECS = 10   # 🆕 WATCHLIST — 3 stocks with key levels
+_SLIDE6_SECS = 8    # CTA / P&L close
 _FADE_SECS   = 0.5  # xfade duration
 
 # ── Credentials ──────────────────────────────────────────────────────────────
@@ -762,123 +764,541 @@ def _generate_context_frame(data, trigger):
     return img
 
 
-def _build_voiceover_script(data, trigger):
+def _generate_trade_setup_slide(data, trigger):
     """
-    Build an engaging, punchy voiceover script.
-    Writes like a trader talking to a friend — not a robot reading a spreadsheet.
+    Slide 4 — THE TAKE-AWAY SLIDE.
+    Shows the #1 AI signal as a full trade plan: entry zone, stop, target, R:R.
+    Viewers pause and screenshot this. It's the reason they follow.
     """
+    from PIL import Image, ImageDraw
+    W, H  = _VIDEO_W, _VIDEO_H
+    BG    = (4, 6, 12)
+    WHITE = (230, 238, 250)
+    DIM   = (100, 118, 140)
+    AMBER = (220, 155, 40)
+    GREEN = (74, 222, 128)
+    RED   = (248, 113, 113)
+    PANEL = (12, 18, 30)
+    ACCENT= (56, 189, 248)
+    GOLD  = (255, 200, 50)
+
+    signals = sorted(
+        [s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 65],
+        key=lambda s: s.get("confidence", 0), reverse=True
+    )
+    hot = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
+
+    img = Image.new("RGB", (W, H), BG)
+    d   = ImageDraw.Draw(img)
+
+    fnt_nano = _load_font(28)
+    fnt_xs   = _load_font(38)
+    fnt_sm   = _load_font(50)
+    fnt_md   = _load_font(64, bold=True)
+    fnt_lg   = _load_font(88, bold=True)
+    fnt_xl   = _load_font(110, bold=True)
+    fnt_hero = _load_font(140, bold=True)
+
+    PAD = 48
+
+    # Header
+    d.rectangle([0, 0, W, 120], fill=(10, 14, 24))
+    d.text((PAD, 60), "MARKET GENIE", font=fnt_md, fill=WHITE, anchor="lm")
+    d.text((W - PAD, 60), "TRADE SETUP", font=fnt_md, fill=GOLD, anchor="rm")
+    d.rectangle([0, 118, W, 122], fill=GOLD)
+
+    y = 145
+
+    if not signals:
+        # No signal — show "waiting for setup" placeholder
+        d.text((W // 2, H // 2 - 60), "⏳ SCANNING...", font=fnt_xl, fill=DIM, anchor="mm")
+        d.text((W // 2, H // 2 + 40), "No high-confidence setup yet", font=fnt_sm, fill=DIM, anchor="mm")
+        d.text((W // 2, H // 2 + 110), "Check back at market open", font=fnt_xs, fill=DIM, anchor="mm")
+        _draw_caption_bar(d, W, H, "📸 Screenshot the trade setup when it appears!", fnt_xs, fnt_nano)
+        return img
+
+    sig   = signals[0]
+    sym   = sig["symbol"]
+    bull  = "bull" in sig.get("direction", "bull").lower()
+    conf  = sig.get("confidence", 70)
+    sc    = GREEN if bull else RED
+    label = "BULL" if bull else "BEAR"
+
+    # Get price from hot_tickers or use 0
+    price_data = next((t for t in hot if t["symbol"] == sym), None)
+    price = price_data["price"] if price_data else 0
+
+    # Calculate levels
+    stop_pct   = float(os.getenv("ALPACA_STOP_PCT",   "0.0075"))
+    target_pct = float(os.getenv("ALPACA_TARGET_PCT", "0.015"))
+    strong_pct = float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.020"))
+    use_strong = conf >= 88
+    actual_target_pct = strong_pct if use_strong else target_pct
+
+    if price > 0:
+        if bull:
+            stop_price   = price * (1 - stop_pct)
+            target_price = price * (1 + actual_target_pct)
+        else:
+            stop_price   = price * (1 + stop_pct)
+            target_price = price * (1 - actual_target_pct)
+        rr = actual_target_pct / stop_pct
+    else:
+        stop_price = target_price = 0
+        rr = actual_target_pct / stop_pct
+
+    # ── Big symbol + direction pill ───────────────────────────────────────────
+    d.rectangle([0, y, W, y + 200], fill=PANEL)
+    d.rectangle([0, y, 8, y + 200], fill=sc)
+    mid_hero = y + 100
+    d.text((PAD + 24, mid_hero), sym, font=fnt_hero, fill=WHITE, anchor="lm")
+    # Direction badge
+    try: sym_w = int(d.textlength(sym, font=fnt_hero)) + PAD + 36
+    except: sym_w = PAD + 300
+    pill_w = 180
+    d.rounded_rectangle([sym_w, mid_hero - 40, sym_w + pill_w, mid_hero + 14],
+                         radius=10, fill=(sc[0]//4, sc[1]//4, sc[2]//4), outline=sc, width=3)
+    d.text((sym_w + pill_w // 2, mid_hero - 13), label, font=fnt_md, fill=sc, anchor="mm")
+    # Confidence on right
+    d.text((W - PAD, mid_hero - 30), f"{conf:.0f}%", font=fnt_xl, fill=sc, anchor="rm")
+    d.text((W - PAD, mid_hero + 30), "A.I. confidence", font=fnt_nano, fill=DIM, anchor="rm")
+    y += 210
+
+    # ── Price levels ─────────────────────────────────────────────────────────
+    d.text((PAD, y + 8), "📋  TRADE PLAN", font=fnt_sm, fill=AMBER)
+    y += 68
+
+    def _level_row(label_txt, value_txt, color, bg, y_pos):
+        row_h = 105
+        d.rectangle([0, y_pos, W, y_pos + row_h], fill=bg)
+        d.rectangle([0, y_pos, 6, y_pos + row_h], fill=color)
+        d.text((PAD + 16, y_pos + row_h // 2 - 14), label_txt, font=fnt_xs, fill=DIM, anchor="lm")
+        d.text((PAD + 16, y_pos + row_h // 2 + 28), value_txt, font=fnt_md, fill=color, anchor="lm")
+        return y_pos + row_h + 4
+
+    if price > 0:
+        y = _level_row("ENTRY ZONE",
+                        f"${price:,.2f}  (current price)",
+                        ACCENT, PANEL, y)
+        y = _level_row("STOP LOSS",
+                        f"${stop_price:,.2f}  (-{stop_pct*100:.2f}%)",
+                        RED, (18, 10, 10), y)
+        y = _level_row("PRICE TARGET",
+                        f"${target_price:,.2f}  (+{actual_target_pct*100:.2f}%)" + (" 🔥" if use_strong else ""),
+                        GREEN, (8, 20, 12), y)
+
+        # R:R display
+        rr_h = 90
+        d.rectangle([0, y, W, y + rr_h], fill=(16, 22, 36))
+        d.rectangle([0, y, W, y + 3], fill=GOLD)
+        d.text((PAD + 16, y + rr_h // 2), "RISK / REWARD", font=fnt_xs, fill=DIM, anchor="lm")
+        d.text((W - PAD, y + rr_h // 2), f"{rr:.1f} : 1", font=fnt_lg, fill=GOLD, anchor="rm")
+        y += rr_h + 8
+    else:
+        d.text((W // 2, y + 60), "Price data loading...", font=fnt_sm, fill=DIM, anchor="mm")
+        y += 140
+
+    # ── Quality badges ────────────────────────────────────────────────────────
+    badges = []
+    if sig.get("both_agree") == 1: badges.append(("✓ Both Models Agree", GREEN))
+    if sig.get("streak", 0) >= 2:  badges.append((f"⚡ Streak {sig['streak']}x", AMBER))
+    if conf >= 90:                  badges.append(("🔥 High Conviction", sc))
+
+    bx = PAD
+    for badge_txt, badge_col in badges[:3]:
+        try: bw = int(d.textlength(badge_txt, font=fnt_nano)) + 28
+        except: bw = 200
+        d.rounded_rectangle([bx, y + 8, bx + bw, y + 54], radius=8,
+                             fill=(badge_col[0]//5, badge_col[1]//5, badge_col[2]//5),
+                             outline=badge_col, width=2)
+        d.text((bx + bw // 2, y + 31), badge_txt, font=fnt_nano, fill=badge_col, anchor="mm")
+        bx += bw + 12
+    y += 68
+
+    # Caption
+    if price > 0:
+        caption = f"📸 Screenshot this! {sym} {label} — Stop ${stop_price:,.2f} → Target ${target_price:,.2f}"
+    else:
+        caption = f"📸 Screenshot this! {sym} {label} setup — {conf:.0f}% A.I. confidence"
+    _draw_caption_bar(d, W, H, caption, fnt_xs, fnt_nano)
+    return img
+
+
+def _generate_watchlist_slide(data, trigger):
+    """
+    Slide 5 — TODAY'S WATCHLIST.
+    3-5 stocks with key price levels. Viewers write these down / screenshot.
+    Shows: symbol, direction bias, current price, key level to watch.
+    """
+    from PIL import Image, ImageDraw
+    W, H  = _VIDEO_W, _VIDEO_H
+    BG    = (4, 6, 12)
+    WHITE = (230, 238, 250)
+    DIM   = (100, 118, 140)
+    AMBER = (220, 155, 40)
+    GREEN = (74, 222, 128)
+    RED   = (248, 113, 113)
+    PANEL = (12, 18, 30)
+    ALT   = (8, 12, 22)
+    GOLD  = (255, 200, 50)
+    ACCENT= (56, 189, 248)
+
+    signals = sorted(
+        [s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 60],
+        key=lambda s: s.get("confidence", 0), reverse=True
+    )
+    hot = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
+    stop_pct   = float(os.getenv("ALPACA_STOP_PCT",   "0.0075"))
+    target_pct = float(os.getenv("ALPACA_TARGET_PCT", "0.015"))
+
+    img = Image.new("RGB", (W, H), BG)
+    d   = ImageDraw.Draw(img)
+
+    fnt_nano = _load_font(28)
+    fnt_xs   = _load_font(38)
+    fnt_sm   = _load_font(50)
+    fnt_md   = _load_font(64, bold=True)
+    fnt_lg   = _load_font(80, bold=True)
+
+    PAD = 48
+
+    # Header
+    d.rectangle([0, 0, W, 120], fill=(10, 14, 24))
+    d.text((PAD, 60), "MARKET GENIE", font=fnt_md, fill=WHITE, anchor="lm")
+    d.text((W - PAD, 60), "WATCHLIST", font=fnt_md, fill=GOLD, anchor="rm")
+    d.rectangle([0, 118, W, 122], fill=GOLD)
+    d.text((PAD, 152), f"📋  Stocks to watch {datetime.now().strftime('%b %d')}  —  key levels inside", font=fnt_xs, fill=DIM)
+    y = 200
+
+    # Build watchlist from signals (preferred) + hot movers
+    seen = set()
+    watch_items = []
+    for sig in signals[:5]:
+        sym   = sig["symbol"]
+        bull  = "bull" in sig.get("direction", "bull").lower()
+        conf  = sig.get("confidence", 70)
+        pd    = next((t for t in hot if t["symbol"] == sym), None)
+        price = pd["price"] if pd else 0
+        watch_items.append({
+            "symbol": sym, "bull": bull, "conf": conf, "price": price,
+            "stop":   price * (1 - stop_pct) if price and bull else price * (1 + stop_pct) if price else 0,
+            "target": price * (1 + target_pct) if price and bull else price * (1 - target_pct) if price else 0,
+            "pct":    pd["pct"] if pd else 0,
+            "source": "signal",
+        })
+        seen.add(sym)
+
+    # Fill remaining slots with top movers not already in signals
+    for tk in hot:
+        if tk["symbol"] not in seen and len(watch_items) < 5:
+            watch_items.append({
+                "symbol": tk["symbol"], "bull": tk["up"], "conf": 0,
+                "price": tk["price"], "stop": 0, "target": 0,
+                "pct": tk["pct"], "source": "mover",
+            })
+            seen.add(tk["symbol"])
+
+    if not watch_items:
+        d.text((W // 2, H // 2), "Loading watchlist...", font=fnt_sm, fill=DIM, anchor="mm")
+        _draw_caption_bar(d, W, H, "🔔 Follow for daily watchlist with key levels", fnt_xs, fnt_nano)
+        return img
+
+    card_h = min(250, max(180, (H - y - 110) // min(len(watch_items), 5)))
+
+    for item in watch_items[:5]:
+        sc     = GREEN if item["bull"] else RED
+        bg     = PANEL if watch_items.index(item) % 2 == 0 else ALT
+        sym    = item["symbol"]
+        price  = item["price"]
+        conf   = item["conf"]
+        target = item["target"]
+        stop   = item["stop"]
+
+        d.rectangle([0, y, W, y + card_h], fill=bg)
+        d.rectangle([0, y, 8, y + card_h], fill=sc)
+        mid = y + card_h // 2
+
+        # Symbol
+        d.text((PAD + 20, mid - 28), sym, font=fnt_lg, fill=WHITE, anchor="lm")
+
+        # Direction label
+        dir_lbl = "WATCH LONG 🟢" if item["bull"] else "WATCH SHORT 🔴"
+        if item["source"] == "mover":
+            dir_lbl = f"{'UP' if item['bull'] else 'DOWN'} {abs(item['pct']):.1f}% {'📈' if item['bull'] else '📉'}"
+        d.text((PAD + 20, mid + 22), dir_lbl, font=fnt_xs, fill=sc, anchor="lm")
+
+        # Price + levels on right
+        if price > 0:
+            d.text((W - PAD, mid - 42), f"${price:,.2f}", font=fnt_md, fill=WHITE, anchor="rm")
+            if target > 0 and conf > 0:
+                tgt_sign = "+" if item["bull"] else "-"
+                d.text((W - PAD, mid + 8), f"Target: ${target:,.2f}", font=fnt_xs, fill=GREEN if item["bull"] else RED, anchor="rm")
+                d.text((W - PAD, mid + 46), f"Stop:   ${stop:,.2f}", font=fnt_xs, fill=RED, anchor="rm")
+            elif item["pct"] != 0:
+                sign = "+" if item["pct"] > 0 else ""
+                d.text((W - PAD, mid + 8), f"{sign}{item['pct']:.2f}% today", font=fnt_xs, fill=sc, anchor="rm")
+
+        # Confidence badge if signal
+        if conf > 0:
+            d.text((PAD + 20, y + 12), f"A.I. {conf:.0f}% confident", font=fnt_nano, fill=DIM, anchor="lm")
+
+        d.rectangle([0, y + card_h - 1, W, y + card_h], fill=(20, 28, 44))
+        y += card_h
+
+    _draw_caption_bar(d, W, H, "📸 Screenshot this watchlist! Entry + stop + target included 👇", fnt_xs, fnt_nano)
+    return img
+
+
+def _generate_cta_slide(data, trigger):
+    """
+    Slide 6 — CTA / P&L Close.
+    Clean close: P&L summary, follow/comment ask, what's coming next.
+    """
+    from PIL import Image, ImageDraw
+    W, H  = _VIDEO_W, _VIDEO_H
+    BG    = (4, 6, 12)
+    WHITE = (230, 238, 250)
+    DIM   = (100, 118, 140)
+    AMBER = (220, 155, 40)
+    GREEN = (74, 222, 128)
+    RED   = (248, 113, 113)
+    PANEL = (12, 18, 30)
+    GOLD  = (255, 200, 50)
+
     regime = data.get("regime", "NEUTRAL")
     score  = data.get("regime_score", 50)
     pnl    = data.get("pnl_today", 0.0)
-    hot    = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
-    vix    = data.get("vix", 16.5)
-    nq     = data.get("nq_pct", 0.0)
+    equity = data.get("equity", 100_000.0)
+    rc     = {"BULLISH": GREEN, "BEARISH": RED, "NEUTRAL": AMBER}.get(regime, AMBER)
     signals = [s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 65]
+
+    next_post = {
+        "premarket": "Midday update → 12:00 PM ET",
+        "midday":    "End of day wrap → 4:15 PM ET",
+        "eod":       "After-hours report → 5:30 PM ET",
+        "afterhours":"Pre-market brief → 9:35 AM ET",
+    }.get(trigger, "Next update coming soon")
+
+    img = Image.new("RGB", (W, H), BG)
+    d   = ImageDraw.Draw(img)
+
+    fnt_nano = _load_font(30)
+    fnt_xs   = _load_font(40)
+    fnt_sm   = _load_font(52)
+    fnt_md   = _load_font(68, bold=True)
+    fnt_lg   = _load_font(90, bold=True)
+    fnt_xl   = _load_font(120, bold=True)
+    fnt_hero = _load_font(150, bold=True)
+
+    PAD = 48
+
+    # Header
+    d.rectangle([0, 0, W, 120], fill=(10, 14, 24))
+    d.text((W // 2, 60), "MARKET GENIE", font=fnt_md, fill=WHITE, anchor="mm")
+    d.rectangle([0, 118, W, 122], fill=rc)
+
+    y = 150
+
+    # P&L block (big, visual)
+    has_pnl = abs(pnl) >= 1 and trigger not in ("premarket",)
+    pnl_h   = 280
+    d.rectangle([0, y, W, y + pnl_h], fill=PANEL)
+    d.rectangle([0, y, 8, y + pnl_h], fill=rc)
+    if has_pnl:
+        pc   = GREEN if pnl >= 0 else RED
+        sign = "+" if pnl >= 0 else ""
+        word = "PROFIT" if pnl >= 0 else "LOSS"
+        d.text((W // 2, y + 60), f"TODAY'S {word}", font=fnt_sm, fill=DIM, anchor="mm")
+        d.text((W // 2, y + 170), f"{sign}${abs(pnl):,.0f}", font=fnt_hero, fill=pc, anchor="mm")
+    elif trigger == "premarket":
+        d.text((W // 2, y + 60), "CAPITAL DEPLOYED", font=fnt_sm, fill=DIM, anchor="mm")
+        d.text((W // 2, y + 150), f"${equity:,.0f}", font=fnt_xl, fill=WHITE, anchor="mm")
+        d.text((W // 2, y + 230), "Paper trading account", font=fnt_xs, fill=DIM, anchor="mm")
+    else:
+        d.text((W // 2, y + 80), "ACCOUNT EQUITY", font=fnt_sm, fill=DIM, anchor="mm")
+        d.text((W // 2, y + 175), f"${equity:,.0f}", font=fnt_xl, fill=WHITE, anchor="mm")
+    y += pnl_h + 20
+
+    # Regime summary
+    d.rectangle([0, y, W, y + 100], fill=(16, 22, 36))
+    regime_c = {"BULLISH": "🟢", "BEARISH": "🔴", "NEUTRAL": "🟡"}.get(regime, "⚪")
+    d.text((W // 2, y + 50), f"Regime: {regime_c} {regime}  ({score}/100)", font=fnt_sm, fill=rc, anchor="mm")
+    y += 115
+
+    # Signal count
+    if signals:
+        d.rectangle([0, y, W, y + 90], fill=PANEL)
+        d.text((W // 2, y + 45), f"🤖  {len(signals)} A.I. signal{'s' if len(signals) != 1 else ''} active today", font=fnt_sm, fill=WHITE, anchor="mm")
+        y += 105
+
+    # Follow / comment block
+    d.rectangle([0, y, W, y + 140], fill=(10, 14, 24))
+    d.rectangle([0, y, W, y + 3], fill=GOLD)
+    d.text((W // 2, y + 45), "🔔  FOLLOW for daily A.I. signals", font=fnt_sm, fill=GOLD, anchor="mm")
+    d.text((W // 2, y + 100), "💬  Drop 🟢 BULL or 🔴 BEAR below!", font=fnt_xs, fill=WHITE, anchor="mm")
+    y += 155
+
+    # Next post
+    d.rectangle([0, y, W, y + 80], fill=PANEL)
+    d.text((W // 2, y + 40), f"⏰  {next_post}", font=fnt_xs, fill=DIM, anchor="mm")
+
+    _draw_caption_bar(d, W, H, "Tap follow — free A.I. signals + trade setups daily 🔔", fnt_xs, fnt_nano)
+    return img
+
+
+def _build_voiceover_script(data, trigger):
+    """
+    Full 55-58 second script — educational, actionable, something the viewer takes away.
+    Covers: hook → regime → macro → movers → AI signals → trade setup → watchlist → CTA.
+    """
+    regime  = data.get("regime", "NEUTRAL")
+    score   = data.get("regime_score", 50)
+    pnl     = data.get("pnl_today", 0.0)
+    hot     = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
+    vix     = data.get("vix", 16.5)
+    nq      = data.get("nq_pct", 0.0)
+    spy     = data.get("spy_pct", 0.0)
+    signals = sorted(
+        [s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 65],
+        key=lambda s: s.get("confidence", 0), reverse=True
+    )
+    stop_pct   = float(os.getenv("ALPACA_STOP_PCT",   "0.0075"))
+    target_pct = float(os.getenv("ALPACA_TARGET_PCT", "0.015"))
+    strong_pct = float(os.getenv("ALPACA_STRONG_TARGET_PCT", "0.020"))
 
     date_str = datetime.now().strftime("%B %d")
     parts = []
 
-    # ── HOOK (first 3 seconds — most important for retention) ─────────────────
+    # ── 1. HOOK ───────────────────────────────────────────────────────────────
     if trigger == "premarket":
-        if regime == "BULLISH":
-            parts.append(f"Futures are GREEN on {date_str} — here's what's setting up before the open.")
-        elif regime == "BEARISH":
-            parts.append(f"Heads up — the tape looks ROUGH this morning. Let's go through it.")
-        else:
-            parts.append(f"Mixed signals heading into {date_str}. Here's your pre-market intel.")
-
-    elif trigger == "midday":
-        if hot:
+        if hot and abs(hot[0].get("pct", 0)) >= 2:
             h0   = hot[0]
-            move = f"{'up' if h0['up'] else 'down'} {abs(h0['pct']):.1f} percent"
-            parts.append(f"We're halfway through the session and {h0['symbol']} is {move}. Here's the full picture.")
-        else:
-            parts.append(f"Midday check-in. Market's moving — let's see what the A.I. is flagging.")
-
-    elif trigger in ("eod", "afterhours"):
-        if hot and abs(hot[0].get("pct", 0)) >= 3:
-            h0   = hot[0]
-            verb = "ripping" if h0["up"] else "getting crushed"
-            parts.append(f"{h0['symbol']} is {verb} after hours — {abs(h0['pct']):.1f} percent. Here's the full breakdown.")
+            verb = "gapping UP" if h0["up"] else "gapping DOWN"
+            parts.append(f"Stop scrolling. {h0['symbol']} is {verb} {abs(h0['pct']):.1f} percent pre-market — and my A.I. already has a trade plan ready.")
         elif regime == "BULLISH":
-            parts.append(f"The bulls won today. Here's the full after-hours wrap for {date_str}.")
+            parts.append(f"Good morning — the tape is setting up BULLISH on {date_str}. Here's everything you need before the bell.")
         elif regime == "BEARISH":
-            parts.append(f"Rough close on {date_str}. Here's what happened and what to watch tomorrow.")
+            parts.append(f"Warning — the A.I. is reading BEARISH this morning. Here's what to watch and how to protect yourself.")
         else:
-            parts.append(f"After-hours update for {date_str}. Let's break it down.")
-
+            parts.append(f"Pre-market brief for {date_str}. Mixed signals — here's what the A.I. is seeing and the one setup worth watching.")
+    elif trigger == "midday":
+        if hot and abs(hot[0].get("pct", 0)) >= 4:
+            h0 = hot[0]
+            parts.append(f"Midday update — {h0['symbol']} is {'ripping' if h0['up'] else 'dumping'} {abs(h0['pct']):.1f} percent. Here's what the A.I. says to do about it.")
+        else:
+            parts.append(f"Halfway through {date_str} — here's your midday market check, the A.I. signals, and the one setup I'm watching for the second half.")
+    elif trigger in ("eod", "afterhours"):
+        if hot and abs(hot[0].get("pct", 0)) >= 4:
+            h0 = hot[0]
+            verb = "exploded" if h0["up"] else "collapsed"
+            parts.append(f"{h0['symbol']} {verb} {abs(h0['pct']):.1f} percent today — here's the full breakdown and what the A.I. is watching tomorrow.")
+        elif abs(pnl) >= 50:
+            word = "banked" if pnl > 0 else "down"
+            parts.append(f"The A.I. auto-trader {word} {'$' + f'{abs(pnl):,.0f}' if pnl > 0 else '$' + f'{abs(pnl):,.0f}'} today. Here's the full recap and tomorrow's setup.")
+        else:
+            parts.append(f"End of day wrap for {date_str}. Here's what moved, what the A.I. is signalling, and your watchlist for tomorrow.")
     else:
-        parts.append(f"Market Genie live update for {date_str}.")
+        parts.append(f"Market Genie A.I. update for {date_str}. Here's the full breakdown.")
 
-    # ── REGIME ────────────────────────────────────────────────────────────────
-    regime_phrases = {
-        "BULLISH": f"The A.I. regime is BULLISH, scoring {score} out of 100. Momentum is on the bulls' side.",
-        "BEARISH": f"Regime is BEARISH at {score} out of 100. The A.I. is in defense mode right now.",
-        "NEUTRAL": f"Regime reads NEUTRAL — {score} out of 100. Choppy tape, no clean edge yet.",
-    }
-    parts.append(regime_phrases.get(regime, f"Regime score: {score} out of 100."))
+    # ── 2. REGIME + MACRO ────────────────────────────────────────────────────
+    if regime == "BULLISH":
+        parts.append(f"Market regime: BULLISH at {score} out of 100. The A.I. is seeing broad strength — bulls have the edge right now.")
+    elif regime == "BEARISH":
+        parts.append(f"Market regime: BEARISH at {score} out of 100. The tape is weak — the A.I. is in defense mode and favoring short setups.")
+    else:
+        parts.append(f"Market regime: NEUTRAL at {score} out of 100. No clean directional edge — the A.I. is being selective.")
 
-    # ── FUTURES / MACRO ───────────────────────────────────────────────────────
     if abs(nq) >= 0.3:
-        if nq >= 0:
-            parts.append(f"NASDAQ futures up {nq:.1f} percent — tech is leading the charge.")
-        else:
-            parts.append(f"NASDAQ futures down {abs(nq):.1f} percent — tech under pressure.")
+        nq_word = "up" if nq >= 0 else "down"
+        parts.append(f"NASDAQ {'futures ' if trigger == 'premarket' else ''}{nq_word} {abs(nq):.1f} percent. {'Tech is leading.' if nq > 0 else 'Tech is under pressure.'}")
 
     if vix > 25:
-        parts.append(f"VIX is spiking at {vix:.0f} — fear is elevated. Size down and trade carefully.")
+        parts.append(f"VIX at {vix:.0f} — that's elevated fear. Size down, widen stops, be patient.")
     elif vix > 20:
-        parts.append(f"VIX at {vix:.0f} — some nervousness in the market. Stay disciplined.")
+        parts.append(f"VIX at {vix:.0f} — a little nervous out there. Keep discipline.")
+    else:
+        parts.append(f"VIX at {vix:.1f} — volatility is calm. Good conditions for clean entries.")
 
-    # ── TOP MOVERS ────────────────────────────────────────────────────────────
+    # ── 3. TOP MOVERS ────────────────────────────────────────────────────────
     if len(hot) >= 2:
         h0, h1 = hot[0], hot[1]
-        d0  = "up" if h0["up"] else "down"
-        d1  = "up" if h1["up"] else "down"
         parts.append(
-            f"Top movers: {h0['symbol']} {d0} {abs(h0['pct']):.1f}, "
-            f"and {h1['symbol']} {d1} {abs(h1['pct']):.1f} percent."
+            f"Top movers: {h0['symbol']} {'up' if h0['up'] else 'down'} {abs(h0['pct']):.1f} percent, "
+            f"and {h1['symbol']} {'up' if h1['up'] else 'down'} {abs(h1['pct']):.1f} percent."
         )
     elif hot:
-        h0  = hot[0]
-        d0  = "up" if h0["up"] else "down"
-        parts.append(f"Biggest mover today: {h0['symbol']}, {d0} {abs(h0['pct']):.1f} percent.")
+        h0 = hot[0]
+        parts.append(f"Biggest mover: {h0['symbol']}, {'up' if h0['up'] else 'down'} {abs(h0['pct']):.1f} percent.")
 
-    # ── AI SIGNALS ────────────────────────────────────────────────────────────
+    # ── 4. AI SIGNALS + TRADE SETUP ──────────────────────────────────────────
     if signals:
-        sig  = signals[0]
-        bull = "bull" in sig.get("direction", "bull").lower()
-        conf = sig.get("confidence", 70)
-        sym  = sig["symbol"]
-        if bull:
-            if conf >= 90:
-                parts.append(f"The A.I. is EXTREMELY bullish on {sym} — {conf:.0f} percent confidence. That's a high-conviction setup.")
-            else:
-                parts.append(f"A.I. has a bullish signal on {sym} at {conf:.0f} percent confidence.")
-        else:
-            if conf >= 90:
-                parts.append(f"Strong bearish signal on {sym} — {conf:.0f} percent confidence from the A.I. Watch for downside.")
-            else:
-                parts.append(f"A.I. flagging {sym} as bearish with {conf:.0f} percent confidence.")
+        sig   = signals[0]
+        bull  = "bull" in sig.get("direction", "bull").lower()
+        conf  = sig.get("confidence", 70)
+        sym   = sig["symbol"]
+        price_data = next((t for t in hot if t["symbol"] == sym), None)
+        price = price_data["price"] if price_data else 0
+        use_strong = conf >= 88
+        actual_target = strong_pct if use_strong else target_pct
 
-        # Second signal if available
+        if conf >= 90:
+            confidence_phrase = f"The A.I. is extremely high conviction on this one — {conf:.0f} percent confidence, both models in full agreement."
+        elif conf >= 80:
+            confidence_phrase = f"Strong signal — {conf:.0f} percent confidence. Both the Kronos neural model and TFM are aligned."
+        else:
+            confidence_phrase = f"Decent setup — {conf:.0f} percent A.I. confidence."
+
+        direction_phrase = "BULLISH" if bull else "BEARISH"
+        parts.append(f"Number one A.I. signal: {direction_phrase} on {sym}. {confidence_phrase}")
+
+        if price > 0:
+            if bull:
+                stop_p   = price * (1 - stop_pct)
+                target_p = price * (1 + actual_target)
+                parts.append(
+                    f"The trade plan: entry around ${price:,.2f}, stop at ${stop_p:,.2f}, "
+                    f"target ${target_p:,.2f}. That's a {actual_target/stop_pct:.1f} to 1 risk reward. Screenshot the next slide."
+                )
+            else:
+                stop_p   = price * (1 + stop_pct)
+                target_p = price * (1 - actual_target)
+                parts.append(
+                    f"Short setup at ${price:,.2f}, stop ${stop_p:,.2f}, target ${target_p:,.2f}. "
+                    f"{actual_target/stop_pct:.1f} to 1 risk reward. Screenshot the next slide."
+                )
+        else:
+            parts.append(f"Scroll to the trade setup slide and screenshot it — entry, stop, and target are all there.")
+
         if len(signals) >= 2:
             sig2  = signals[1]
             bull2 = "bull" in sig2.get("direction", "bull").lower()
-            dir2  = "bullish" if bull2 else "bearish"
-            parts.append(f"Also {dir2} on {sig2['symbol']} at {sig2.get('confidence', 70):.0f} percent.")
+            parts.append(f"Also watching {sig2['symbol']} — {'bullish' if bull2 else 'bearish'} at {sig2.get('confidence', 70):.0f} percent.")
 
-    # ── P&L ───────────────────────────────────────────────────────────────────
+        if len(signals) >= 3:
+            sig3  = signals[2]
+            bull3 = "bull" in sig3.get("direction", "bull").lower()
+            parts.append(f"And {sig3['symbol']} {'long' if bull3 else 'short'} setup at {sig3.get('confidence', 70):.0f} percent confidence.")
+    else:
+        parts.append("No high-confidence setups right now — the A.I. is waiting for a cleaner entry. Patience is a position.")
+
+    # ── 5. WATCHLIST TEASE ────────────────────────────────────────────────────
+    if signals or hot:
+        watch_names = [s["symbol"] for s in signals[:3]] or [t["symbol"] for t in hot[:3]]
+        if len(watch_names) >= 3:
+            parts.append(f"Watchlist for today: {watch_names[0]}, {watch_names[1]}, and {watch_names[2]}. Key levels are on the next slide — screenshot it.")
+        elif len(watch_names) >= 1:
+            parts.append(f"Key name on the watchlist today: {watch_names[0]}. Level breakdown is on the next slide.")
+
+    # ── 6. P&L + CTA ──────────────────────────────────────────────────────────
     if trigger not in ("premarket",) and abs(pnl) >= 1:
-        if pnl > 0:
-            parts.append(f"Paper trading P and L today: up ${abs(pnl):,.0f}. The system is working.")
-        else:
-            parts.append(f"Paper trading P and L today: down ${abs(pnl):,.0f}. We adapt and come back tomorrow.")
-    elif trigger == "afterhours" and abs(pnl) < 1:
-        parts.append("No trades executed today. The A.I. held cash — sometimes that's the right call.")
+        word = "up" if pnl > 0 else "down"
+        parts.append(f"Paper trading P and L: {word} ${abs(pnl):,.0f} today on a ${data.get('equity', 100000):,.0f} account.")
 
-    # ── CTA ───────────────────────────────────────────────────────────────────
-    parts.append("Follow for free A.I. signals every trading day. The market never sleeps — and neither does Market Genie.")
+    parts.append(
+        "Follow Market Genie for the full trade setup and watchlist every single trading day — "
+        "completely free, completely automated. Drop a green or red emoji in the comments — "
+        "are you bullish or bearish right now?"
+    )
 
     return "  ".join(parts)
 
@@ -953,9 +1373,9 @@ def _get_ffmpeg():
 
 def _create_short(frame, output_path, hook_frame=None, cta_frame=None, audio_path=None):
     """
-    Write a 30-second MP4 Short.
-    If hook_frame and cta_frame are provided, creates a 3-slide video with
-    xfade transitions.  Falls back to single-slide Ken-Burns if needed.
+    Write a 58-second MP4 Short from 6 slides.
+    Slides: hook → overview → signals → trade setup → watchlist → CTA.
+    Falls back to single-slide Ken-Burns if needed.
     Mixes in audio_path if supplied.
     """
     # Save all frames to temp PNGs
@@ -972,15 +1392,21 @@ def _create_short(frame, output_path, hook_frame=None, cta_frame=None, audio_pat
 
     # ── Multi-slide path — encode each slide then concat ─────────────────────
     if hook_frame is not None and cta_frame is not None:
-        # context_frame is passed via cta_frame's slot when 4-slide mode active
-        _ctx = getattr(_create_short, "_context_frame", None)
-        slides = [
-            (hook_frame, _SLIDE1_SECS),
-            (frame,      _SLIDE2_SECS),
-            (cta_frame,  _SLIDE3_SECS),
-        ]
-        if _ctx is not None:
-            slides.append((_ctx, _SLIDE4_SECS))
+        # Pull extra slides attached as attributes
+        _overview  = getattr(_create_short, "_overview_frame",  None)
+        _setup     = getattr(_create_short, "_setup_frame",     None)
+        _watchlist = getattr(_create_short, "_watchlist_frame", None)
+
+        # Build 6-slide sequence (fall back gracefully if new frames missing)
+        slides = [(hook_frame, _SLIDE1_SECS)]
+        if _overview:
+            slides.append((_overview,  _SLIDE2_SECS))
+        slides.append((frame, _SLIDE3_SECS))   # signals slide
+        if _setup:
+            slides.append((_setup,     _SLIDE4_SECS))
+        if _watchlist:
+            slides.append((_watchlist, _SLIDE5_SECS))
+        slides.append((cta_frame, _SLIDE6_SECS))
         clip_paths = []
         ok = True
         for img, secs in slides:
@@ -1003,7 +1429,7 @@ def _create_short(frame, output_path, hook_frame=None, cta_frame=None, audio_pat
                 ok = False; break
             clip_paths.append(clip_path)
 
-        if ok and len(clip_paths) in (3, 4):
+        if ok and len(clip_paths) >= 2:
             # Write concat list file
             with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as lf:
                 for cp in clip_paths:
@@ -1167,15 +1593,19 @@ def post_market_update(trigger: str = "midday"):
 
     data = _fetch_market_data()
 
-    # Generate all three slides
-    hook_frame = _generate_hook_frame(data, trigger)
-    dash_frame = _generate_frame(data, trigger)
-    cta_frame  = _generate_cta_frame(data, trigger)
+    # ── Generate all 6 slides ─────────────────────────────────────────────────
+    print("[YouTube] Rendering 6 slides...")
+    slide1_hook      = _generate_hook_frame(data, trigger)        # 1 — hook
+    slide2_overview  = _generate_context_frame(data, trigger)     # 2 — market overview
+    slide3_signals   = _generate_frame(data, trigger)             # 3 — AI signals
+    slide4_setup     = _generate_trade_setup_slide(data, trigger) # 4 — trade plan ★
+    slide5_watchlist = _generate_watchlist_slide(data, trigger)   # 5 — watchlist ★
+    slide6_cta       = _generate_cta_slide(data, trigger)         # 6 — CTA / P&L
 
-    # Generate all 4 slides
-    context_frame = _generate_context_frame(data, trigger)
-    # Attach context frame so _create_short can pick it up
-    _create_short._context_frame = context_frame
+    # Attach extra slides so _create_short can pick them up
+    _create_short._overview_frame  = slide2_overview
+    _create_short._setup_frame     = slide4_setup
+    _create_short._watchlist_frame = slide5_watchlist
 
     # Generate TTS voiceover (best-effort — None if unavailable)
     audio_path = _generate_voiceover(data, trigger)
@@ -1183,9 +1613,9 @@ def post_market_update(trigger: str = "midday"):
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         mp4_path = tmp.name
 
-    if not _create_short(dash_frame, mp4_path,
-                         hook_frame=hook_frame,
-                         cta_frame=cta_frame,
+    if not _create_short(slide3_signals, mp4_path,
+                         hook_frame=slide1_hook,
+                         cta_frame=slide6_cta,
                          audio_path=audio_path):
         return False
 
