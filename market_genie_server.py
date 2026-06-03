@@ -10245,11 +10245,12 @@ def _alp_execute_signal(res: dict):
         print(f"[TechSnap] {sym} — no tech data, proceeding without soft boosts")
 
     # ── Deep-bearish hard block — no new LONG entries when tape is crushed ──────
-    # When regime score < 30 (deep BEARISH), the broad market is in confirmed
-    # downtrend. Counter-trend LONG entries at any confidence level are low
-    # probability — the tape pressure overrides individual stock signals.
-    # Tunable via DEEP_BEAR_BLOCK_SCORE (default 30). Set to 0 to disable.
-    _deep_bear_threshold = int(os.getenv("DEEP_BEAR_BLOCK_SCORE", "30"))
+    # When regime score < 35 (ANY BEARISH reading), block all new LONG entries.
+    # BEARISH regime = score < 35 by definition — if the tape is bearish at all,
+    # counter-trend longs are low probability and shouldn't auto-execute.
+    # Tunable via DEEP_BEAR_BLOCK_SCORE (default 35 = full BEARISH boundary).
+    # Set to 0 to disable, or lower (e.g. 25) to only block extreme bearish.
+    _deep_bear_threshold = int(os.getenv("DEEP_BEAR_BLOCK_SCORE", "35"))
     if _deep_bear_threshold > 0:
         with _breadth_lock:
             _cur_score = _breadth_state.get("score", 50)
