@@ -313,9 +313,13 @@ def _generate_hook_frame(data, trigger):
     y = 220
     d.rectangle([0, y, W, y + 220], fill=PANEL)
     d.rectangle([0, y, 8, y + 220], fill=rc)
-    regime_label = {"BULLISH": "BULLISH DAY", "BEARISH": "BEARISH DAY", "NEUTRAL": "MIXED DAY"}.get(regime, regime)
+    regime_label = {
+        "BULLISH": "🟢 BULLS IN CONTROL",
+        "BEARISH": "🔴 BEARS IN CONTROL",
+        "NEUTRAL": "🟡 CHOPPY TAPE",
+    }.get(regime, regime)
     d.text((W // 2, y + 80), regime_label, font=fnt_xl, fill=rc, anchor="mm")
-    d.text((W // 2, y + 160), f"Regime Score: {score}/100", font=fnt_sm, fill=DIM, anchor="mm")
+    d.text((W // 2, y + 160), f"A.I. Regime Score: {score}/100", font=fnt_sm, fill=DIM, anchor="mm")
 
     y += 240
 
@@ -715,80 +719,179 @@ def _generate_context_frame(data, trigger):
     return img
 
 
-def _generate_voiceover(data, trigger):
+def _build_voiceover_script(data, trigger):
     """
-    Generate a spoken voiceover MP3 using gTTS.
-    Returns the path to the MP3 file, or None on failure.
+    Build an engaging, punchy voiceover script.
+    Writes like a trader talking to a friend — not a robot reading a spreadsheet.
     """
-    try:
-        from gtts import gTTS
-    except ImportError:
-        print("[YouTube] ⚠️  gtts not installed — skipping voiceover")
-        return None
-
-    regime = data["regime"].lower()
-    score  = data["regime_score"]
-    pnl    = data["pnl_today"]
-    pcs    = "up" if pnl >= 0 else "down"
+    regime = data.get("regime", "NEUTRAL")
+    score  = data.get("regime_score", 50)
+    pnl    = data.get("pnl_today", 0.0)
     hot    = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
-    vix    = data["vix"]
-    nq     = data["nq_pct"]
+    vix    = data.get("vix", 16.5)
+    nq     = data.get("nq_pct", 0.0)
+    signals = [s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 65]
 
     date_str = datetime.now().strftime("%B %d")
+    parts = []
 
-    # Build spoken script
-    trigger_phrase = {
-        "premarket":  "pre-market brief",
-        "midday":     "midday update",
-        "eod":        "end of day wrap",
-        "afterhours": "after-hours summary",
-    }.get(trigger, "live update")
+    # ── HOOK (first 3 seconds — most important for retention) ─────────────────
+    if trigger == "premarket":
+        if regime == "BULLISH":
+            parts.append(f"Futures are GREEN on {date_str} — here's what's setting up before the open.")
+        elif regime == "BEARISH":
+            parts.append(f"Heads up — the tape looks ROUGH this morning. Let's go through it.")
+        else:
+            parts.append(f"Mixed signals heading into {date_str}. Here's your pre-market intel.")
 
-    script_parts = [
-        f"Market Genie A.I. {trigger_phrase} for {date_str}.",
-        f"Market regime is {regime}, scoring {score} out of 100.",
-    ]
+    elif trigger == "midday":
+        if hot:
+            h0   = hot[0]
+            move = f"{'up' if h0['up'] else 'down'} {abs(h0['pct']):.1f} percent"
+            parts.append(f"We're halfway through the session and {h0['symbol']} is {move}. Here's the full picture.")
+        else:
+            parts.append(f"Midday check-in. Market's moving — let's see what the A.I. is flagging.")
 
-    if nq != 0:
-        nq_dir = "up" if nq >= 0 else "down"
-        script_parts.append(f"NASDAQ futures are {nq_dir} {abs(nq):.1f} percent.")
+    elif trigger in ("eod", "afterhours"):
+        if hot and abs(hot[0].get("pct", 0)) >= 3:
+            h0   = hot[0]
+            verb = "ripping" if h0["up"] else "getting crushed"
+            parts.append(f"{h0['symbol']} is {verb} after hours — {abs(h0['pct']):.1f} percent. Here's the full breakdown.")
+        elif regime == "BULLISH":
+            parts.append(f"The bulls won today. Here's the full after-hours wrap for {date_str}.")
+        elif regime == "BEARISH":
+            parts.append(f"Rough close on {date_str}. Here's what happened and what to watch tomorrow.")
+        else:
+            parts.append(f"After-hours update for {date_str}. Let's break it down.")
 
-    if vix > 20:
-        script_parts.append(f"Watch out — VIX is elevated at {vix:.0f}.")
+    else:
+        parts.append(f"Market Genie live update for {date_str}.")
 
-    if hot:
-        h0   = hot[0]
-        hdir = "up" if h0["up"] else "down"
-        script_parts.append(
-            f"Biggest mover: {h0['symbol']}, {hdir} {abs(h0['pct']):.1f} percent."
+    # ── REGIME ────────────────────────────────────────────────────────────────
+    regime_phrases = {
+        "BULLISH": f"The A.I. regime is BULLISH, scoring {score} out of 100. Momentum is on the bulls' side.",
+        "BEARISH": f"Regime is BEARISH at {score} out of 100. The A.I. is in defense mode right now.",
+        "NEUTRAL": f"Regime reads NEUTRAL — {score} out of 100. Choppy tape, no clean edge yet.",
+    }
+    parts.append(regime_phrases.get(regime, f"Regime score: {score} out of 100."))
+
+    # ── FUTURES / MACRO ───────────────────────────────────────────────────────
+    if abs(nq) >= 0.3:
+        if nq >= 0:
+            parts.append(f"NASDAQ futures up {nq:.1f} percent — tech is leading the charge.")
+        else:
+            parts.append(f"NASDAQ futures down {abs(nq):.1f} percent — tech under pressure.")
+
+    if vix > 25:
+        parts.append(f"VIX is spiking at {vix:.0f} — fear is elevated. Size down and trade carefully.")
+    elif vix > 20:
+        parts.append(f"VIX at {vix:.0f} — some nervousness in the market. Stay disciplined.")
+
+    # ── TOP MOVERS ────────────────────────────────────────────────────────────
+    if len(hot) >= 2:
+        h0, h1 = hot[0], hot[1]
+        d0  = "up" if h0["up"] else "down"
+        d1  = "up" if h1["up"] else "down"
+        parts.append(
+            f"Top movers: {h0['symbol']} {d0} {abs(h0['pct']):.1f}, "
+            f"and {h1['symbol']} {d1} {abs(h1['pct']):.1f} percent."
         )
+    elif hot:
+        h0  = hot[0]
+        d0  = "up" if h0["up"] else "down"
+        parts.append(f"Biggest mover today: {h0['symbol']}, {d0} {abs(h0['pct']):.1f} percent.")
 
-    signals = [s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 65][:1]
+    # ── AI SIGNALS ────────────────────────────────────────────────────────────
     if signals:
         sig  = signals[0]
         bull = "bull" in sig.get("direction", "bull").lower()
-        script_parts.append(
-            f"A.I. signal: {'bullish' if bull else 'bearish'} on {sig['symbol']} "
-            f"with {sig.get('confidence', 70):.0f} percent confidence."
-        )
+        conf = sig.get("confidence", 70)
+        sym  = sig["symbol"]
+        if bull:
+            if conf >= 90:
+                parts.append(f"The A.I. is EXTREMELY bullish on {sym} — {conf:.0f} percent confidence. That's a high-conviction setup.")
+            else:
+                parts.append(f"A.I. has a bullish signal on {sym} at {conf:.0f} percent confidence.")
+        else:
+            if conf >= 90:
+                parts.append(f"Strong bearish signal on {sym} — {conf:.0f} percent confidence from the A.I. Watch for downside.")
+            else:
+                parts.append(f"A.I. flagging {sym} as bearish with {conf:.0f} percent confidence.")
 
-    if trigger != "premarket" and abs(pnl) >= 1:
-        script_parts.append(f"Today's P and L: {pcs} ${abs(pnl):,.0f}.")
+        # Second signal if available
+        if len(signals) >= 2:
+            sig2  = signals[1]
+            bull2 = "bull" in sig2.get("direction", "bull").lower()
+            dir2  = "bullish" if bull2 else "bearish"
+            parts.append(f"Also {dir2} on {sig2['symbol']} at {sig2.get('confidence', 70):.0f} percent.")
+
+    # ── P&L ───────────────────────────────────────────────────────────────────
+    if trigger not in ("premarket",) and abs(pnl) >= 1:
+        if pnl > 0:
+            parts.append(f"Paper trading P and L today: up ${abs(pnl):,.0f}. The system is working.")
+        else:
+            parts.append(f"Paper trading P and L today: down ${abs(pnl):,.0f}. We adapt and come back tomorrow.")
     elif trigger == "afterhours" and abs(pnl) < 1:
-        script_parts.append("No trades today. Signals reset tomorrow at market open.")
+        parts.append("No trades executed today. The A.I. held cash — sometimes that's the right call.")
 
-    script_parts.append("Follow Market Genie for free A.I. signals every single trading day.")
+    # ── CTA ───────────────────────────────────────────────────────────────────
+    parts.append("Follow for free A.I. signals every trading day. The market never sleeps — and neither does Market Genie.")
 
-    script = "  ".join(script_parts)
-    print(f"[YouTube] 🎙️  Voiceover script: {script[:120]}...")
+    return "  ".join(parts)
 
+
+def _generate_voiceover(data, trigger):
+    """
+    Generate a spoken voiceover MP3.
+    Tries edge-tts first (neural, human-sounding, free).
+    Falls back to gTTS if edge-tts is unavailable.
+    Returns path to MP3, or None on failure.
+    """
+    script = _build_voiceover_script(data, trigger)
+    print(f"[YouTube] 🎙️  Voiceover script: {script[:160]}...")
+
+    # ── Primary: edge-tts (Microsoft neural voices — sounds human) ───────────
+    # Voice options: en-US-GuyNeural (confident male), en-US-JennyNeural (clear female),
+    #                en-US-AriaNeural (expressive female), en-US-DavisNeural (deep male)
+    _EDGE_VOICE = os.getenv("YT_VOICE", "en-US-GuyNeural")
     try:
+        import asyncio, edge_tts
+        tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+        tmp.close()
+
+        async def _run_edge():
+            communicate = edge_tts.Communicate(script, _EDGE_VOICE, rate="+8%", volume="+10%")
+            await communicate.save(tmp.name)
+
+        # Run async in a fresh event loop (works inside threads)
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                raise RuntimeError("closed")
+            loop.run_until_complete(_run_edge())
+        except RuntimeError:
+            asyncio.run(_run_edge())
+
+        print(f"[YouTube] ✅ edge-tts voiceover saved ({_EDGE_VOICE}): {tmp.name}")
+        return tmp.name
+    except ImportError:
+        print("[YouTube] ⚠️  edge-tts not installed — falling back to gTTS")
+        print("[YouTube]    Install: pip install edge-tts")
+    except Exception as e:
+        print(f"[YouTube] ⚠️  edge-tts failed ({e}) — falling back to gTTS")
+
+    # ── Fallback: gTTS ────────────────────────────────────────────────────────
+    try:
+        from gtts import gTTS
         tts = gTTS(text=script, lang="en", slow=False)
         tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
         tts.save(tmp.name)
         tmp.close()
-        print(f"[YouTube] ✅ Voiceover saved: {tmp.name}")
+        print(f"[YouTube] ✅ gTTS voiceover saved: {tmp.name}")
         return tmp.name
+    except ImportError:
+        print("[YouTube] ❌ Neither edge-tts nor gTTS installed — skipping voiceover")
+        return None
     except Exception as e:
         print(f"[YouTube] ❌ gTTS error: {e}")
         return None

@@ -104,6 +104,25 @@ MASSIVE_BASE = "https://api.massive.com"
 # limits active connections so requests queue orderly rather than pile up.
 _MASSIVE_SEMAPHORE = threading.Semaphore(4)
 
+# ── Sleep Mode ────────────────────────────────────────────────────────────────
+# When True, all background polling loops pause (near-zero CPU/API usage).
+# Auto-activated at 6:00 PM ET; auto-cleared at 8:45 AM ET.
+# Can also be toggled manually via POST /api/sleep-mode or the dashboard button.
+_SLEEP_MODE      = False
+_sleep_mode_lock = threading.Lock()
+
+def _is_sleep_mode() -> bool:
+    return _SLEEP_MODE
+
+def _set_sleep_mode(sleeping: bool):
+    global _SLEEP_MODE
+    with _sleep_mode_lock:
+        prev = _SLEEP_MODE
+        _SLEEP_MODE = sleeping
+    if sleeping != prev:
+        msg = "💤 SLEEPING — all polling paused" if sleeping else "⚡ AWAKE — polling resumed"
+        print(f"[SleepMode] {msg}")
+
 def broadcast_push(title: str, body: str, url: str = "/", tag: str = "alert") -> int:
     """
     Send a push notification via ntfy.sh.
@@ -4856,6 +4875,9 @@ def _predict_bg_loop():
 
     bucket_idx = 0
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         try:
             universe = list(_PREDICT_WATCHLIST)
             n        = _PREDICT_NUM_BUCKETS
@@ -4917,6 +4939,9 @@ def _hot_lane_loop():
     """
     import concurrent.futures
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         try:
             if not _us_market_open():
                 time.sleep(_HOT_RESCAN_SECS)
@@ -5709,6 +5734,9 @@ def _wr_resolve_loop():
     """Background thread: resolve pending signals every 2 minutes."""
     _wr_init_db()
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         try:
             _wr_resolve_pending()
         except Exception as e:
@@ -5800,6 +5828,9 @@ def _vix_poll_loop():
     """Background thread: poll ^VIX and VXX every 3 minutes."""
     import yfinance as yf
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         try:
             # ── VIX level + trend ─────────────────────────────────────────────
             hist = yf.Ticker("^VIX").history(period="2d", interval="5m")
@@ -5875,6 +5906,9 @@ def _futures_poll_loop():
     """
     import yfinance as yf
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         try:
             updates = {}
             for sym, key in [("NQ=F", "nq"), ("ES=F", "es")]:
@@ -6084,6 +6118,9 @@ def _kelly_poll_loop():
     """Refresh Half-Kelly sizing every 30 minutes."""
     time.sleep(60)   # let winrate DB initialise before first read
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         try:
             _refresh_kelly_from_db()
         except Exception as e:
@@ -6226,6 +6263,9 @@ def _run_conf_recalibration():
 def _recal_loop():
     time.sleep(300)   # 5-min startup grace — let winrate DB warm up
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         try:
             _run_conf_recalibration()
         except Exception as e:
@@ -6439,6 +6479,9 @@ def _gex_poll_loop():
     # Initial delay: stagger startup so yfinance auth crumb is established
     time.sleep(30)
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         try:
             # Skip outside market hours — options chain fetch is slow, no value on weekends
             _now_et = datetime.now(tz=None)
@@ -6518,6 +6561,9 @@ def _megacap_poll_loop():
     import yfinance as yf
     _all_syms = list(_MEGACAP_WEIGHTS.keys()) + ["QQQ", "SPY"]
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         try:
             components  = {}
             score_num   = 0.0
@@ -6594,6 +6640,9 @@ def _tlt_pc_tick_poll_loop():
     _last_tick_err_log = 0.0
 
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         try:
             now = time.time()
 
@@ -6779,6 +6828,9 @@ _SOCIAL_BOOST_SPIKE = 8     # +8 pts when velocity > 100 (⚡ SPIKE — crowd pi
 def _social_cache_loop():
     """Background thread: keeps _social_hot_cache fresh from ApeWisdom every 5 min."""
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         try:
             tickers = get_apewisdom_trending()
             new_cache = {}
@@ -7130,6 +7182,9 @@ def _breadth_loop():
     except Exception as e:
         print(f"[Breadth] Startup compute error: {e}")
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         time.sleep(90)    # 90 seconds — faster regime detection (was 300s/5min)
         try:
             _compute_breadth_score()
@@ -12644,6 +12699,9 @@ def _scalp_bg_loop():
         threading.Thread(target=_tfm_load, daemon=True).start()
 
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         try:
             # Choose universe + worker count based on market session
             if _is_market_hours():
@@ -14013,6 +14071,9 @@ def _alert_scheduler_loop():
     # Stagger first check by 30s so server is fully up
     time.sleep(30)
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         try:
             _run_alert_checks()
         except Exception as e:
@@ -14086,6 +14147,9 @@ def _oil_news_loop():
     global _oil_seen_ids
     time.sleep(15)   # let server finish booting
     while True:
+        if _is_sleep_mode():
+            time.sleep(60)
+            continue
         try:
             api_key = os.getenv("NEWS_API_KEY", NEWS_API_KEY).strip()
             if not api_key:
@@ -14192,6 +14256,44 @@ def _oil_news_loop():
 _oil_news_thread = threading.Thread(target=_oil_news_loop, daemon=True, name="OilNews")
 _oil_news_thread.start()
 print("[OilNews] Monitor started — polling NewsAPI every 5 min for GUSH/DRIP signals")
+
+
+# ── Sleep Mode Auto-Scheduler ─────────────────────────────────────────────────
+def _sleep_scheduler_loop():
+    """Auto-sleep 6:00 PM ET → 8:45 AM ET.  Checks every 60 s."""
+    try:
+        from zoneinfo import ZoneInfo
+        _ET = ZoneInfo("America/New_York")
+    except ImportError:
+        _ET = None   # Python < 3.9; fall back to UTC-4 approximation
+
+    while True:
+        try:
+            if _ET:
+                from datetime import timezone
+                now_et = datetime.now(_ET)
+            else:
+                now_et = datetime.utcnow() - timedelta(hours=4)
+            hm = now_et.hour * 60 + now_et.minute
+            # Sleep window: 18:00 (1080 min) through 08:44 (524 min)
+            should_sleep = (hm >= 18 * 60) or (hm < 8 * 60 + 45)
+            if should_sleep != _is_sleep_mode():
+                _set_sleep_mode(should_sleep)
+        except Exception as _se:
+            print(f"[SleepMode] Scheduler error: {_se}")
+        time.sleep(60)
+
+threading.Thread(target=_sleep_scheduler_loop, daemon=True, name="sleep-scheduler").start()
+print("[SleepMode] Auto-scheduler started — sleep 6:00 PM ET, wake 8:45 AM ET")
+
+
+@app.route("/api/sleep-mode", methods=["GET", "POST"])
+def sleep_mode_endpoint():
+    """GET: returns current sleep state.  POST {sleeping: true/false}: override."""
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        _set_sleep_mode(bool(data.get("sleeping", False)))
+    return jsonify({"sleeping": _is_sleep_mode()})
 
 
 @app.route("/api/oil/news")

@@ -1442,6 +1442,12 @@
        style="display:flex;align-items:center;gap:5px;text-decoration:none;font-size:12px;font-weight:600;padding:8px 12px;">
       ◆ Predictor
     </a>
+    <!-- Sleep mode toggle -->
+    <button id="sleepModeBtn" class="btn secondary" onclick="toggleSleepMode()"
+            title="Sleep mode — pause all polling"
+            style="padding:8px 10px;font-size:15px;line-height:1;border:none;background:none;cursor:pointer">
+      💤
+    </button>
     <!-- Light / Dark theme toggle -->
     <button id="themeToggleBtn" class="btn secondary" onclick="toggleTheme()"
             title="Toggle light/dark theme"
@@ -7916,6 +7922,33 @@ function _beep(freq = 880, dur = 0.3) {
     osc.stop(_audioCtx.currentTime + dur);
   } catch(e) {}
 }
+
+// ── Sleep Mode Toggle ─────────────────────────────────────────────────────────
+let _sleepMode = false;
+
+async function toggleSleepMode() {
+  _sleepMode = !_sleepMode;
+  await fetch('/api/sleep-mode', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({sleeping: _sleepMode})
+  });
+  _updateSleepBtn();
+}
+
+function _updateSleepBtn() {
+  const btn = document.getElementById('sleepModeBtn');
+  if (!btn) return;
+  btn.textContent  = _sleepMode ? '⚡' : '💤';
+  btn.title        = _sleepMode ? 'Click to wake — polling paused' : 'Sleep mode — pause all polling';
+  btn.style.opacity = _sleepMode ? '1' : '0.7';
+}
+
+// Sync sleep state from server on load
+fetch('/api/sleep-mode').then(r => r.json()).then(d => {
+  _sleepMode = !!d.sleeping;
+  _updateSleepBtn();
+}).catch(() => {});
 
 // ── Light / Dark Theme Toggle ─────────────────────────────────────────────────
 function toggleTheme() {
