@@ -1783,7 +1783,7 @@ def post_market_update(trigger: str = "midday"):
 
     if vid_id:
         # Upload hook frame as custom thumbnail — what people see before clicking
-        _upload_thumbnail(service, vid_id, hook_frame)
+        _upload_thumbnail(service, vid_id, slide1_hook)
         return True
 
     return False
