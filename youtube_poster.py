@@ -183,27 +183,117 @@ def _load_font(size: int, bold: bool = False):
     return ImageFont.load_default()
 
 
-# ── Colour helpers ────────────────────────────────────────────────────────────
-def _regime_rgb(regime: str):
-    return {
-        "BULLISH": (74, 222, 128),
-        "BEARISH": (248, 113, 113),
-        "NEUTRAL": (250, 204, 21),
-    }.get(regime, (156, 163, 175))
+# ══════════════════════════════════════════════════════════════════════════════
+# DESIGN SYSTEM — matches dashboard.html CSS variables exactly
+# ══════════════════════════════════════════════════════════════════════════════
+_C = {
+    "bg":        (8,   8,   16),
+    "surface":   (14,  14,  28),
+    "card":      (17,  17,  32),
+    "accent":    (91,  127, 255),
+    "accent_hi": (123, 155, 255),
+    "purple":    (155, 89,  245),
+    "blue":      (64,  169, 255),
+    "green":     (0,   230, 118),
+    "red":       (255, 61,  87),
+    "amber":     (255, 179, 0),
+    "text":      (226, 232, 240),
+    "text_hi":   (247, 250, 252),
+    "subtext":   (113, 128, 150),
+    "muted":     (74,  85,  104),
+    "green_dim": (8,   26,  18),
+    "red_dim":   (28,  10,  14),
+    "amber_dim": (28,  20,  4),
+    "accent_dim":(12,  16,  34),
+}
 
+def _regime_color(regime):
+    return {"BULLISH": _C["green"], "BEARISH": _C["red"]}.get(regime, _C["amber"])
+
+def _pct_color(v):
+    return _C["green"] if v >= 0 else _C["red"]
+
+def _mk_bg():
+    try:
+        import numpy as np
+        arr = __import__("numpy").zeros((_VIDEO_H, _VIDEO_W, 3), dtype=__import__("numpy").uint8)
+        for y in range(_VIDEO_H):
+            t = y / _VIDEO_H
+            arr[y, :] = [int(8+t*5), int(8+t*4), int(16+t*12)]
+        from PIL import Image
+        return Image.fromarray(arr, "RGB")
+    except Exception:
+        from PIL import Image
+        return Image.new("RGB", (_VIDEO_W, _VIDEO_H), _C["bg"])
+
+def _draw_glow_card(d, x, y, x2, y2, radius=16, accent=None, fill=None):
+    ac = accent or _C["accent"]
+    bg = fill   or _C["card"]
+    glow = tuple(max(0, int(c * 0.10)) for c in ac)
+    d.rounded_rectangle([x-3, y-3, x2+3, y2+3], radius=radius+3, fill=glow)
+    d.rounded_rectangle([x, y, x2, y2], radius=radius, fill=bg)
+    border = tuple(max(0, int(c * 0.35)) for c in ac)
+    d.rounded_rectangle([x, y, x2, y2], radius=radius, outline=border, width=2)
+
+def _draw_header(d, W, label_left, label_right, color_right, fnt_l, fnt_r, timestamp=""):
+    PAD = 52
+    d.rectangle([0, 0, W, 120], fill=_C["surface"])
+    d.text((PAD, 60), label_left,  font=fnt_l, fill=_C["accent_hi"], anchor="lm")
+    d.text((W-PAD, 60), label_right, font=fnt_r, fill=color_right,   anchor="rm")
+    for i in range(W):
+        t = i / W
+        intensity = 1.0 - abs(2*t - 1)**0.6
+        c = tuple(int(cc * intensity) for cc in _C["accent"])
+        d.line([(i, 118), (i, 121)], fill=c)
+    if timestamp:
+        d.text((PAD, 148), timestamp, font=fnt_l, fill=_C["muted"])
+
+def _draw_caption_bar(d, W, H, caption_text, fnt_caption, fnt_nano):
+    BAR_H = 105
+    d.rectangle([0, H-BAR_H, W, H], fill=_C["surface"])
+    for i in range(W):
+        t = i / W
+        intensity = 1.0 - abs(2*t - 1)**0.6
+        c = tuple(int(cc * intensity * 0.8) for cc in _C["accent"])
+        d.line([(i, H-BAR_H), (i, H-BAR_H+2)], fill=c)
+    d.text((W//2, H-BAR_H+38), caption_text, font=fnt_caption, fill=_C["text"], anchor="mm")
+    d.text((W//2, H-20), "marketgenie.ai  NOT FINANCIAL ADVICE", font=fnt_nano, fill=_C["muted"], anchor="mm")
+
+def _draw_breaking_badge(d, W, symbol, pct, fnt):
+    d.rectangle([0, 122, W, 218], fill=(140, 10, 28))
+    sign = "+" if pct >= 0 else ""
+    d.text((W//2, 170), f"BREAKING  {symbol} {sign}{pct:.1f}%", font=fnt, fill=_C["text_hi"], anchor="mm")
+
+def _draw_conf_bar(d, x, y, w, h, pct, color):
+    TRACK = (30, 30, 50)
+    d.rounded_rectangle([x, y, x+w, y+h], radius=h//2, fill=TRACK)
+    fw = max(4, int(w * min(pct/100, 1.0)))
+    d.rounded_rectangle([x, y, x+fw, y+h], radius=h//2, fill=color)
+
+def _draw_badge(d, x, y, text, color, fnt):
+    try:    bw = int(d.textlength(text, font=fnt)) + 28
+    except: bw = 160
+    bh = 44
+    dim    = tuple(max(0, int(c * 0.15)) for c in color)
+    border = tuple(max(0, int(c * 0.60)) for c in color)
+    d.rounded_rectangle([x, y, x+bw, y+bh], radius=bh//2, fill=dim)
+    d.rounded_rectangle([x, y, x+bw, y+bh], radius=bh//2, outline=border, width=2)
+    d.text((x+bw//2, y+bh//2), text, font=fnt, fill=color, anchor="mm")
+    return bw
+
+# ── Legacy colour helpers (kept for compatibility) ────────────────────────────
+def _regime_rgb(regime):
+    return _regime_color(regime)
 
 def _ic(v):
-    GREEN = (74, 222, 128)
-    RED   = (248, 113, 113)
-    return GREEN if v >= 0 else RED
-
+    return _pct_color(v)
 
 def _dim_color(rgb, factor=7):
-    return (rgb[0] // factor, rgb[1] // factor, rgb[2] // factor)
+    return (rgb[0]//factor, rgb[1]//factor, rgb[2]//factor)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SHARED DRAWING HELPERS
+# SHARED DRAWING HELPERS (legacy alert/signal cards — kept for compatibility)
 # ─────────────────────────────────────────────────────────────────────────────
 def _draw_alert_card(d, x, y, w, h, symbol, pct, price, color, fnt_sym, fnt_pct, fnt_price, fnt_badge):
     """Clean card: colored left border, symbol left, large % right, price below %."""
@@ -266,7 +356,7 @@ def _draw_signal_card(d, x, y, w, h, symbol, direction, confidence, fnt_sym, fnt
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# SLIDE 1 — ALERT HOOK FRAME
+# SLIDE 1 — HOOK FRAME
 # Breaking-news alert cards for top movers + regime
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -299,482 +389,225 @@ def _draw_breaking_badge(d, W, symbol, pct, fnt):
 
 
 def _generate_hook_frame(data, trigger):
-    """Slide 1 — Market overview. Clean, readable, no clutter."""
+    """Slide 1 — Hook. Gradient bg, glow cards, exact dashboard colors."""
     from PIL import Image, ImageDraw
     W, H = _VIDEO_W, _VIDEO_H
-    BG    = (6, 8, 14)
-    WHITE = (230, 238, 250)
-    DIM   = (100, 118, 140)
-    AMBER = (220, 155, 40)
-    GREEN = (74, 222, 128)
-    RED   = (248, 113, 113)
-    PANEL = (14, 20, 32)
-    ACCENT= (56, 189, 248)
-
-    regime = data.get("regime", "NEUTRAL")
-    score  = data.get("regime_score", 50)
-    rc     = {"BULLISH": GREEN, "BEARISH": RED, "NEUTRAL": AMBER}.get(regime, AMBER)
-    spy    = data.get("spy_pct", 0.0)
-    qqq    = data.get("qqq_pct", 0.0)
-    nq     = data.get("nq_pct", 0.0)
-    vix    = data.get("vix", 16.5)
-    hot    = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
-
-    img = Image.new("RGB", (W, H), BG)
+    PAD  = 52
+    regime   = data.get("regime", "NEUTRAL")
+    score    = data.get("regime_score", 50)
+    rc       = _regime_color(regime)
+    spy      = data.get("spy_pct", 0.0)
+    qqq      = data.get("qqq_pct", 0.0)
+    vix      = data.get("vix", 16.5)
+    hot      = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
+    trig_lbl = {"premarket":"PRE-MARKET","midday":"MIDDAY","eod":"CLOSE","afterhours":"AFTER HOURS"}.get(trigger,"LIVE")
+    img = _mk_bg()
     d   = ImageDraw.Draw(img)
-
-    fnt_nano  = _load_font(30)
-    fnt_xs    = _load_font(40)
-    fnt_sm    = _load_font(52)
-    fnt_md    = _load_font(68, bold=True)
-    fnt_lg    = _load_font(90, bold=True)
-    fnt_xl    = _load_font(120, bold=True)
-    fnt_hero  = _load_font(160, bold=True)
-
-    PAD = 48
-
-    # Header bar
-    d.rectangle([0, 0, W, 130], fill=(10, 14, 24))
-    d.text((PAD, 65), "MARKET GENIE", font=fnt_md, fill=WHITE, anchor="lm")
-    trig_lbl = {"premarket": "PRE-MARKET", "midday": "MIDDAY", "eod": "CLOSE", "afterhours": "AFTER HOURS"}.get(trigger, "LIVE")
-    d.text((W - PAD, 65), trig_lbl, font=fnt_sm, fill=ACCENT, anchor="rm")
-    d.rectangle([0, 128, W, 132], fill=ACCENT)
-
-    # Date
-    d.text((PAD, 170), data.get("timestamp", ""), font=fnt_xs, fill=DIM)
-
-    # Big regime pill
-    y = 220
-    d.rectangle([0, y, W, y + 220], fill=PANEL)
-    d.rectangle([0, y, 8, y + 220], fill=rc)
-    regime_label = {
-        "BULLISH": "🟢 BULLS IN CONTROL",
-        "BEARISH": "🔴 BEARS IN CONTROL",
-        "NEUTRAL": "🟡 CHOPPY TAPE",
-    }.get(regime, regime)
-    d.text((W // 2, y + 80), regime_label, font=fnt_xl, fill=rc, anchor="mm")
-    d.text((W // 2, y + 160), f"A.I. Regime Score: {score}/100", font=fnt_sm, fill=DIM, anchor="mm")
-
-    y += 240
-
-    # Market indices row
-    d.rectangle([0, y, W, y + 110], fill=(10, 16, 28))
-    col = (W - PAD * 2) // 3
-    items = [
-        (f"SPY {spy:+.2f}%",  GREEN if spy >= 0 else RED),
-        (f"QQQ {qqq:+.2f}%",  GREEN if qqq >= 0 else RED),
-        (f"VIX {vix:.1f}",     RED if vix > 20 else DIM),
-    ]
-    for i, (txt, color) in enumerate(items):
-        d.text((PAD + i * col + col // 2, y + 55), txt, font=fnt_sm, fill=color, anchor="mm")
-
-    y += 130
-
-    # Divider + "TODAY'S MOVERS"
-    d.rectangle([0, y, W, y + 2], fill=(28, 40, 56))
-    y += 20
-    d.text((PAD, y + 28), "TODAY'S TOP MOVERS", font=fnt_xs, fill=AMBER)
-    y += 72
-
-    # Top 5 movers — simple clean rows
-    row_h = max(130, (H - y - 120) // max(len(hot[:5]), 1))
-    for tk in hot[:5]:
-        tc = GREEN if tk["up"] else RED
-        sign = "+" if tk["up"] else ""
-        d.rectangle([0, y, W, y + row_h], fill=PANEL)
-        d.rectangle([0, y, 6, y + row_h], fill=tc)
-        mid = y + row_h // 2
-        d.text((PAD + 16, mid - 22), tk["symbol"], font=fnt_lg, fill=WHITE, anchor="lm")
-        d.text((PAD + 16, mid + 32), f"${tk['price']:,.2f}", font=fnt_xs, fill=DIM, anchor="lm")
-        d.text((W - PAD, mid), f"{sign}{tk['pct']:.2f}%", font=fnt_lg, fill=tc, anchor="rm")
-        d.rectangle([0, y + row_h - 1, W, y + row_h], fill=(20, 28, 44))
-        y += row_h
-
-    # BREAKING badge for big movers
+    fnt_nano = _load_font(28)
+    fnt_xs   = _load_font(38)
+    fnt_sm   = _load_font(50)
+    fnt_md   = _load_font(64, bold=True)
+    fnt_lg   = _load_font(84, bold=True)
+    fnt_xl   = _load_font(110, bold=True)
+    _draw_header(d, W, "MARKET GENIE", trig_lbl, _C["accent"], fnt_md, fnt_sm,
+                 timestamp=data.get("timestamp", ""))
+    y = 172
     if hot and abs(hot[0].get("pct", 0)) >= 5:
         _draw_breaking_badge(d, W, hot[0]["symbol"], hot[0]["pct"], fnt_sm)
-
-    # Caption bar — readable on mute
-    regime_c  = {"BULLISH": "🟢", "BEARISH": "🔴", "NEUTRAL": "🟡"}.get(regime, "⚪")
-    caption   = f"{regime_c} {regime}  •  Score {score}/100  •  Follow for daily A.I. signals 🔔"
-    _draw_caption_bar(d, W, H, caption, fnt_xs, fnt_nano)
-
+        y = 235
+    _draw_glow_card(d, PAD, y, W - PAD, y + 200, radius=16, accent=rc)
+    regime_label = {"BULLISH": "BULLS IN CONTROL", "BEARISH": "BEARS IN CONTROL", "NEUTRAL": "CHOPPY TAPE"}.get(regime, regime)
+    regime_emoji = {"BULLISH": "\U0001f7e2", "BEARISH": "\U0001f534", "NEUTRAL": "\U0001f7e1"}.get(regime, "")
+    d.text((W // 2, y + 76),  f"{regime_emoji} {regime_label}", font=fnt_xl, fill=rc, anchor="mm")
+    d.text((W // 2, y + 152), f"A.I. Regime Score: {score} / 100", font=fnt_sm, fill=_C["subtext"], anchor="mm")
+    y += 220
+    col_w = (W - PAD * 2 - 20) // 3
+    for i, (lbl, val, vc) in enumerate([
+        ("SPY", f"{spy:+.2f}%", _pct_color(spy)),
+        ("QQQ", f"{qqq:+.2f}%", _pct_color(qqq)),
+        ("VIX", f"{vix:.1f}",   _C["red"] if vix > 20 else _C["subtext"]),
+    ]):
+        cx = PAD + i * (col_w + 10)
+        _draw_glow_card(d, cx, y, cx + col_w, y + 110, radius=12, accent=vc, fill=_C["card"])
+        d.text((cx + col_w//2, y + 33), lbl, font=fnt_xs, fill=_C["subtext"], anchor="mm")
+        d.text((cx + col_w//2, y + 80), val, font=fnt_md, fill=vc,           anchor="mm")
+    y += 130
+    d.text((PAD, y + 10), "TODAY'S TOP MOVERS", font=fnt_xs, fill=_C["amber"])
+    y += 55
+    n_hot  = min(len(hot), 5)
+    card_h = max(120, (H - y - 130) // max(n_hot, 1))
+    for tk in hot[:n_hot]:
+        tc   = _pct_color(tk["pct"])
+        sign = "+" if tk["up"] else ""
+        _draw_glow_card(d, 0, y, W, y + card_h - 4, radius=0, accent=tc, fill=_C["card"])
+        d.rectangle([0, y, 7, y + card_h - 4], fill=tc)
+        mid = y + (card_h - 4) // 2
+        d.text((PAD + 12, mid - 20), tk["symbol"],             font=fnt_lg, fill=_C["text_hi"], anchor="lm")
+        d.text((PAD + 12, mid + 30), f"${tk['price']:,.2f}",   font=fnt_xs, fill=_C["subtext"], anchor="lm")
+        d.text((W - PAD,  mid),      f"{sign}{tk['pct']:.2f}%", font=fnt_lg, fill=tc,           anchor="rm")
+        y += card_h
+    regime_c = {"BULLISH": "\U0001f7e2", "BEARISH": "\U0001f534", "NEUTRAL": "\U0001f7e1"}.get(regime, "")
+    _draw_caption_bar(d, W, H, f"{regime_c} {regime}  Score {score}/100  Follow for free A.I. signals", fnt_xs, fnt_nano)
     return img
 
 
 def _generate_frame(data: dict, trigger: str):
-    """Slide 2 — AI signals. Simple BULL/BEAR cards."""
+    """Slide 3 — A.I. Signals. Dashboard cards with confidence bars and glow."""
     from PIL import Image, ImageDraw
-    W, H  = _VIDEO_W, _VIDEO_H
-    BG    = (6, 8, 14)
-    WHITE = (230, 238, 250)
-    DIM   = (100, 118, 140)
-    AMBER = (220, 155, 40)
-    GREEN = (74, 222, 128)
-    RED   = (248, 113, 113)
-    PANEL = (14, 20, 32)
-    ACCENT= (56, 189, 248)
-    ALT   = (10, 14, 22)
-
-    regime = data.get("regime", "NEUTRAL")
-    rc     = {"BULLISH": GREEN, "BEARISH": RED, "NEUTRAL": AMBER}.get(regime, AMBER)
-    signals= [s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 60]
-    hot    = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
-    pnl    = data.get("pnl_today", 0.0)
-    equity = data.get("equity", 100_000.0)
-
-    img = Image.new("RGB", (W, H), BG)
-    d   = ImageDraw.Draw(img)
-
-    fnt_nano = _load_font(30)
-    fnt_xs   = _load_font(40)
-    fnt_sm   = _load_font(52)
-    fnt_md   = _load_font(68, bold=True)
-    fnt_lg   = _load_font(90, bold=True)
-    fnt_xl   = _load_font(120, bold=True)
-
-    PAD = 48
-
-    # Header
-    d.rectangle([0, 0, W, 130], fill=(10, 14, 24))
-    d.text((PAD, 65), "MARKET GENIE", font=fnt_md, fill=WHITE, anchor="lm")
-    trig_lbl = {"premarket": "PRE-MARKET", "midday": "MIDDAY", "eod": "CLOSE", "afterhours": "AFTER HOURS"}.get(trigger, "LIVE")
-    d.text((W - PAD, 65), trig_lbl, font=fnt_md, fill=rc, anchor="rm")
-    d.rectangle([0, 128, W, 132], fill=rc)
-    d.text((PAD, 170), data.get("timestamp", ""), font=fnt_xs, fill=DIM)
-
-    y = 210
-
-    # Section: AI Signals
-    d.text((PAD, y), "AI SIGNALS", font=fnt_sm, fill=AMBER)
-    d.text((W - PAD, y), f"{len(signals)} active", font=fnt_xs, fill=DIM, anchor="ra")
-    y += 60
-
-    sig_h = max(200, min(320, (H - y - 500) // max(len(signals[:4]), 1)))
-    for sig in signals[:4]:
-        bull   = "bull" in sig.get("direction", "bull").lower()
-        sc     = GREEN if bull else RED
-        label  = "BULL" if bull else "BEAR"
-        conf   = sig.get("confidence", 70)
-        rb     = PANEL if signals.index(sig) % 2 == 0 else ALT
-        d.rectangle([0, y, W, y + sig_h], fill=rb)
-        d.rectangle([0, y, 8, y + sig_h], fill=sc)
-        mid = y + sig_h // 2
-        # Symbol
-        d.text((PAD + 16, mid - 26), sig["symbol"], font=fnt_lg, fill=WHITE, anchor="lm")
-        # Bull/Bear badge
-        bw = 110
-        try: bw = int(d.textlength(label, font=fnt_xs)) + 20
-        except: pass
-        sx = PAD + 16
-        try: sx = int(d.textlength(sig["symbol"], font=fnt_lg)) + PAD + 30
-        except: sx = PAD + 200
-        d.rounded_rectangle([sx, mid - 28, sx + bw, mid + 4], radius=6,
-                             fill=(sc[0]//5, sc[1]//5, sc[2]//5))
-        d.rounded_rectangle([sx, mid - 28, sx + bw, mid + 4], radius=6, outline=sc, width=2)
-        d.text((sx + bw // 2, mid - 12), label, font=fnt_xs, fill=sc, anchor="mm")
-        # Confidence
-        d.text((W - PAD, mid - 26), f"{conf:.0f}%", font=fnt_md, fill=sc, anchor="ra")
-        # Bar
-        bar_x = PAD + 16
-        bar_w = W - PAD * 2 - 32
-        bar_y = y + sig_h - 28
-        fill_w = int(bar_w * min(conf / 100, 1.0))
-        d.rounded_rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + 14], radius=6, fill=(20, 30, 44))
-        if fill_w > 4:
-            d.rounded_rectangle([bar_x, bar_y, bar_x + fill_w, bar_y + 14], radius=6, fill=sc)
-        y += sig_h + 4
-
-    y += 20
-    d.rectangle([0, y, W, y + 2], fill=(28, 40, 56))
-    y += 20
-
-    # Live market stats block — replaces the $100k equity display
-    # Shows real-time data viewers can actually use
+    W, H = _VIDEO_W, _VIDEO_H
+    PAD  = 52
+    regime   = data.get("regime", "NEUTRAL")
+    rc       = _regime_color(regime)
+    signals  = sorted([s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 60],
+                      key=lambda s: s.get("confidence", 0), reverse=True)
+    hot      = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
     vix_val  = data.get("vix", 16.5)
     nq_val   = data.get("nq_pct", 0.0)
-    spy_val  = data.get("spy_pct", 0.0)
     n_sigs   = len([s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 65])
     pnl_val  = data.get("pnl_today", 0.0)
-
+    trig_lbl = {"premarket":"PRE-MARKET","midday":"MIDDAY","eod":"CLOSE","afterhours":"AFTER HOURS"}.get(trigger,"LIVE")
+    img = _mk_bg()
+    d   = ImageDraw.Draw(img)
+    fnt_nano = _load_font(28)
+    fnt_xs   = _load_font(38)
+    fnt_sm   = _load_font(50)
+    fnt_md   = _load_font(64, bold=True)
+    fnt_lg   = _load_font(84, bold=True)
+    _draw_header(d, W, "MARKET GENIE", trig_lbl, rc, fnt_md, fnt_sm,
+                 timestamp=data.get("timestamp", ""))
+    y = 172
+    d.text((PAD, y), "A.I. SIGNALS", font=fnt_sm, fill=_C["amber"])
+    d.text((W - PAD, y), f"{n_sigs} high-confidence", font=fnt_xs, fill=_C["subtext"], anchor="ra")
+    y += 62
+    n_show = min(len(signals), 4)
+    card_h = max(180, min(290, (H - y - 380) // max(n_show, 1)))
+    for sig in signals[:n_show]:
+        bull  = "bull" in sig.get("direction", "bull").lower()
+        sc    = _C["green"] if bull else _C["red"]
+        label = "BULL" if bull else "BEAR"
+        conf  = sig.get("confidence", 70)
+        _draw_glow_card(d, 0, y, W, y + card_h - 4, radius=0, accent=sc, fill=_C["card"])
+        d.rectangle([0, y, 8, y + card_h - 4], fill=sc)
+        mid = y + (card_h - 4) // 2
+        d.text((PAD + 14, mid - 24), sig["symbol"], font=fnt_lg, fill=_C["text_hi"], anchor="lm")
+        try:  sx = int(d.textlength(sig["symbol"], font=fnt_lg)) + PAD + 26
+        except: sx = PAD + 240
+        _draw_badge(d, sx, mid - 34, label, sc, fnt_xs)
+        d.text((W - PAD, mid - 26), f"{conf:.0f}%",  font=fnt_md, fill=sc,           anchor="ra")
+        d.text((W - PAD, mid + 14), "confidence",    font=fnt_xs, fill=_C["subtext"], anchor="ra")
+        _draw_conf_bar(d, PAD + 14, y + card_h - 36, W - PAD * 2 - 28, 16, conf, sc)
+        y += card_h
+    y += 12
     stat_rows = []
     if abs(pnl_val) >= 1:
-        pnl_sign = "+" if pnl_val >= 0 else ""
-        stat_rows.append((f"TODAY'S P&L", f"{pnl_sign}${abs(pnl_val):,.0f}", GREEN if pnl_val >= 0 else RED))
-    stat_rows.append(("ACTIVE SIGNALS", f"{n_sigs} high-confidence", AMBER))
+        sign_p = "+" if pnl_val >= 0 else ""
+        stat_rows.append(("TODAY'S P&L", f"{sign_p}${abs(pnl_val):,.0f}", _pct_color(pnl_val)))
+    stat_rows.append(("ACTIVE SIGNALS", f"{n_sigs} setups", _C["amber"]))
     if abs(nq_val) >= 0.05:
-        nq_c = GREEN if nq_val >= 0 else RED
-        stat_rows.append(("NQ FUTURES", f"{nq_val:+.2f}%", nq_c))
-    vix_c = RED if vix_val > 22 else (AMBER if vix_val > 18 else GREEN)
-    stat_rows.append(("VIX FEAR INDEX", f"{vix_val:.1f}  {'⚠️ HIGH' if vix_val > 22 else '✓ CALM'}", vix_c))
-    stat_rows.append(("STOCKS SCANNED", "200+  in real-time", ACCENT))
-
-    row_h = 88
+        stat_rows.append(("NQ FUTURES", f"{nq_val:+.2f}%", _pct_color(nq_val)))
+    vix_c = _C["red"] if vix_val > 22 else (_C["amber"] if vix_val > 18 else _C["green"])
+    vix_note = "HIGH" if vix_val > 22 else "CALM"
+    stat_rows.append(("VIX", f"{vix_val:.1f}  {vix_note}", vix_c))
+    stat_rows.append(("SCANNER", "200+ stocks  real-time", _C["accent"]))
+    row_h = 82
     for lbl, val, col in stat_rows[:4]:
-        d.rectangle([0, y, W, y + row_h], fill=PANEL)
+        _draw_glow_card(d, 0, y, W, y + row_h, radius=0, accent=col, fill=_C["surface"])
         d.rectangle([0, y, 6, y + row_h], fill=col)
-        d.text((PAD + 16, y + 28), lbl, font=fnt_xs, fill=DIM, anchor="lm")
-        d.text((PAD + 16, y + 66), val, font=fnt_sm, fill=col, anchor="lm")
-        d.rectangle([0, y + row_h - 1, W, y + row_h], fill=(20, 28, 44))
-        y += row_h
-
-    y += 10
-
-    # Top mover callout if space
-    if hot and y + 180 < H - 80:
-        h0 = hot[0]
-        hc = GREEN if h0["up"] else RED
-        d.rectangle([0, y, W, y + 220], fill=ALT)
-        d.rectangle([0, y, 6, y + 160], fill=hc)
-        d.text((PAD + 16, y + 35), "BIGGEST MOVER", font=fnt_xs, fill=DIM)
-        sign = "+" if h0["up"] else ""
-        d.text((PAD + 16, y + 88), h0["symbol"], font=fnt_lg, fill=WHITE)
-        d.text((W - PAD, y + 88), f"{sign}{h0['pct']:.2f}%", font=fnt_lg, fill=hc, anchor="ra")
-        y += 230
-
-    # Caption bar — readable on mute
+        d.text((PAD + 14, y + 22), lbl, font=fnt_xs, fill=_C["subtext"], anchor="lm")
+        d.text((PAD + 14, y + 60), val, font=fnt_sm,  fill=col,           anchor="lm")
+        y += row_h + 3
     top_sig_text = ""
     if signals:
         s0   = signals[0]
         bull = "bull" in s0.get("direction", "").lower()
-        top_sig_text = f"{'🟢 BULL' if bull else '🔴 BEAR'} {s0['symbol']} {s0.get('confidence',70):.0f}%  •  "
-    caption = f"{top_sig_text}Follow Market Genie for free A.I. signals 🔔"
-    _draw_caption_bar(d, W, H, caption, fnt_xs, fnt_nano)
-
+        emoji = "\U0001f7e2" if bull else "\U0001f534"
+        top_sig_text = f"{emoji} {s0['symbol']} {s0.get('confidence', 70):.0f}%  "
+    _draw_caption_bar(d, W, H, f"{top_sig_text}Follow for free A.I. signals", fnt_xs, fnt_nano)
     return img
 
 
 def _generate_cta_frame(data, trigger):
-    """Slide 3 — What to watch. Simple watchlist."""
-    from PIL import Image, ImageDraw
-    W, H  = _VIDEO_W, _VIDEO_H
-    BG    = (6, 8, 14)
-    WHITE = (230, 238, 250)
-    DIM   = (100, 118, 140)
-    AMBER = (220, 155, 40)
-    GREEN = (74, 222, 128)
-    RED   = (248, 113, 113)
-    PANEL = (14, 20, 32)
-    ACCENT= (56, 189, 248)
-
-    hot     = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
-    signals = [s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 60]
-    regime  = data.get("regime", "NEUTRAL")
-    score   = data.get("regime_score", 50)
-    rc      = {"BULLISH": GREEN, "BEARISH": RED, "NEUTRAL": AMBER}.get(regime, AMBER)
-    vix     = data.get("vix", 16.5)
-    pc_ratio= data.get("put_call_ratio", 1.0)
-
-    img = Image.new("RGB", (W, H), BG)
-    d   = ImageDraw.Draw(img)
-
-    fnt_nano = _load_font(30)
-    fnt_xs   = _load_font(40)
-    fnt_sm   = _load_font(52)
-    fnt_md   = _load_font(68, bold=True)
-    fnt_lg   = _load_font(90, bold=True)
-    fnt_xl   = _load_font(120, bold=True)
-
-    PAD = 48
-
-    # Header
-    d.rectangle([0, 0, W, 130], fill=(10, 14, 24))
-    d.text((PAD, 58), "MARKET GENIE", font=fnt_sm, fill=WHITE, anchor="lm")
-    d.text((W - PAD, 58), "AI SIGNALS", font=fnt_sm, fill=ACCENT, anchor="rm")
-    d.rectangle([0, 104, W, 108], fill=ACCENT)
-    d.text((PAD, 136), data.get("timestamp", ""), font=fnt_xs, fill=DIM)
-
-    y = 220
-
-    # Market health row
-    d.rectangle([0, y, W, y + 130], fill=(12, 18, 30))
-    col = (W - PAD * 2) // 3
-    stats = [
-        ("VIX", f"{vix:.1f}", RED if vix > 20 else GREEN),
-        ("P/C RATIO", f"{pc_ratio:.2f}", RED if pc_ratio > 1.2 else GREEN),
-        ("REGIME", f"{score}/100", rc),
-    ]
-    for i, (lbl, val, vc) in enumerate(stats):
-        cx = PAD + i * col + col // 2
-        d.text((cx, y + 36), lbl, font=fnt_xs, fill=DIM, anchor="mm")
-        d.text((cx, y + 95), val, font=fnt_md, fill=vc, anchor="mm")
-    y += 150
-
-    d.rectangle([0, y, W, y + 2], fill=(28, 40, 56))
-    y += 20
-
-    # Watchlist — combine signals + movers
-    d.text((PAD, y + 6), "STOCKS TO WATCH TODAY", font=fnt_sm, fill=AMBER)
-    y += 60
-
-    watch = []
-    seen = set()
-    for sig in signals[:3]:
-        sym = sig["symbol"]
-        bull = "bull" in sig.get("direction", "").lower()
-        # find price from hot_tickers
-        price = next((t["price"] for t in hot if t["symbol"] == sym), 0)
-        pct   = next((t["pct"]   for t in hot if t["symbol"] == sym), 0)
-        watch.append({"symbol": sym, "label": "BULL" if bull else "BEAR",
-                      "color": GREEN if bull else RED, "price": price, "pct": pct})
-        seen.add(sym)
-
-    for tk in hot:
-        if tk["symbol"] not in seen and len(watch) < 5:
-            tc = GREEN if tk["up"] else RED
-            watch.append({"symbol": tk["symbol"], "label": "+%" if tk["up"] else "-%",
-                          "color": tc, "price": tk["price"], "pct": tk["pct"]})
-            seen.add(tk["symbol"])
-
-    card_h = max(180, min(280, (H - y - 80) // max(len(watch), 1)))
-    for w in watch:
-        sc = w["color"]
-        d.rectangle([0, y, W, y + card_h], fill=(14, 20, 32))
-        d.rectangle([0, y, 6, y + card_h], fill=sc)
-        mid = y + card_h // 2
-        d.text((PAD + 16, mid - 24), w["symbol"], font=fnt_lg, fill=WHITE, anchor="lm")
-        # Label badge (clean: BULL/BEAR/HOT)
-        badge = w["label"] if w["label"] in ("BULL", "BEAR") else ("HOT" if w["pct"] > 0 else "WEAK")
-        try: bw = int(d.textlength(badge, font=fnt_xs)) + 24
-        except: bw = 120
-        try: sx = int(d.textlength(w["symbol"], font=fnt_lg)) + PAD + 32
-        except: sx = PAD + 220
-        d.rounded_rectangle([sx, mid - 30, sx + bw, mid + 6], radius=8,
-                             fill=(sc[0]//5, sc[1]//5, sc[2]//5), outline=sc, width=2)
-        d.text((sx + bw // 2, mid - 12), badge, font=fnt_xs, fill=sc, anchor="mm")
-        # Price top-right, % below it — no overlap
-        if w["price"] > 0:
-            d.text((W - PAD, y + 28), f"${w['price']:,.2f}", font=fnt_md, fill=WHITE, anchor="ra")
-        if w["pct"] != 0:
-            sign = "+" if w["pct"] > 0 else ""
-            d.text((W - PAD, y + 88), f"{sign}{w['pct']:.2f}%", font=fnt_sm, fill=sc, anchor="ra")
-        d.rectangle([0, y + card_h - 1, W, y + card_h], fill=(20, 28, 44))
-        y += card_h
-
-    # Caption bar — readable on mute
-    _draw_caption_bar(d, W, H, "🔔 Follow Market Genie — free A.I. signals every trading day", fnt_xs, fnt_nano)
-
-    return img
-
-
-
+    """Legacy stub — 6-slide path uses _generate_cta_slide."""
+    return _generate_frame(data, trigger)
 
 
 def _generate_context_frame(data, trigger):
-    """Slide 4 — Context & insights: market pulse, top signal, watchlist."""
+    """Slide 2 — Market Overview. Dashboard 2x2 grid + top signals."""
     from PIL import Image, ImageDraw
-    W, H  = _VIDEO_W, _VIDEO_H
-    BG    = (6, 8, 14)
-    WHITE = (230, 238, 250)
-    DIM   = (100, 118, 140)
-    AMBER = (220, 155, 40)
-    GREEN = (74, 222, 128)
-    RED   = (248, 113, 113)
-    PANEL = (14, 20, 32)
-    ACCENT= (56, 189, 248)
-    ALT   = (10, 14, 22)
-
-    regime  = data.get("regime", "NEUTRAL")
-    rc      = {"BULLISH": GREEN, "BEARISH": RED, "NEUTRAL": AMBER}.get(regime, AMBER)
-    hot     = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
-    signals = [s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 60]
-    vix     = data.get("vix", 16.5)
-    spy     = data.get("spy_pct", 0.0)
-    qqq     = data.get("qqq_pct", 0.0)
-    nq      = data.get("nq_pct", 0.0)
-
-    img = Image.new("RGB", (W, H), BG)
+    W, H = _VIDEO_W, _VIDEO_H
+    PAD  = 52
+    regime   = data.get("regime", "NEUTRAL")
+    rc       = _regime_color(regime)
+    score    = data.get("regime_score", 50)
+    hot      = sorted(data.get("hot_tickers", []), key=lambda t: abs(t.get("pct", 0)), reverse=True)
+    signals  = sorted([s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 60],
+                      key=lambda s: s.get("confidence", 0), reverse=True)
+    vix      = data.get("vix", 16.5)
+    spy      = data.get("spy_pct", 0.0)
+    qqq      = data.get("qqq_pct", 0.0)
+    nq       = data.get("nq_pct", 0.0)
+    trig_lbl = {"premarket":"PRE-MARKET","midday":"MIDDAY","eod":"CLOSE","afterhours":"AFTER HOURS"}.get(trigger,"LIVE")
+    img = _mk_bg()
     d   = ImageDraw.Draw(img)
-
-    fnt_nano = _load_font(30)
-    fnt_xs   = _load_font(40)
-    fnt_sm   = _load_font(52)
-    fnt_md   = _load_font(68, bold=True)
-    fnt_lg   = _load_font(90, bold=True)
-    fnt_xl   = _load_font(120, bold=True)
-
-    PAD = 48
-
-    # Header
-    d.rectangle([0, 0, W, 120], fill=(10, 14, 24))
-    d.text((PAD, 60), "MARKET GENIE", font=fnt_md, fill=WHITE, anchor="lm")
-    d.text((W - PAD, 60), "INSIGHTS", font=fnt_md, fill=AMBER, anchor="rm")
-    d.rectangle([0, 118, W, 122], fill=AMBER)
-    d.text((PAD, 152), data.get("timestamp", ""), font=fnt_xs, fill=DIM)
-    y = 195
-
-    # ── Market Pulse ──────────────────────────────────────────────────────────
-    d.text((PAD, y + 4), "MARKET PULSE", font=fnt_sm, fill=AMBER)
-    y += 58
-
-    regime_text = {
-        "BULLISH": "Bulls in control  |  Trend is UP",
-        "BEARISH": "Bears in control  |  Trend is DOWN",
-        "NEUTRAL": "Mixed signals  |  No clear edge",
-    }.get(regime, regime)
-
-    pulse_h = 100
-    d.rectangle([0, y, W, y + pulse_h], fill=PANEL)
-    d.rectangle([0, y, 6, y + pulse_h], fill=rc)
-    d.text((PAD + 16, y + pulse_h // 2), regime_text, font=fnt_sm, fill=rc, anchor="lm")
-    y += pulse_h + 8
-
-    # SPY / QQQ / NQ row
-    row_h = 90
-    index_rows = [
-        (f"SPY  {spy:+.2f}%",  GREEN if spy >= 0 else RED),
-        (f"QQQ  {qqq:+.2f}%",  GREEN if qqq >= 0 else RED),
-        (f"NQ   {nq:+.2f}%",   GREEN if nq  >= 0 else RED) if abs(nq) > 0.01
-        else (f"VIX  {vix:.1f}",  RED if vix > 20 else DIM),
+    fnt_nano = _load_font(28)
+    fnt_xs   = _load_font(38)
+    fnt_sm   = _load_font(50)
+    fnt_md   = _load_font(64, bold=True)
+    fnt_lg   = _load_font(84, bold=True)
+    fnt_xl   = _load_font(110, bold=True)
+    _draw_header(d, W, "MARKET GENIE", trig_lbl, _C["accent"], fnt_md, fnt_sm,
+                 timestamp=data.get("timestamp", ""))
+    y = 172
+    # Regime banner
+    _draw_glow_card(d, PAD, y, W - PAD, y + 120, radius=14, accent=rc)
+    regime_emoji = {"BULLISH": "\U0001f7e2", "BEARISH": "\U0001f534", "NEUTRAL": "\U0001f7e1"}.get(regime, "")
+    d.text((W // 2, y + 60), f"{regime_emoji} {regime}  {score}/100", font=fnt_xl, fill=rc, anchor="mm")
+    y += 140
+    # 2x2 index grid
+    nq_lbl = "NQ FUT"
+    nq_val_str = f"{nq:+.2f}%" if abs(nq) >= 0.05 else "flat"
+    nq_col = _pct_color(nq) if abs(nq) >= 0.05 else _C["subtext"]
+    pairs = [
+        ("SPY",    f"{spy:+.2f}%", _pct_color(spy)),
+        ("QQQ",    f"{qqq:+.2f}%", _pct_color(qqq)),
+        (nq_lbl,   nq_val_str,     nq_col),
+        ("VIX",    f"{vix:.1f}",   _C["red"] if vix > 20 else _C["green"]),
     ]
-    for txt, color in index_rows:
-        rb = PANEL if index_rows.index((txt,color)) % 2 == 0 else ALT
-        d.rectangle([0, y, W, y + row_h], fill=rb)
-        d.text((PAD + 16, y + row_h // 2), txt, font=fnt_md, fill=color, anchor="lm")
-        y += row_h
-
-    y += 10
-    d.rectangle([0, y, W, y + 2], fill=(28, 40, 56))
-    y += 18
-
-    # ── Top Signal deep-dive ──────────────────────────────────────────────────
-    d.text((PAD, y + 4), "TOP AI SIGNAL", font=fnt_sm, fill=AMBER)
+    cell_w = (W - PAD * 2 - 12) // 2
+    cell_h = 140
+    for i, (lbl, val, vc) in enumerate(pairs):
+        cx = PAD + (i % 2) * (cell_w + 12)
+        cy = y + (i // 2) * (cell_h + 10)
+        _draw_glow_card(d, cx, cy, cx + cell_w, cy + cell_h, radius=14, accent=vc, fill=_C["card"])
+        d.text((cx + cell_w//2, cy + 38),  lbl, font=fnt_xs, fill=_C["subtext"], anchor="mm")
+        d.text((cx + cell_w//2, cy + 100), val, font=fnt_lg, fill=vc,            anchor="mm")
+    y += 2 * (cell_h + 10) + 16
+    # Top signals
+    d.text((PAD, y), "TOP A.I. SIGNALS", font=fnt_sm, fill=_C["amber"])
     y += 58
-
-    sig_h = max(200, (H - y - 80) // max(len(signals[:3]), 1))
+    sig_card_h = max(130, (H - y - 120) // max(min(len(signals), 3), 1))
     for sig in signals[:3]:
-        bull = "bull" in sig.get("direction", "").lower()
-        sc   = GREEN if bull else RED
-        conf = sig.get("confidence", 70)
-        t_data = next((t for t in hot if t["symbol"] == sig["symbol"]), None)
-        pct    = t_data["pct"]   if t_data else 0
-        price  = t_data["price"] if t_data else 0
-
-        d.rectangle([0, y, W, y + sig_h], fill=PANEL if signals.index(sig) % 2 == 0 else ALT)
-        d.rectangle([0, y, 6, y + sig_h], fill=sc)
-        mid = y + sig_h // 2
-
-        # Symbol + label
-        d.text((PAD + 16, mid - 26), sig["symbol"], font=fnt_lg, fill=WHITE, anchor="lm")
-        lbl = "BULLISH" if bull else "BEARISH"
-        d.text((PAD + 16, mid + 28), f"AI: {lbl} — {conf:.0f}% confidence", font=fnt_xs, fill=sc, anchor="lm")
-
-        # Price + pct on right
+        bull  = "bull" in sig.get("direction", "bull").lower()
+        sc    = _C["green"] if bull else _C["red"]
+        label = "BULL" if bull else "BEAR"
+        conf  = sig.get("confidence", 70)
+        pd    = next((t for t in hot if t["symbol"] == sig["symbol"]), None)
+        price = pd["price"] if pd else 0
+        pct   = pd["pct"]   if pd else 0
+        _draw_glow_card(d, 0, y, W, y + sig_card_h - 4, radius=0, accent=sc, fill=_C["card"])
+        d.rectangle([0, y, 7, y + sig_card_h - 4], fill=sc)
+        mid = y + (sig_card_h - 4) // 2
+        d.text((PAD + 14, mid - 20), sig["symbol"], font=fnt_lg, fill=_C["text_hi"], anchor="lm")
+        _draw_badge(d, PAD + 14, mid + 16, label, sc, fnt_xs)
+        d.text((W - PAD, mid - 20), f"{conf:.0f}%", font=fnt_md, fill=sc,           anchor="ra")
         if price > 0:
-            d.text((W - PAD, mid - 26), f"${price:,.2f}", font=fnt_md, fill=WHITE, anchor="ra")
-            sign = "+" if pct >= 0 else ""
-            d.text((W - PAD, mid + 28), f"{sign}{pct:.2f}%", font=fnt_sm, fill=sc, anchor="ra")
-
-        d.rectangle([0, y + sig_h - 1, W, y + sig_h], fill=(20, 28, 44))
-        y += sig_h
-
-    # Caption bar — readable on mute
-    regime_s  = data.get("regime", "NEUTRAL")
-    score_s   = data.get("regime_score", 50)
-    emoji_s   = {"BULLISH": "🟢", "BEARISH": "🔴", "NEUTRAL": "🟡"}.get(regime_s, "⚪")
-    _draw_caption_bar(d, W, H, f"{emoji_s} Regime {regime_s} {score_s}/100  •  Drop 🟢 or 🔴 below 👇", fnt_xs, fnt_nano)
-
+            sign_p = "+" if pct >= 0 else ""
+            d.text((W - PAD, mid + 18), f"${price:,.2f}  {sign_p}{pct:.2f}%", font=fnt_xs, fill=_C["subtext"], anchor="ra")
+        y += sig_card_h
+    regime_c = {"BULLISH": "\U0001f7e2", "BEARISH": "\U0001f534", "NEUTRAL": "\U0001f7e1"}.get(regime, "")
+    _draw_caption_bar(d, W, H, f"{regime_c} {regime} {score}/100  Drop green or red below", fnt_xs, fnt_nano)
     return img
+
 
 
 def _generate_trade_setup_slide(data, trigger):
