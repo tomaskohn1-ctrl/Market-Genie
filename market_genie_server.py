@@ -7279,12 +7279,12 @@ _PAIR_TARGET_HIGH_PCT = float(os.getenv("PAIR_TARGET_HIGH_PCT", "0.025"))  # 2.5
 # should comfortably exceed 45%, making both tiers profitable.
 _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "88"))  # 88: matches counter-regime floor; elite-only but not over-restrictive             # min confidence floor — raised 72→90 for concentrated $80K single-position strategy; only elite setups
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
-_ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "10.0"))        # min stock price — lowered $15→$10: opens AAL ($12.75), NTLA ($11.97), NCLH etc; sub-$10 names (CLOV $2.62, SNAP $6.18) still blocked
+_ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "20.0"))        # min stock price — raised $10→$20: blocks MARA ($13), SOFI ($17) which have tiny dollar moves vs slippage; sub-$20 names get stopped out in minutes by noise
 _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.40"))   # max bid-ask spread % — loosened 0.10→0.40: 0.1% was blocking every trade during opening hour (natural spreads 0.2-0.5%); 0.4% on $100K = $400 max spread cost, still reasonable
 _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
 _ALP_DEDUP_SECS       = 600    # 10 min dedup — reduced 25→10 min: with 9-ticker universe and 20-40 min holds, 25 min was blocking same-ticker re-entry in the same hour entirely; 10 min allows a fresh setup after the position exits while preventing immediate same-bar re-entry
-_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "60"))  # min wait after a losing exit — raised 15→60 min: MGM shorted twice in a row both losers, DOCU churned 3x all losers on Jun 1; 60 min blocks same-direction re-entry after a loss for a full hour
+_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "180")) # min wait after a losing exit — raised 60→180 min: NOW re-entered 1h40m after a loss and lost again (-$369 combined Jun 4); 3-hour block ensures the tape has fully changed before re-entry
 _ALP_EXIT_COOLDOWN_MINS = int(os.getenv("ALPACA_EXIT_COOLDOWN_MINS", "45"))  # min wait after ANY exit (win or lose) — raised 30→45 min: prevents churn re-entry; 45 min allows ~2 trades per ticker per session max
 _ALP_MAX_BULL_POSITIONS = int(os.getenv("ALPACA_MAX_BULL_POSITIONS", "5"))  # max simultaneous bull/long positions (up to 5 of 6 slots)
 _ALP_MAX_BEAR_POSITIONS = int(os.getenv("ALPACA_MAX_BEAR_POSITIONS", "5"))  # max simultaneous bear/short positions (up to 5 of 6 slots)
@@ -9047,6 +9047,48 @@ def _alp_time_exit_loop():
                     _save_alp_state()
                     print(f"[Cooldown] ❄️  {sym} — loss cooldown {_ALP_LOSS_COOLDOWN_MINS}m "
                           f"(same-symbol only) | slot OPEN for new setup")
+                    continue
+
+                # ══════════════════════════════════════════════════════════════
+                # SELLING STRATEGY 1c — Dead Zone Exit (30 min, -0.15% to +0.20%)
+                # ──────────────────────────────────────────────────────────────
+                # If a position is stuck in the "dead zone" after 30 minutes —
+                # not losing enough to stop out, not gaining enough to be worth
+                # holding — close it and free the slot for a better setup.
+                #
+                # BAC held 71 min for +$55 on a $60K position (+0.09%) on Jun 4.
+                # PYPL, MARA, NOW all sat flat-to-small-loss for 20+ min.
+                # These are dead trades stealing a slot from a real signal.
+                #
+                # Threshold: -0.15% to +0.20% at age 30–50 min.
+                # Above +0.20% → position is working, let it ride.
+                # Below -0.15% → already handled by EarlyCut / HardStop.
+                # ══════════════════════════════════════════════════════════════
+                _DEAD_ZONE_MIN_AGE  = float(os.getenv("DEAD_ZONE_MIN_AGE",  "30"))
+                _DEAD_ZONE_MAX_AGE  = float(os.getenv("DEAD_ZONE_MAX_AGE",  "50"))
+                _DEAD_ZONE_LOW_PCT  = float(os.getenv("DEAD_ZONE_LOW_PCT",  "-0.15"))
+                _DEAD_ZONE_HIGH_PCT = float(os.getenv("DEAD_ZONE_HIGH_PCT", "0.20"))
+                if (sym not in _alp_breakeven_set
+                        and sym not in _alp_partial_taken
+                        and age_mins >= _DEAD_ZONE_MIN_AGE
+                        and age_mins <  _DEAD_ZONE_MAX_AGE
+                        and _DEAD_ZONE_LOW_PCT < unrealized_pct < _DEAD_ZONE_HIGH_PCT):
+                    print(f"[DeadZone] 🪤  {sym} — stuck in dead zone at {age_mins:.0f}m "
+                          f"({unrealized_pct:+.2f}% between {_DEAD_ZONE_LOW_PCT}% and {_DEAD_ZONE_HIGH_PCT}%) "
+                          f"— closing, slot freed for a real setup")
+                    _alp_close_position(sym, pos_side_now)
+                    with _alp_lock:
+                        _alp_last_traded.pop(sym, None)
+                        _alp_breakeven_set.discard(sym)
+                        _alp_partial_taken.discard(sym)
+                        _alp_tight_trail_set.discard(sym); _alp_lock_trail_set.discard(sym)
+                        # Tiny positive dead-zone exits don't penalise with loss cooldown
+                        if unrealized_pct < 0:
+                            _alp_loss_cooldown[sym] = time.time()
+                        else:
+                            _alp_exit_cooldown[sym] = time.time()
+                    _save_alp_state()
+                    print(f"[DeadZone] ❄️  {sym} — {'loss' if unrealized_pct < 0 else 'exit'} cooldown set")
                     continue
 
                 # ══════════════════════════════════════════════════════════════
