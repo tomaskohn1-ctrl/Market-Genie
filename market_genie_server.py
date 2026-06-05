@@ -10313,6 +10313,33 @@ def _alp_execute_signal(res: dict):
                   f"(deep BEARISH tape — LONG entries blocked regardless of confidence)")
             return
 
+    # ── Live bull WR gate — suspend bull longs when win rate is failing ──────────
+    # Win rate tracker shows bull signals at 14.5% WR (29W / 171L) while bear
+    # signals are at 82.5%. Both models "agreeing" on BULL is 38% WR because
+    # ~65% of both-agree signals are bull direction that keep losing.
+    # When the live bull WR from winrate.db drops below MIN_BULL_WR, block all
+    # new LONG entries until the tape recovers. Tunable via MIN_BULL_WR (default 35%).
+    # Set to 0 to disable. This gate auto-lifts when bulls start winning again.
+    _MIN_BULL_WR = float(os.getenv("MIN_BULL_WR", "35.0"))
+    if _MIN_BULL_WR > 0 and direction == "bull" and not _is_forced:
+        try:
+            cutoff = int(time.time()) - 7 * 86400   # last 7 days
+            with sqlite3.connect(_WR_DB_PATH, timeout=3) as _wr_con:
+                row = _wr_con.execute(
+                    "SELECT COUNT(*) total, SUM(CASE WHEN outcome='win' THEN 1 ELSE 0 END) wins "
+                    "FROM signals WHERE direction='bull' AND outcome IN ('win','loss') AND ts >= ?",
+                    (cutoff,)
+                ).fetchone()
+            if row and row[0] and row[0] >= 20:   # need ≥20 resolved bull trades to use the gate
+                _bull_wr_live = (row[1] or 0) / row[0] * 100
+                if _bull_wr_live < _MIN_BULL_WR:
+                    print(f"[BullWRGate] {sym} — SKIPPED: live bull WR={_bull_wr_live:.1f}% "
+                          f"< {_MIN_BULL_WR}% floor ({row[0]} trades, 7d) — "
+                          f"bull long suspended until tape recovers")
+                    return
+        except Exception as _wr_gate_err:
+            pass   # gate errors are non-fatal — allow trade if DB unavailable
+
     # ── Dynamic breadth-adjusted confidence gate ──────────────────────────────
     # Threshold shifts based on market regime so the system naturally favors
     # the tape direction without manual overrides. e.g. bearish day → bulls
