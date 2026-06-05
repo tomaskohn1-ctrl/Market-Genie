@@ -7279,7 +7279,7 @@ _PAIR_TARGET_HIGH_PCT = float(os.getenv("PAIR_TARGET_HIGH_PCT", "0.025"))  # 2.5
 # should comfortably exceed 45%, making both tiers profitable.
 _ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "88"))  # 88: matches counter-regime floor; elite-only but not over-restrictive             # min confidence floor — raised 72→90 for concentrated $80K single-position strategy; only elite setups
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
-_ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "20.0"))        # min stock price — raised $10→$20: blocks MARA ($13), SOFI ($17) which have tiny dollar moves vs slippage; sub-$20 names get stopped out in minutes by noise
+_ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "18.0"))        # min stock price — $18: blocks MARA ($13) and SOFI-type noise but allows NCLH ($19) and other $18-20 liquid names that have real dollar moves
 _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.40"))   # max bid-ask spread % — loosened 0.10→0.40: 0.1% was blocking every trade during opening hour (natural spreads 0.2-0.5%); 0.4% on $100K = $400 max spread cost, still reasonable
 _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
@@ -10308,10 +10308,19 @@ def _alp_execute_signal(res: dict):
     if _deep_bear_threshold > 0:
         with _breadth_lock:
             _cur_score = _breadth_state.get("score", 50)
+        # Exempt inverse/bear ETFs — being LONG an inverse ETF IS the bearish bet.
+        # LABD, FAZ, SOXS, SQQQ, TZA etc. should trade freely in a bearish tape.
+        _INVERSE_ETFS = frozenset([
+            "SQQQ","SPXS","SOXS","LABD","FAZ","TZA","SPXU","SDOW","UVXY","VXX",
+            "SQQQ","SRTY","DXD","SDS","HIBS","WEBS","YANG","EEV","EUM",
+        ])
         if _cur_score < _deep_bear_threshold and direction == "bull" and not _is_forced:
-            print(f"[DeepBearBlock] {sym} — SKIPPED: regime score {_cur_score:.0f} < {_deep_bear_threshold} "
-                  f"(deep BEARISH tape — LONG entries blocked regardless of confidence)")
-            return
+            if sym in _INVERSE_ETFS:
+                print(f"[DeepBearBlock] {sym} — EXEMPT: inverse ETF, LONG = bearish bet ✓")
+            else:
+                print(f"[DeepBearBlock] {sym} — SKIPPED: regime score {_cur_score:.0f} < {_deep_bear_threshold} "
+                      f"(deep BEARISH tape — LONG entries blocked regardless of confidence)")
+                return
 
     # ── Live bull WR gate — suspend bull longs when win rate is failing ──────────
     # Win rate tracker shows bull signals at 14.5% WR (29W / 171L) while bear
