@@ -5717,6 +5717,54 @@ function switchAlpTab(tab) {
   }
 }
 
+// ── FILL CONSOLIDATION ───────────────────────────────────────────────────────
+// Alpaca splits one order into many partial fills.  Each fill appears as a
+// separate row in /api/alpaca/pnl.  Group by (sym, entry-minute, exit-minute)
+// so the journal shows one logical trade per row.
+function consolidateFills(trades) {
+  const groups = new Map();
+  for (const t of trades) {
+    const eMin = t.entry_ts ? Math.floor(new Date(t.entry_ts) / 60000) : 0;
+    const xMin = t.exit_ts  ? Math.floor(new Date(t.exit_ts)  / 60000) : 0;
+    const key  = `${t.sym}|${eMin}|${xMin}`;
+    const qty  = t.qty || 1;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        sym: t.sym, entry_ts: t.entry_ts, exit_ts: t.exit_ts,
+        _eQty: qty, _xQty: qty,
+        _ePxW: t.entry_px * qty, _xPxW: t.exit_px * qty,
+        pnl: t.pnl, exit_type: t.exit_type,
+        hold_mins: t.hold_mins ?? null,
+      });
+    } else {
+      const g = groups.get(key);
+      g._eQty += qty; g._xQty += qty;
+      g._ePxW += t.entry_px * qty; g._xPxW += t.exit_px * qty;
+      g.pnl   += t.pnl;
+      if (new Date(t.entry_ts) < new Date(g.entry_ts)) g.entry_ts = t.entry_ts;
+      if (new Date(t.exit_ts)  > new Date(g.exit_ts))  g.exit_ts  = t.exit_ts;
+      // Keep worst/most informative exit type
+      const pri = {target:3, stop:2, time_exit:1};
+      if ((pri[t.exit_type]||0) > (pri[g.exit_type]||0)) g.exit_type = t.exit_type;
+      // Keep minimum hold_mins (fastest sub-fill is most diagnostic)
+      if (t.hold_mins !== null && t.hold_mins !== undefined &&
+          (g.hold_mins === null || t.hold_mins < g.hold_mins)) g.hold_mins = t.hold_mins;
+    }
+  }
+  return Array.from(groups.values()).map(g => ({
+    sym:       g.sym,
+    entry_ts:  g.entry_ts,
+    exit_ts:   g.exit_ts,
+    entry_px:  g._ePxW / g._eQty,
+    exit_px:   g._xPxW / g._xQty,
+    qty:       g._eQty,
+    pnl:       g.pnl,
+    win:       g.pnl > 0,
+    exit_type: g.exit_type,
+    hold_mins: g.hold_mins,
+  }));
+}
+
 // ── TODAY'S TRADE JOURNAL ─────────────────────────────────────────────────────
 async function loadTodayTrades() {
   const body = document.getElementById('alpacaTodayBody');
@@ -5726,9 +5774,10 @@ async function loadTodayTrades() {
     const r = await fetch('/api/alpaca/pnl?days=2');
     const d = await r.json();
     if (d.error) { body.innerHTML = `<div style="padding:12px;color:var(--muted);font-size:12px">⚠ ${d.error}</div>`; return; }
-    // Filter to today (ET)
+    // Filter to today (ET), then consolidate split fills → 1 row per trade
     const todayET = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
-    const todayTrades = (d.trades || []).filter(t => t.exit_ts && t.exit_ts.substring(0,10) === todayET);
+    const rawToday = (d.trades || []).filter(t => t.exit_ts && t.exit_ts.substring(0,10) === todayET);
+    const todayTrades = consolidateFills(rawToday);
     if (!todayTrades.length) {
       body.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted);font-size:12px">No completed trades today yet</div>';
       return;
@@ -5738,9 +5787,12 @@ async function loadTodayTrades() {
     const pnlColor = todayPnl >= 0 ? 'var(--green)' : 'var(--red)';
     const pnlSign  = todayPnl >= 0 ? '+' : '';
     const rows = todayTrades.map(t => {
-      let holdMins = null;
-      try { holdMins = Math.round((new Date(t.exit_ts) - new Date(t.entry_ts)) / 60000); } catch(e) {}
-      const isFastStop = !t.win && holdMins !== null && holdMins < 5;
+      // Prefer server-provided hold_mins (already rounded); fall back to computing from ts
+      let holdMins = t.hold_mins ?? null;
+      if (holdMins === null) {
+        try { holdMins = Math.round((new Date(t.exit_ts) - new Date(t.entry_ts)) / 60000); } catch(e) {}
+      }
+      const isFastStop = t.exit_type === 'stop' || (!t.win && holdMins !== null && holdMins < 5);
       const pnlC = t.pnl >= 0 ? 'var(--green)' : 'var(--red)';
       const pnlS = t.pnl >= 0 ? '+' : '';
       let entryTime = '';

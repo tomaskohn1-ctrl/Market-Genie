@@ -11793,11 +11793,27 @@ def api_alpaca_pnl():
                     pnl = (price - entry["price"]) * matched
                     pnl_pct = (price - entry["price"]) / entry["price"] * 100
 
-                    # Classify exit type by P&L magnitude
-                    if pnl_pct >= 2.5:
+                    # Hold time in minutes
+                    hold_mins = None
+                    try:
+                        from datetime import timezone as _tz
+                        _efmt = entry["ts"].replace("Z", "+00:00")
+                        _xfmt = ts.replace("Z", "+00:00")
+                        _edt  = datetime.fromisoformat(_efmt)
+                        _xdt  = datetime.fromisoformat(_xfmt)
+                        hold_mins = round((_xdt - _edt).total_seconds() / 60)
+                    except Exception:
+                        pass
+
+                    # Classify exit type — use hold time to distinguish fast stops
+                    # from true time exits.  A stop-limit typically fires within
+                    # 0-8 minutes of entry with a small-to-moderate loss.
+                    if pnl_pct >= 1.5:
                         exit_type = "target"
                     elif pnl_pct <= -1.2:
                         exit_type = "stop"
+                    elif hold_mins is not None and hold_mins < 8 and pnl_pct < -0.15:
+                        exit_type = "stop"   # fast loss — stop-limit fired
                     else:
                         exit_type = "time_exit"
 
@@ -11810,6 +11826,7 @@ def api_alpaca_pnl():
                         "pnl_pct":   round(pnl_pct, 3),
                         "win":       pnl > 0,
                         "exit_type": exit_type,
+                        "hold_mins": hold_mins,
                         "entry_ts":  entry["ts"],
                         "exit_ts":   ts,
                     })
