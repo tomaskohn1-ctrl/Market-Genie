@@ -2349,9 +2349,17 @@
         <button class="btn secondary" style="padding:4px 10px;font-size:10px" onclick="loadAlpaca()">↻ Refresh</button>
       </div>
     </div>
-    <div class="card-body" style="padding:12px 16px">
-      <div id="alpacaBody">
+    <div class="card-body" style="padding:0">
+      <div id="chopBanner"></div>
+      <div style="display:flex;border-bottom:1px solid var(--border)">
+        <button id="alpTabPos" onclick="switchAlpTab('positions')" style="flex:1;padding:7px 12px;font-size:11px;font-weight:500;background:rgba(255,198,0,0.10);color:#ffc600;border:none;border-right:1px solid var(--border);cursor:pointer;transition:background 0.15s">📍 Positions</button>
+        <button id="alpTabToday" onclick="switchAlpTab('today')" style="flex:1;padding:7px 12px;font-size:11px;background:none;color:var(--muted);border:none;cursor:pointer;transition:background 0.15s">📋 Today's Trades</button>
+      </div>
+      <div id="alpacaBody" style="padding:12px 16px">
         <div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">⏳ Loading Alpaca account…</div>
+      </div>
+      <div id="alpacaTodayBody" style="display:none;padding:12px 16px">
+        <div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">⏳ Click to load today's trades…</div>
       </div>
     </div>
   </div>
@@ -5503,6 +5511,7 @@ async function forceAlpacaTrade(sym, btn, suggestedPrice) {
 
 async function loadAlpaca() {
   loadBreadthRegime();
+  updateChopBanner();
   try {
     const r = await fetch('/api/alpaca/status');
     const d = await r.json();
@@ -5651,8 +5660,143 @@ async function closeAllPositions() {
   }
 }
 
+// ── CHOP WINDOW BANNER ────────────────────────────────────────────────────────
+function updateChopBanner() {
+  const banner = document.getElementById('chopBanner');
+  if (!banner) return;
+  const now = new Date();
+  const etTime = now.toLocaleTimeString('en-US', {timeZone:'America/New_York', hour12:false, hour:'2-digit', minute:'2-digit'});
+  const [hh, mm] = etTime.split(':').map(Number);
+  const totalMins = hh * 60 + mm;
+  const windows = [
+    {start:10*60, end:11*60, label:'10am trap zone — worst hour of the day'},
+    {start:13*60, end:14*60, label:'post-lunch fade — chop / low win-rate'},
+  ];
+  const active = windows.find(w => totalMins >= w.start && totalMins < w.end);
+  if (active) {
+    const minsLeft = active.end - totalMins;
+    banner.innerHTML = `<div style="background:rgba(255,179,0,0.11);border-bottom:1px solid rgba(255,179,0,0.28);padding:7px 14px;display:flex;align-items:center;gap:8px;font-size:11px">
+      <span>⚠️</span>
+      <span style="color:#ffb300;font-weight:600">CHOP WINDOW ACTIVE</span>
+      <span style="color:var(--subtext)">${active.label}</span>
+      <span style="color:#ffb300;margin-left:4px">${minsLeft} min left</span>
+      <span style="color:var(--muted);font-size:9px;margin-left:auto">gate requires conf≥85 + both models agree</span>
+    </div>`;
+  } else {
+    // Show next window countdown if before market close
+    const nextWindow = windows.find(w => totalMins < w.start);
+    if (nextWindow && totalMins >= 9*60+30 && totalMins < 16*60) {
+      const minsUntil = nextWindow.start - totalMins;
+      if (minsUntil <= 30) {
+        banner.innerHTML = `<div style="background:rgba(255,179,0,0.05);border-bottom:1px solid rgba(255,179,0,0.15);padding:5px 14px;display:flex;align-items:center;gap:8px;font-size:10px;color:var(--muted)">
+          <span>🕐</span><span>Chop window starts in <strong style="color:#ffb300">${minsUntil} min</strong> — consider limiting new entries</span>
+        </div>`;
+      } else { banner.innerHTML = ''; }
+    } else { banner.innerHTML = ''; }
+  }
+}
+
+// ── TAB SWITCHER ──────────────────────────────────────────────────────────────
+let _alpTab = 'positions';
+function switchAlpTab(tab) {
+  _alpTab = tab;
+  const posBtn = document.getElementById('alpTabPos');
+  const todBtn = document.getElementById('alpTabToday');
+  const posBody = document.getElementById('alpacaBody');
+  const todBody = document.getElementById('alpacaTodayBody');
+  if (!posBtn || !todBtn || !posBody || !todBody) return;
+  if (tab === 'positions') {
+    posBtn.style.background = 'rgba(255,198,0,0.10)'; posBtn.style.color = '#ffc600';
+    todBtn.style.background = 'none'; todBtn.style.color = 'var(--muted)';
+    posBody.style.display = ''; todBody.style.display = 'none';
+  } else {
+    posBtn.style.background = 'none'; posBtn.style.color = 'var(--muted)';
+    todBtn.style.background = 'rgba(100,180,255,0.10)'; todBtn.style.color = '#64b4ff';
+    posBody.style.display = 'none'; todBody.style.display = '';
+    loadTodayTrades();
+  }
+}
+
+// ── TODAY'S TRADE JOURNAL ─────────────────────────────────────────────────────
+async function loadTodayTrades() {
+  const body = document.getElementById('alpacaTodayBody');
+  if (!body) return;
+  body.innerHTML = '<div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">⏳ Loading today\'s trades…</div>';
+  try {
+    const r = await fetch('/api/alpaca/pnl?days=2');
+    const d = await r.json();
+    if (d.error) { body.innerHTML = `<div style="padding:12px;color:var(--muted);font-size:12px">⚠ ${d.error}</div>`; return; }
+    // Filter to today (ET)
+    const todayET = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
+    const todayTrades = (d.trades || []).filter(t => t.exit_ts && t.exit_ts.substring(0,10) === todayET);
+    if (!todayTrades.length) {
+      body.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted);font-size:12px">No completed trades today yet</div>';
+      return;
+    }
+    const todayPnl = todayTrades.reduce((s,t) => s + t.pnl, 0);
+    const wins = todayTrades.filter(t=>t.win).length;
+    const pnlColor = todayPnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const pnlSign  = todayPnl >= 0 ? '+' : '';
+    const rows = todayTrades.map(t => {
+      let holdMins = null;
+      try { holdMins = Math.round((new Date(t.exit_ts) - new Date(t.entry_ts)) / 60000); } catch(e) {}
+      const isFastStop = !t.win && holdMins !== null && holdMins < 5;
+      const pnlC = t.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      const pnlS = t.pnl >= 0 ? '+' : '';
+      let entryTime = '';
+      try { entryTime = new Date(t.entry_ts).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hour12:true}); } catch(e) {}
+      const exitTypeColor = t.exit_type==='target' ? 'var(--green)' : t.exit_type==='stop' ? 'var(--red)' : 'var(--muted)';
+      return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);background:${isFastStop?'rgba(255,179,0,0.05)':''}">
+        <td style="padding:5px 8px;font-weight:600">${t.sym}</td>
+        <td style="padding:5px 8px;color:var(--muted);font-size:10px">${entryTime}</td>
+        <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px">$${t.entry_px.toFixed(2)}</td>
+        <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px">$${t.exit_px.toFixed(2)}</td>
+        <td style="padding:5px 8px;font-size:10px;color:${isFastStop?'#ffb300':'var(--muted)'}">${holdMins!==null?holdMins+'m':'—'}${isFastStop?' <span title="Stop hit in &lt;5 min — bad entry timing">⚠</span>':''}</td>
+        <td style="padding:5px 8px;font-weight:600;color:${pnlC}">${pnlS}$${t.pnl.toFixed(2)}</td>
+        <td style="padding:5px 8px;font-size:10px;color:${exitTypeColor}">${t.exit_type||'—'}</td>
+      </tr>`;
+    }).join('');
+    body.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">
+        <div style="text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 4px">
+          <div style="font-size:9px;color:var(--muted);margin-bottom:2px">Day P&L</div>
+          <div style="font-size:14px;font-weight:600;color:${pnlColor}">${pnlSign}$${todayPnl.toFixed(2)}</div>
+        </div>
+        <div style="text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 4px">
+          <div style="font-size:9px;color:var(--muted);margin-bottom:2px">Trades</div>
+          <div style="font-size:14px;font-weight:600">${todayTrades.length}</div>
+        </div>
+        <div style="text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 4px">
+          <div style="font-size:9px;color:var(--muted);margin-bottom:2px">W / L</div>
+          <div style="font-size:14px;font-weight:600"><span style="color:var(--green)">${wins}</span> / <span style="color:var(--red)">${todayTrades.length-wins}</span></div>
+        </div>
+        <div style="text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px 4px">
+          <div style="font-size:9px;color:var(--muted);margin-bottom:2px">Win %</div>
+          <div style="font-size:14px;font-weight:600">${todayTrades.length?Math.round(wins/todayTrades.length*100):0}%</div>
+        </div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <thead><tr style="border-bottom:1px solid var(--border);color:var(--muted)">
+          <th style="padding:4px 8px;text-align:left;font-weight:400">Sym</th>
+          <th style="padding:4px 8px;text-align:left;font-weight:400">In</th>
+          <th style="padding:4px 8px;text-align:left;font-weight:400">Entry</th>
+          <th style="padding:4px 8px;text-align:left;font-weight:400">Exit</th>
+          <th style="padding:4px 8px;text-align:left;font-weight:400">Hold</th>
+          <th style="padding:4px 8px;text-align:left;font-weight:400">P&L</th>
+          <th style="padding:4px 8px;text-align:left;font-weight:400">Exit Type</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div style="margin-top:6px;font-size:9px;color:var(--muted);padding:0 4px">⚠ amber = stop hit in &lt;5 min (bad entry timing) · exit_type: target/stop/time_exit</div>
+    `;
+  } catch(e) {
+    body.innerHTML = `<div style="padding:12px;color:var(--muted);font-size:12px">⚠ Error: ${e.message}</div>`;
+  }
+}
+
 loadAlpaca();
 setInterval(loadAlpaca, 30000);  // refresh every 30s during market hours
+setInterval(updateChopBanner, 60000); // update chop banner every minute
 
 // ── ANALYTICS ENGINE ──────────────────────────────────────────────────────────
 function _wr(v) { return v == null ? '—' : v.toFixed(1) + '%'; }
