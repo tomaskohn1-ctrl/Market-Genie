@@ -11864,12 +11864,52 @@ def api_alpaca_pnl():
                 break
             page_token = batch[-1].get("id")
 
-        # ── FIFO-match buys → sells per symbol ───────────────────────────────
-        # All our trades are long-only (ETFDir blocks short-selling), so every
-        # round trip is: BUY fill (entry) → SELL fill (exit via stop or target).
+        # ── FIFO-match fills → completed round-trip trades ────────────────────
+        # Handles both LONG (buy→sell) and SHORT (sell→buy) positions.
+        # Fills are processed in ascending time order; the first fill for a
+        # symbol determines the direction (long or short) of that position.
+        # LONG  round-trip: BUY fill → SELL fill (price up = profit)
+        # SHORT round-trip: SELL fill → BUY fill  (price down = profit)
         from collections import defaultdict, deque
-        buy_queues = defaultdict(deque)   # sym → deque of (qty, price, time)
+        buy_queues  = defaultdict(deque)   # sym → deque of long entries  {qty, price, ts}
+        sell_queues = defaultdict(deque)   # sym → deque of short entries {qty, price, ts}
         trades = []
+
+        def _hold_mins(entry_ts, exit_ts):
+            try:
+                _e = datetime.fromisoformat(entry_ts.replace("Z", "+00:00"))
+                _x = datetime.fromisoformat(exit_ts.replace("Z", "+00:00"))
+                return round((_x - _e).total_seconds() / 60)
+            except Exception:
+                return None
+
+        def _exit_type(pnl_pct, hold_mins):
+            if pnl_pct >= 1.5:
+                return "target"
+            elif pnl_pct <= -1.2:
+                return "stop"
+            elif hold_mins is not None and hold_mins < 8 and pnl_pct < -0.15:
+                return "stop"   # fast loss — stop-limit fired
+            return "time_exit"
+
+        def _record(sym, entry_px, exit_px, qty, entry_ts, exit_ts, direction):
+            pnl     = (exit_px - entry_px) * qty if direction == "long" else (entry_px - exit_px) * qty
+            pnl_pct = pnl / (entry_px * qty) * 100
+            hm      = _hold_mins(entry_ts, exit_ts)
+            trades.append({
+                "sym":       sym,
+                "direction": direction,
+                "entry_px":  round(entry_px, 4),
+                "exit_px":   round(exit_px,  4),
+                "qty":       qty,
+                "pnl":       round(pnl, 2),
+                "pnl_pct":   round(pnl_pct, 3),
+                "win":       pnl > 0,
+                "exit_type": _exit_type(pnl_pct, hm),
+                "hold_mins": hm,
+                "entry_ts":  entry_ts,
+                "exit_ts":   exit_ts,
+            })
 
         for f in fills:
             sym   = f.get("symbol", "")
@@ -11881,56 +11921,36 @@ def api_alpaca_pnl():
                 continue
 
             if side == "buy":
-                buy_queues[sym].append({"qty": qty, "price": price, "ts": ts})
+                if sell_queues[sym]:
+                    # Cover a short position
+                    remaining = qty
+                    while remaining > 0 and sell_queues[sym]:
+                        entry = sell_queues[sym][0]
+                        matched = min(remaining, entry["qty"])
+                        _record(sym, entry["price"], price, matched, entry["ts"], ts, "short")
+                        entry["qty"] -= matched
+                        remaining    -= matched
+                        if entry["qty"] <= 0:
+                            sell_queues[sym].popleft()
+                else:
+                    # Long entry
+                    buy_queues[sym].append({"qty": qty, "price": price, "ts": ts})
+
             elif side == "sell":
-                remaining = qty
-                while remaining > 0 and buy_queues[sym]:
-                    entry = buy_queues[sym][0]
-                    matched = min(remaining, entry["qty"])
-                    pnl = (price - entry["price"]) * matched
-                    pnl_pct = (price - entry["price"]) / entry["price"] * 100
-
-                    # Hold time in minutes
-                    hold_mins = None
-                    try:
-                        from datetime import timezone as _tz
-                        _efmt = entry["ts"].replace("Z", "+00:00")
-                        _xfmt = ts.replace("Z", "+00:00")
-                        _edt  = datetime.fromisoformat(_efmt)
-                        _xdt  = datetime.fromisoformat(_xfmt)
-                        hold_mins = round((_xdt - _edt).total_seconds() / 60)
-                    except Exception:
-                        pass
-
-                    # Classify exit type — use hold time to distinguish fast stops
-                    # from true time exits.  A stop-limit typically fires within
-                    # 0-8 minutes of entry with a small-to-moderate loss.
-                    if pnl_pct >= 1.5:
-                        exit_type = "target"
-                    elif pnl_pct <= -1.2:
-                        exit_type = "stop"
-                    elif hold_mins is not None and hold_mins < 8 and pnl_pct < -0.15:
-                        exit_type = "stop"   # fast loss — stop-limit fired
-                    else:
-                        exit_type = "time_exit"
-
-                    trades.append({
-                        "sym":       sym,
-                        "entry_px":  round(entry["price"], 4),
-                        "exit_px":   round(price, 4),
-                        "qty":       matched,
-                        "pnl":       round(pnl, 2),
-                        "pnl_pct":   round(pnl_pct, 3),
-                        "win":       pnl > 0,
-                        "exit_type": exit_type,
-                        "hold_mins": hold_mins,
-                        "entry_ts":  entry["ts"],
-                        "exit_ts":   ts,
-                    })
-                    entry["qty"] -= matched
-                    remaining    -= matched
-                    if entry["qty"] <= 0:
-                        buy_queues[sym].popleft()
+                if buy_queues[sym]:
+                    # Exit a long position
+                    remaining = qty
+                    while remaining > 0 and buy_queues[sym]:
+                        entry = buy_queues[sym][0]
+                        matched = min(remaining, entry["qty"])
+                        _record(sym, entry["price"], price, matched, entry["ts"], ts, "long")
+                        entry["qty"] -= matched
+                        remaining    -= matched
+                        if entry["qty"] <= 0:
+                            buy_queues[sym].popleft()
+                else:
+                    # Short entry
+                    sell_queues[sym].append({"qty": qty, "price": price, "ts": ts})
 
         # ── Summary stats ─────────────────────────────────────────────────────
         if trades:

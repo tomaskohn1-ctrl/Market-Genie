@@ -5771,12 +5771,17 @@ async function loadTodayTrades() {
   if (!body) return;
   body.innerHTML = '<div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">⏳ Loading today\'s trades…</div>';
   try {
-    const r = await fetch('/api/alpaca/pnl?days=2');
+    const r = await fetch('/api/alpaca/pnl?days=7');
     const d = await r.json();
     if (d.error) { body.innerHTML = `<div style="padding:12px;color:var(--muted);font-size:12px">⚠ ${d.error}</div>`; return; }
     // Filter to today (ET), then consolidate split fills → 1 row per trade
     const todayET = new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
     const rawToday = (d.trades || []).filter(t => t.exit_ts && t.exit_ts.substring(0,10) === todayET);
+    console.log('[TodayTrades] todayET:', todayET, '| total trades in API:', (d.trades||[]).length, '| matching today:', rawToday.length);
+    console.log('[TodayTrades] all exit dates:', [...new Set((d.trades||[]).map(t=>t.exit_ts?.substring(0,10)))]);
+    if (rawToday.length === 0 && (d.trades||[]).length > 0) {
+      console.log('[TodayTrades] Sample exit_ts values:', (d.trades||[]).slice(0,5).map(t=>t.exit_ts));
+    }
     const todayTrades = consolidateFills(rawToday);
     if (!todayTrades.length) {
       body.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted);font-size:12px">No completed trades today yet</div>';
@@ -5798,8 +5803,11 @@ async function loadTodayTrades() {
       let entryTime = '';
       try { entryTime = new Date(t.entry_ts).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hour12:true}); } catch(e) {}
       const exitTypeColor = t.exit_type==='target' ? 'var(--green)' : t.exit_type==='stop' ? 'var(--red)' : 'var(--muted)';
+      const dirColor = t.direction === 'short' ? '#ff6b6b' : '#4ecdc4';
+      const dirLabel = t.direction === 'short' ? '▼S' : '▲L';
       return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);background:${isFastStop?'rgba(255,179,0,0.05)':''}">
         <td style="padding:5px 8px;font-weight:600">${t.sym}</td>
+        <td style="padding:5px 4px;text-align:center;font-size:9px;font-weight:700;color:${dirColor}">${dirLabel}</td>
         <td style="padding:5px 8px;color:var(--muted);font-size:10px">${entryTime}</td>
         <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px">$${t.entry_px.toFixed(2)}</td>
         <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px">$${t.exit_px.toFixed(2)}</td>
@@ -5830,6 +5838,7 @@ async function loadTodayTrades() {
       <table style="width:100%;border-collapse:collapse;font-size:11px">
         <thead><tr style="border-bottom:1px solid var(--border);color:var(--muted)">
           <th style="padding:4px 8px;text-align:left;font-weight:400">Sym</th>
+          <th style="padding:4px 4px;text-align:center;font-weight:400">Dir</th>
           <th style="padding:4px 8px;text-align:left;font-weight:400">In</th>
           <th style="padding:4px 8px;text-align:left;font-weight:400">Entry</th>
           <th style="padding:4px 8px;text-align:left;font-weight:400">Exit</th>
