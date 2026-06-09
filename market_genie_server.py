@@ -6887,6 +6887,77 @@ def _get_social_conf_boost(sym: str) -> int:
     return 0
 
 
+# ── FINRA Short Volume Cache ─────────────────────────────────────────────────
+# Daily Consolidated NMS short sale volume — free, no API key required.
+# File published by FINRA at ~6pm ET covering the previous trading day.
+# URL: https://cdn.finra.org/equity/regsho/daily/CNMSshvol{YYYYMMDD}.txt
+# Format: Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market
+#
+# short_pct interpretation for day trading:
+#   > 50%:  more than half of today's trades were short sales — pressure elevated
+#   > 55%:  active distribution — aligns well with BEAR signal conviction
+#   > 65%:  potential exhaustion / short squeeze risk — fade bear signal slightly
+#   Bull signal + short_pct > 60%: squeeze setup — boost bull conviction
+#
+# Caveat: this is YESTERDAY's data.  It's a regime signal, not a tick indicator.
+
+_finra_cache: dict      = {}   # {sym: short_pct}  — full day cache
+_finra_cache_date: str  = ""   # YYYYMMDD string of last successful fetch
+_finra_lock             = threading.Lock()
+
+
+def _fetch_finra_all() -> dict:
+    """
+    Download and parse the most recent FINRA CNMS short volume file.
+    Walks back up to 5 trading days to find the latest available file.
+    Returns dict {sym: short_pct} or {} on failure.
+    """
+    base = "https://cdn.finra.org/equity/regsho/daily"
+    d = datetime.utcnow()
+    for _ in range(5):
+        ymd = d.strftime("%Y%m%d")
+        url = f"{base}/CNMSshvol{ymd}.txt"
+        try:
+            r = requests.get(url, timeout=20)
+            if r.status_code != 200:
+                d -= timedelta(days=1)
+                continue
+            result = {}
+            for line in r.text.strip().splitlines():
+                parts = line.split("|")
+                if len(parts) < 5 or parts[0] == "Date":
+                    continue
+                sym_raw   = parts[1].strip()
+                short_vol = int(parts[2]) if parts[2].isdigit() else 0
+                total_vol = int(parts[4]) if parts[4].isdigit() else 0
+                if total_vol > 0:
+                    result[sym_raw] = round(short_vol / total_vol, 4)
+            print(f"[FINRA] Loaded {len(result):,} symbols from {ymd} "
+                  f"(short vol file)")
+            return result, ymd
+        except Exception as e:
+            print(f"[FINRA] Fetch error for {ymd}: {e}")
+            d -= timedelta(days=1)
+    return {}, ""
+
+
+def _get_finra_short_pct(sym: str) -> float | None:
+    """
+    Return yesterday's short_pct for sym (0.0–1.0), or None if unavailable.
+    Downloads the full file once per trading day and caches it.
+    """
+    today = datetime.utcnow().strftime("%Y%m%d")
+    with _finra_lock:
+        if _finra_cache_date != today or not _finra_cache:
+            data, file_date = _fetch_finra_all()
+            if data:
+                _finra_cache.clear()
+                _finra_cache.update(data)
+                globals()["_finra_cache_date"] = file_date
+    with _finra_lock:
+        return _finra_cache.get(sym.upper())
+
+
 # ── Same-Day News Catalyst Cache (Finnhub) ───────────────────────────────────
 # Checked once per signal per ticker, cached 15 min so we don't hammer Finnhub.
 # Returns True if there is at least one news article for sym today.
@@ -9825,6 +9896,43 @@ def _alp_execute_signal(res: dict):
     except Exception:
         pass
 
+    # ── FINRA Short Volume Boost ──────────────────────────────────────────────
+    # Prior-day short vol % from FINRA's free CNMS file (downloaded once/day).
+    # Bear signal: high short_pct confirms sellers are active → boost.
+    # Bull signal: very high short_pct → potential squeeze → boost.
+    # Extremely high short_pct on bear signal → exhaustion risk → reduce.
+    # ETFs are exempt (their short vol reflects hedging, not directional pressure).
+    try:
+        if not _is_etf_hard:
+            _finra_pct = _get_finra_short_pct(sym)
+            if _finra_pct is not None:
+                _finra_adj = 0
+                _finra_note = f"short_pct={_finra_pct:.1%}"
+                if direction == "bear":
+                    if _finra_pct >= 0.65:
+                        _finra_adj = -3   # extreme — exhaustion / squeeze risk
+                        _finra_note += " (exhaustion risk, reducing)"
+                    elif _finra_pct >= 0.55:
+                        _finra_adj = +4   # active distribution, confirms bear
+                        _finra_note += " (active distribution)"
+                    elif _finra_pct >= 0.50:
+                        _finra_adj = +2   # mild pressure
+                        _finra_note += " (elevated pressure)"
+                elif direction == "bull":
+                    if _finra_pct >= 0.60:
+                        _finra_adj = +5   # squeeze setup — crowd offsides
+                        _finra_note += " (squeeze setup)"
+                    elif _finra_pct >= 0.52:
+                        _finra_adj = +2   # moderate short overhang
+                        _finra_note += " (short overhang)"
+                if _finra_adj != 0:
+                    eff_conf += _finra_adj
+                    sign = "+" if _finra_adj > 0 else ""
+                    print(f"[FINRAShort] {sym} — {_finra_note} "
+                          f"→ eff_conf {sign}{_finra_adj} → {eff_conf:.1f}")
+    except Exception as _finra_err:
+        pass   # FINRA boost is non-fatal; never block a trade on data unavailability
+
     # ── Same-Day News Catalyst ────────────────────────────────────────────────
     # A confirmed news event explains the move and adds narrative conviction.
     # Checked via Finnhub company-news (15-min cache). No penalty if unavailable.
@@ -11821,6 +11929,56 @@ def api_debug_signals():
             "t_dir":      r.get("tfm_dir"),
         } for r in candidates],
     })
+
+
+@app.route("/api/finra/short-volume")
+def api_finra_short_volume():
+    """
+    Return FINRA short volume data for one or more symbols.
+    Query params:
+      ?sym=AAPL           single symbol
+      ?sym=AAPL,MSFT,NVDA comma-separated list
+      ?top=20             top N most-shorted symbols (min 100K total vol)
+    """
+    try:
+        top_n = request.args.get("top")
+        sym_arg = request.args.get("sym", "")
+
+        # Ensure cache is loaded
+        _get_finra_short_pct("SPY")   # warm the cache with any symbol
+
+        with _finra_lock:
+            cache_copy = dict(_finra_cache)
+        cache_date = _finra_cache_date
+
+        if top_n:
+            n = int(top_n)
+            ranked = sorted(
+                [{"sym": s, "short_pct": round(p * 100, 2)} for s, p in cache_copy.items()],
+                key=lambda x: -x["short_pct"]
+            )[:n]
+            return jsonify({"date": cache_date, "top": ranked})
+
+        if sym_arg:
+            syms = [s.strip().upper() for s in sym_arg.split(",") if s.strip()]
+            results = []
+            for s in syms:
+                pct = cache_copy.get(s)
+                results.append({
+                    "sym": s,
+                    "short_pct": round(pct * 100, 2) if pct is not None else None,
+                    "signal": (
+                        "squeeze_setup"   if pct and pct >= 0.60 else
+                        "active_dist"     if pct and pct >= 0.55 else
+                        "elevated"        if pct and pct >= 0.50 else
+                        "normal"
+                    ) if pct is not None else "no_data",
+                })
+            return jsonify({"date": cache_date, "results": results})
+
+        return jsonify({"error": "Provide ?sym=TICKER or ?top=N"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/alpaca/pnl")
