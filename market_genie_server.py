@@ -7355,8 +7355,8 @@ _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.40"))   # ma
 _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
 _ALP_DEDUP_SECS       = 600    # 10 min dedup — reduced 25→10 min: with 9-ticker universe and 20-40 min holds, 25 min was blocking same-ticker re-entry in the same hour entirely; 10 min allows a fresh setup after the position exits while preventing immediate same-bar re-entry
-_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "180")) # min wait after a losing exit — raised 60→180 min: NOW re-entered 1h40m after a loss and lost again (-$369 combined Jun 4); 3-hour block ensures the tape has fully changed before re-entry
-_ALP_EXIT_COOLDOWN_MINS = int(os.getenv("ALPACA_EXIT_COOLDOWN_MINS", "45"))  # min wait after ANY exit (win or lose) — raised 30→45 min: prevents churn re-entry; 45 min allows ~2 trades per ticker per session max
+_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "60"))  # min wait after a losing exit — reduced 180→60 min (Jun 9): 3-hr block was too restrictive for a 6.5-hr session; 60 min gives tape time to change without killing the afternoon
+_ALP_EXIT_COOLDOWN_MINS = int(os.getenv("ALPACA_EXIT_COOLDOWN_MINS", "30"))  # min wait after ANY exit (win or lose) — reduced 45→30 min (Jun 9): 45 min was preventing re-entry on working setups even after wins
 _ALP_MAX_BULL_POSITIONS = int(os.getenv("ALPACA_MAX_BULL_POSITIONS", "5"))  # max simultaneous bull/long positions (up to 5 of 6 slots)
 _ALP_MAX_BEAR_POSITIONS = int(os.getenv("ALPACA_MAX_BEAR_POSITIONS", "5"))  # max simultaneous bear/short positions (up to 5 of 6 slots)
 
@@ -7537,7 +7537,7 @@ _alp_daily_limit_fired    = False   # True for the rest of the session once trig
 # Jun 8: MRVL -$444 at 9:45 → T entered at 11:01 (75 min) → -$185
 #        With 90-min all-sym cooldown that would have been blocked.
 _ALP_BIG_LOSS_USD         = float(os.getenv("ALPACA_BIG_LOSS_USD",    "200"))   # single-trade loss threshold
-_ALP_BIG_LOSS_PAUSE_MINS  = int(os.getenv("ALPACA_BIG_LOSS_PAUSE",    "90"))    # all-symbol pause after big loss
+_ALP_BIG_LOSS_PAUSE_MINS  = int(os.getenv("ALPACA_BIG_LOSS_PAUSE",    "30"))    # all-symbol pause after big loss — reduced 90→30 min (Jun 9): 30 min stops revenge trading without killing the rest of the session
 _alp_big_loss_until       = 0.0    # unix timestamp: all entries blocked until this time
 _alp_prev_loop_pnl        = None   # session P&L at end of previous monitoring loop (for big-loss delta detection)
 
