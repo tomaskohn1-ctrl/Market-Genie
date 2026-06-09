@@ -7447,6 +7447,39 @@ _ALP_PROFIT_GUARD_DROP    = float(os.getenv("ALPACA_PROFIT_GUARD_DROP",  "800"))
 _ALP_PROFIT_GUARD_PAUSE   = int(os.getenv("ALPACA_PROFIT_GUARD_PAUSE",    "5"))   # minutes to pause new entries after guard fires (10→5)
 _ALP_PROFIT_GUARD_NQ_SKIP = float(os.getenv("ALPACA_PROFIT_GUARD_NQ_SKIP", "0.5"))  # skip guard if NQ futures > this % (strong bull tape)
 
+# ── Daily Loss Limit (account-level circuit breaker) ─────────────────────────
+# Fires regardless of whether a profit peak was ever hit.  Designed for days
+# that start with a large stop (e.g. MRVL -$444 at 9:45am), which means
+# _alp_session_peak_pnl never reaches PROFIT_GUARD_PEAK and that guard never
+# fires — leaving recovery-trading wide open.
+# Analysis: May 12 (-$1,376) would have been cut to -$436 with this limit.
+# Jun 8: MRVL stop (-$444) alone would have triggered it, saving ~$510 of
+# subsequent recovery-trade losses (T, GDXJ, XLB).
+_ALP_DAILY_LOSS_LIMIT     = float(os.getenv("ALPACA_DAILY_LOSS_LIMIT", "-400"))  # session P&L floor; negative number
+_alp_daily_limit_fired    = False   # True for the rest of the session once triggered
+
+# ── Big-loss all-symbol cooldown ──────────────────────────────────────────────
+# After any single trade loses more than _ALP_BIG_LOSS_USD, block ALL new
+# entries for _ALP_BIG_LOSS_PAUSE minutes (not just the symbol that lost).
+# Prevents the most common failure mode: one stop → aggressive re-entry on
+# unrelated symbols → accumulated losses.
+# Jun 8: MRVL -$444 at 9:45 → T entered at 11:01 (75 min) → -$185
+#        With 90-min all-sym cooldown that would have been blocked.
+_ALP_BIG_LOSS_USD         = float(os.getenv("ALPACA_BIG_LOSS_USD",    "200"))   # single-trade loss threshold
+_ALP_BIG_LOSS_PAUSE_MINS  = int(os.getenv("ALPACA_BIG_LOSS_PAUSE",    "90"))    # all-symbol pause after big loss
+_alp_big_loss_until       = 0.0    # unix timestamp: all entries blocked until this time
+_alp_prev_loop_pnl        = None   # session P&L at end of previous monitoring loop (for big-loss delta detection)
+
+# ── Minimum daily ATR gate ────────────────────────────────────────────────────
+# Require a symbol's intraday range (high-low) to be at least
+# _ALP_MIN_ATR_PCT of the open price before entry is allowed.
+# Blocks slow-moving instruments (T $22, XLB $50, WBD $26, TXN $293, SPY $740)
+# whose typical daily range is smaller than 2× the target distance — meaning
+# they physically cannot hit the 1.5% target in a 40-minute hold.
+# Threshold 1.5%: T typical range ≈0.5%, XLB ≈0.6% → both blocked.
+# RGTI, LUNR, MRVL typical range ≈3-6% → all pass.
+_ALP_MIN_ATR_PCT          = float(os.getenv("ALPACA_MIN_ATR_PCT", "1.5"))    # min intraday range % vs open
+
 # ── AI-Trader TradeSync ───────────────────────────────────────────────────────
 # Publishes Market Genie's paper trades to ai4trade.ai so they appear on the
 # leaderboard and can be copy-traded by followers.  Completely optional — if
@@ -8836,7 +8869,8 @@ def _alp_time_exit_loop():
             # Track session equity so we can detect "gave back all gains" days.
             # On first loop run, snapshot the starting equity as baseline.
             global _alp_session_start_equity, _alp_session_peak_pnl, \
-                   _alp_profit_guard_fired, _alp_profit_guard_until
+                   _alp_profit_guard_fired, _alp_profit_guard_until, \
+                   _alp_daily_limit_fired, _alp_big_loss_until, _alp_prev_loop_pnl
             try:
                 acc_r = requests.get(f"{_ALPACA_BASE_URL}/v2/account",
                                      headers=_alp_headers(), timeout=6)
@@ -8847,6 +8881,30 @@ def _alp_time_exit_loop():
                             _alp_session_start_equity = cur_equity
                             print(f"[ProfitGuard] Session baseline equity: ${cur_equity:,.2f}")
                         cur_pnl = cur_equity - _alp_session_start_equity
+
+                        # ── Daily loss limit circuit breaker ──────────────────
+                        # Fires the first time session P&L crosses the floor.
+                        # Does NOT close existing positions — just blocks new ones.
+                        if not _alp_daily_limit_fired and cur_pnl <= _ALP_DAILY_LOSS_LIMIT:
+                            _alp_daily_limit_fired = True
+                            print(f"[DailyLimit] 🛑 DAILY LOSS LIMIT FIRED — "
+                                  f"session P&L ${cur_pnl:+.2f} ≤ ${_ALP_DAILY_LOSS_LIMIT:.0f} "
+                                  f"— no new entries for the rest of the session")
+
+                        # ── Big-loss all-symbol cooldown ──────────────────────
+                        # If session P&L drops > $BIG_LOSS_USD in a single loop
+                        # iteration, one trade just took a big hit — pause ALL
+                        # new entries for BIG_LOSS_PAUSE minutes.
+                        if (_alp_prev_loop_pnl is not None
+                                and cur_pnl - _alp_prev_loop_pnl <= -_ALP_BIG_LOSS_USD
+                                and time.time() > _alp_big_loss_until):
+                            _drop = _alp_prev_loop_pnl - cur_pnl
+                            _alp_big_loss_until = time.time() + _ALP_BIG_LOSS_PAUSE_MINS * 60
+                            print(f"[BigLossCooldown] 🛑 Big-loss detected "
+                                  f"(${_drop:.0f} drop this loop, threshold=${_ALP_BIG_LOSS_USD:.0f}) "
+                                  f"— ALL symbols paused {_ALP_BIG_LOSS_PAUSE_MINS}m")
+                        _alp_prev_loop_pnl = cur_pnl
+
                         if cur_pnl > _alp_session_peak_pnl:
                             _alp_session_peak_pnl = cur_pnl
                             if cur_pnl >= _ALP_PROFIT_GUARD_PEAK:
@@ -9350,6 +9408,24 @@ def _alp_execute_signal(res: dict):
                 return
         except Exception as _sg_err:
             print(f"[StratGate] {sym} — gate error (non-fatal, allowing): {_sg_err}")
+
+    # ── Daily loss limit ──────────────────────────────────────────────────────
+    # Session P&L crossed the floor (e.g. -$400) — block all new entries for
+    # the rest of the session regardless of signal quality.
+    if _alp_daily_limit_fired and not _is_forced:
+        print(f"[DailyLimit] {sym} — SKIPPED: daily loss limit hit "
+              f"(session P&L ≤ ${_ALP_DAILY_LOSS_LIMIT:.0f})")
+        return
+
+    # ── Big-loss all-symbol cooldown ──────────────────────────────────────────
+    # A single trade just lost > $BIG_LOSS_USD — pause everything to prevent
+    # emotional/recovery trading.
+    if not _is_forced and time.time() < _alp_big_loss_until:
+        _mins_left = round((_alp_big_loss_until - time.time()) / 60)
+        print(f"[BigLossCooldown] {sym} — SKIPPED: all-symbol pause after "
+              f">${_ALP_BIG_LOSS_USD:.0f} single-trade loss ({_mins_left}m remaining)")
+        return
+
     # Allow function to run during extended hours (4 AM – 8 PM ET, weekdays) so
     # signals reach the extended-hours log block below and appear on dashboard.
     # Overnight / weekends are still gated by _us_market_open() below.
@@ -9646,6 +9722,27 @@ def _alp_execute_signal(res: dict):
             print(f"[ADVGate] {sym} — SKIPPED: avg daily vol {_avg_vol:,} shares / "
                   f"${_dollar_adv/1e6:.0f}M < minimums (2M shares or $100M/day)")
         return
+
+    # ── Minimum intraday ATR gate ─────────────────────────────────────────────
+    # Block stocks whose daily high-low range is too narrow to ever reach the
+    # 1.5% profit target in a 40-minute hold.  Typical ranges: T ≈0.5%,
+    # XLB ≈0.6% — both blocked.  RGTI/LUNR/MRVL ≈3-6% — all pass.
+    # ETFs (SPXL/TQQQ/SOXL etc.) are volatile enough by construction — exempt.
+    if _ALP_MIN_ATR_PCT > 0 and not _is_forced and not _is_etf_hard:
+        try:
+            _atr_q    = get_quote(sym) or {}
+            _atr_h    = float(_atr_q.get("h", 0) or 0)
+            _atr_l    = float(_atr_q.get("l", 0) or 0)
+            _atr_o    = float(_atr_q.get("o", 0) or 0)
+            if _atr_o > 0 and _atr_h > _atr_l:
+                _atr_range_pct = (_atr_h - _atr_l) / _atr_o * 100
+                if _atr_range_pct < _ALP_MIN_ATR_PCT:
+                    print(f"[ATRGate] {sym} — SKIPPED: intraday range "
+                          f"{_atr_range_pct:.2f}% < {_ALP_MIN_ATR_PCT}% minimum "
+                          f"(h={_atr_h:.2f} l={_atr_l:.2f} o={_atr_o:.2f} — low-vol stock, can't reach target)")
+                    return
+        except Exception as _atr_err:
+            print(f"[ATRGate] {sym} — gate error (non-fatal, allowing): {_atr_err}")
 
     # ── Base Confidence Floor ─────────────────────────────────────────────────
     # Require a minimum raw model confidence before any boosts are applied.
