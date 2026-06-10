@@ -7526,7 +7526,7 @@ _ALP_PROFIT_GUARD_NQ_SKIP = float(os.getenv("ALPACA_PROFIT_GUARD_NQ_SKIP", "0.5"
 # Analysis: May 12 (-$1,376) would have been cut to -$436 with this limit.
 # Jun 8: MRVL stop (-$444) alone would have triggered it, saving ~$510 of
 # subsequent recovery-trade losses (T, GDXJ, XLB).
-_ALP_DAILY_LOSS_LIMIT     = float(os.getenv("ALPACA_DAILY_LOSS_LIMIT", "-400"))  # session P&L floor; negative number
+_ALP_DAILY_LOSS_LIMIT     = float(os.getenv("ALPACA_DAILY_LOSS_LIMIT", "-600"))  # session P&L floor; negative number — raised -400→-600 (Jun 10): -400 was firing too early on rough opens
 _alp_daily_limit_fired    = False   # True for the rest of the session once triggered
 
 # ── Big-loss all-symbol cooldown ──────────────────────────────────────────────
