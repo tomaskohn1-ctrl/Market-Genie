@@ -380,12 +380,16 @@ def _draw_caption_bar(d, W, H, caption_text, fnt_caption, fnt_nano):
 
 
 def _draw_breaking_badge(d, W, symbol, pct, fnt):
-    """Red BREAKING banner just below the header for big movers (≥5%)."""
-    d.rectangle([0, 132, W, 222], fill=(180, 15, 15))
+    """Red BREAKING banner just below the header for big movers (≥5%). Two lines."""
+    d.rectangle([0, 132, W, 252], fill=(180, 15, 15))
     sign = "+" if pct >= 0 else ""
-    d.text((W // 2, 177),
+    d.text((W // 2, 173),
            f"⚡ BREAKING  {symbol} {sign}{pct:.1f}%  ⚡",
            font=fnt, fill=(255, 255, 255), anchor="mm")
+    fnt_sub = _load_font(34)
+    d.text((W // 2, 224),
+           "My A.I. already has a trade plan →",
+           font=fnt_sub, fill=(255, 220, 180), anchor="mm")
 
 
 def _generate_hook_frame(data, trigger):
@@ -414,13 +418,37 @@ def _generate_hook_frame(data, trigger):
     y = 172
     if hot and abs(hot[0].get("pct", 0)) >= 5:
         _draw_breaking_badge(d, W, hot[0]["symbol"], hot[0]["pct"], fnt_sm)
-        y = 235
-    _draw_glow_card(d, PAD, y, W - PAD, y + 200, radius=16, accent=rc)
-    regime_label = {"BULLISH": "BULLS IN CONTROL", "BEARISH": "BEARS IN CONTROL", "NEUTRAL": "CHOPPY TAPE"}.get(regime, regime)
+        y = 266  # taller badge (2-line)
+
+    # ── Regime card (smaller — not the visual anchor anymore) ────────────────
+    _draw_glow_card(d, PAD, y, W - PAD, y + 148, radius=16, accent=rc)
+    regime_label = {"BULLISH": "BULLS IN CONTROL", "BEARISH": "BEARS IN CONTROL", "NEUTRAL": "AI SAYS: WAIT"}.get(regime, regime)
     regime_emoji = {"BULLISH": "\U0001f7e2", "BEARISH": "\U0001f534", "NEUTRAL": "\U0001f7e1"}.get(regime, "")
-    d.text((W // 2, y + 76),  f"{regime_emoji} {regime_label}", font=fnt_xl, fill=rc, anchor="mm")
-    d.text((W // 2, y + 152), f"A.I. Regime Score: {score} / 100", font=fnt_sm, fill=_C["subtext"], anchor="mm")
-    y += 220
+    d.text((W // 2, y + 58),  f"{regime_emoji} {regime_label}", font=fnt_lg, fill=rc, anchor="mm")
+    d.text((W // 2, y + 114), f"A.I. Regime Score: {score} / 100", font=fnt_xs, fill=_C["subtext"], anchor="mm")
+    y += 165
+
+    # ── Top A.I. signal — front and center on Slide 1 ────────────────────────
+    signals_h1 = sorted([s for s in data.get("ai_signals", []) if s.get("confidence", 0) > 65],
+                        key=lambda s: s.get("confidence", 0), reverse=True)
+    if signals_h1:
+        sig0  = signals_h1[0]
+        bull0 = "bull" in sig0.get("direction", "bull").lower()
+        sc0   = _C["green"] if bull0 else _C["red"]
+        lbl0  = "BULL" if bull0 else "BEAR"
+        conf0 = sig0.get("confidence", 70)
+        _draw_glow_card(d, 0, y, W, y + 100, radius=0, accent=sc0, fill=_C["card"])
+        d.rectangle([0, y, 8, y + 100], fill=sc0)
+        mid_s = y + 50
+        d.text((PAD + 14, mid_s - 16), "\U0001f916 TOP A.I. SIGNAL:", font=fnt_xs, fill=_C["subtext"], anchor="lm")
+        d.text((PAD + 14, mid_s + 22), f"{lbl0} {sig0['symbol']}", font=fnt_sm, fill=sc0, anchor="lm")
+        d.text((W - PAD, mid_s + 2),   f"{conf0:.0f}%",     font=fnt_lg, fill=sc0,           anchor="rm")
+        d.text((W - PAD, mid_s + 46),  "confidence",        font=fnt_nano, fill=_C["subtext"], anchor="rm")
+        y += 112
+    else:
+        signals_h1 = []
+
+    # ── SPY / QQQ / VIX ──────────────────────────────────────────────────────
     col_w = (W - PAD * 2 - 20) // 3
     for i, (lbl, val, vc) in enumerate([
         ("SPY", f"{spy:+.2f}%", _pct_color(spy)),
@@ -435,19 +463,39 @@ def _generate_hook_frame(data, trigger):
     d.text((PAD, y + 10), "TODAY'S TOP MOVERS", font=fnt_xs, fill=_C["amber"])
     y += 55
     n_hot  = min(len(hot), 5)
-    card_h = max(120, (H - y - 130) // max(n_hot, 1))
+    card_h = max(118, (H - y - 130) // max(n_hot, 1))
+
+    # Build signal lookup for mover badges
+    sig_map_h1 = {s["symbol"]: s for s in signals_h1}
+
     for tk in hot[:n_hot]:
         tc   = _pct_color(tk["pct"])
         sign = "+" if tk["up"] else ""
         _draw_glow_card(d, 0, y, W, y + card_h - 4, radius=0, accent=tc, fill=_C["card"])
         d.rectangle([0, y, 7, y + card_h - 4], fill=tc)
         mid = y + (card_h - 4) // 2
-        d.text((PAD + 12, mid - 20), tk["symbol"],             font=fnt_lg, fill=_C["text_hi"], anchor="lm")
-        d.text((PAD + 12, mid + 30), f"${tk['price']:,.2f}",   font=fnt_xs, fill=_C["subtext"], anchor="lm")
-        d.text((W - PAD,  mid),      f"{sign}{tk['pct']:.2f}%", font=fnt_lg, fill=tc,           anchor="rm")
+        d.text((PAD + 12, mid - 20), tk["symbol"],              font=fnt_lg, fill=_C["text_hi"], anchor="lm")
+        d.text((PAD + 12, mid + 30), f"${tk['price']:,.2f}",    font=fnt_xs, fill=_C["subtext"], anchor="lm")
+        d.text((W - PAD,  mid - 6),  f"{sign}{tk['pct']:.2f}%", font=fnt_lg, fill=tc,            anchor="rm")
+        # AI signal badge if the engine has a view on this ticker
+        tk_sig = sig_map_h1.get(tk["symbol"])
+        if tk_sig:
+            ts_bull = "bull" in tk_sig.get("direction", "bull").lower()
+            ts_c    = _C["green"] if ts_bull else _C["red"]
+            ts_lbl  = f"\U0001f916 {'BULL' if ts_bull else 'BEAR'} {tk_sig.get('confidence', 70):.0f}%"
+            d.text((W - PAD, mid + 34), ts_lbl, font=fnt_nano, fill=ts_c, anchor="rm")
         y += card_h
-    regime_c = {"BULLISH": "\U0001f7e2", "BEARISH": "\U0001f534", "NEUTRAL": "\U0001f7e1"}.get(regime, "")
-    _draw_caption_bar(d, W, H, f"{regime_c} {regime}  Score {score}/100  Follow for free A.I. signals", fnt_xs, fnt_nano)
+
+    # Caption — lead with top signal if we have one
+    if signals_h1:
+        s0_cap   = signals_h1[0]
+        bull_cap = "bull" in s0_cap.get("direction", "").lower()
+        emoji_cap = "\U0001f7e2" if bull_cap else "\U0001f534"
+        caption_h1 = f"{emoji_cap} {'BULL' if bull_cap else 'BEAR'} {s0_cap['symbol']} {s0_cap.get('confidence',70):.0f}%  |  Follow for free A.I. signals"
+    else:
+        regime_c = {"BULLISH": "\U0001f7e2", "BEARISH": "\U0001f534", "NEUTRAL": "\U0001f7e1"}.get(regime, "")
+        caption_h1 = f"{regime_c} {regime}  Score {score}/100  Follow for free A.I. signals"
+    _draw_caption_bar(d, W, H, caption_h1, fnt_xs, fnt_nano)
     return img
 
 
@@ -1387,6 +1435,8 @@ def _upload_to_youtube(service, video_path: str, title: str, description: str) -
         "paper trading", "finance", "investing", "stocks", "trading bot",
         "market analysis", "automated trading", "quant trading",
         "market genie", "AI signals", "stock signals",
+        "trading signals", "stock picks", "day trader", "technical analysis",
+        "pre market movers", "options trading", "swing trading",
     ]
 
     body = {
@@ -1504,7 +1554,10 @@ def post_market_update(trigger: str = "midday"):
             if h0 and abs(h0.get("pct", 0)) >= 2:
                 verb  = "SURGING" if h0["up"] else "CRASHING"
                 emoji = "🚀" if h0["up"] else "💥"
-                return f"{h0['symbol']} is {verb} pre-market {emoji} A.I. signals for {date_str}"
+                sig_on_mover = next((s for s in sigs if s["symbol"] == h0["symbol"]), None)
+                if sig_on_mover:
+                    return f"{h0['symbol']} {verb} {abs(h0['pct']):.1f}% pre-market — my A.I. has a trade plan {emoji}"
+                return f"{h0['symbol']} is {verb} pre-market {emoji} — A.I. signals for {date_str}"
             if regime == "BULLISH":
                 return f"🟢 Bullish setup brewing — A.I. pre-market brief {date_str}"
             if regime == "BEARISH":
@@ -1596,6 +1649,7 @@ def post_market_update(trigger: str = "midday"):
         f"🌡️ VIX: {data['vix']:.1f}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🤖 AI Signals:\n{sig_lines}\n\n"
+        f"📸 Slide 4 has the full trade plan — entry, stop, and target. Screenshot it!\n\n"
         f"📂 Open Positions ({len(data['positions'])}):\n{pos_lines}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🔔 FOLLOW for free AI signals every single trading day.\n"

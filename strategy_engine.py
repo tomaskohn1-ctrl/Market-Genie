@@ -92,13 +92,10 @@ STRAT_PROVEN = {
     if s.strip()
 }
 
-# Chop windows (ET). Inside these, entries must be high-quality.
-# 10:00-10:59 was the single worst hour; 13:00-13:59 the post-lunch fade.
+# Chop windows removed (Jun 11) — user wants full-session trading.
+# Previous windows: 10:00-11:00 AM and 1:00-2:00 PM ET (both_agree + conf≥85 required).
 def _chop_windows():
-    return [
-        (dtime(10, 0), dtime(11, 0)),
-        (dtime(13, 0), dtime(14, 0)),
-    ]
+    return []  # disabled — no time-of-day blocks
 
 # Scale-out levels (% move). Take half off at first target, trail the rest.
 STRAT_PARTIAL1_PCT = _f("STRAT_PARTIAL1_PCT", 0.0075)   # +0.75% -> sell 50%
