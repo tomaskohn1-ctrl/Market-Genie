@@ -11815,13 +11815,13 @@ print(f"[TimeExit] Loop started — positions close after {_ALP_MAX_HOLD_MINS} m
 _start_predict_bg()
 print("[Predict] Background scanner auto-started on import — signals will flow to Alpaca immediately")
 
-# Start YouTube auto-poster — generates Shorts at 9:15 AM, 12:00 PM, 4:15 PM ET.
-# No-op if YOUTUBE_TOKEN_JSON env var is not set.
-try:
-    from youtube_poster import start_youtube_scheduler
-    start_youtube_scheduler()
-except Exception as _yt_err:
-    print(f"[YouTube] Scheduler import error (non-fatal): {_yt_err}")
+# YouTube auto-poster disabled (Jun 11) — upload removed per user request.
+# To re-enable: uncomment the block below and redeploy.
+# try:
+#     from youtube_poster import start_youtube_scheduler
+#     start_youtube_scheduler()
+# except Exception as _yt_err:
+#     print(f"[YouTube] Scheduler import error (non-fatal): {_yt_err}")
 
 
 @app.route("/api/debug/signals")
