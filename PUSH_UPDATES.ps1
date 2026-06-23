@@ -32,7 +32,7 @@ git commit -m "Zero all cooldowns; bench UBER/MRVL/GME/DKNG/PYPL/SPY/DIA; openin
 
 Write-Host ""
 Write-Host "=== Pushing to GitHub (Railway will auto-deploy) ===" -ForegroundColor Cyan
-git push https://tomaskohn1-ctrl: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@github.com/tomaskohn1-ctrl/Market-Genie.git main
+git push origin main
 
 Write-Host ""
 if ($LASTEXITCODE -eq 0) {
