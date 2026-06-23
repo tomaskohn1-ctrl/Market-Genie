@@ -2,12 +2,20 @@
 #  Market Genie - push updates to GitHub / Railway
 #  Right-click → Run with PowerShell
 # ============================================================
+$RepoDir = "C:\Users\tomas\Documents\Claude\Projects\Market Genie"
+$LogFile = "C:\Users\tomas\Documents\Claude\Projects\Market Genie\push_log.txt"
+Start-Transcript -Path $LogFile -Force
 
-Set-Location $PSScriptRoot
+Set-Location $RepoDir
+
+Write-Host ""
+Write-Host "=== Closing GitHub Desktop ===" -ForegroundColor Cyan
+Get-Process -Name "GitHubDesktop" -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 2
 
 Write-Host ""
 Write-Host "=== Clearing any stale git lock ===" -ForegroundColor Cyan
-if (Test-Path ".git\index.lock") { Remove-Item ".git\index.lock" -Force }
+if (Test-Path ".git\index.lock") { Remove-Item ".git\index.lock" -Force; Write-Host "Lock removed." }
 
 Write-Host ""
 Write-Host "=== Untracking secrets (keeps files on disk) ===" -ForegroundColor Cyan
@@ -20,11 +28,11 @@ git add market_genie_server.py strategy_engine.py dashboard.html .gitignore yout
 
 Write-Host ""
 Write-Host "=== Committing ===" -ForegroundColor Cyan
-git commit -m "Bench UBER/MRVL/GME/DKNG/PYPL/SPY/DIA; cooldowns reduced; chop windows removed; daily loss limit -600; YouTube upload disabled"
+git commit -m "Zero all cooldowns; bench UBER/MRVL/GME/DKNG/PYPL/SPY/DIA; opening guard off; YouTube upload off (Jun 23)"
 
 Write-Host ""
 Write-Host "=== Pushing to GitHub (Railway will auto-deploy) ===" -ForegroundColor Cyan
-git push https://tomaskohn1-ctrl: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@github.com/tomaskohn1-ctrl/Market-Genie.git main
+git push https://tomaskohn1-ctrl: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@github.com/tomaskohn1-ctrl/Market-Genie.git main
 
 Write-Host ""
 if ($LASTEXITCODE -eq 0) {
@@ -33,4 +41,6 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "=== Push failed. Check the output above. ===" -ForegroundColor Red
 }
 
+Stop-Transcript
+Write-Host "Log saved to: $LogFile" -ForegroundColor Yellow
 Read-Host "Press Enter to close"

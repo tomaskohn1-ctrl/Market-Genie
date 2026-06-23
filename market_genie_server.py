@@ -7355,8 +7355,8 @@ _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.40"))   # ma
 _ALP_MIN_DAY_RANGE_PCT      = float(os.getenv("ALPACA_MIN_DAY_RANGE_PCT", "0.5"))  # min % move from today's open — filters flat/dead stocks; applied after 12:00 ET only
 _ALP_MIN_DAY_RANGE_EARLY_PCT= float(os.getenv("ALPACA_MIN_DAY_RANGE_EARLY_PCT", "0.25")) # looser threshold before noon ET — stocks haven't moved yet but trend is forming
 _ALP_DEDUP_SECS       = 600    # 10 min dedup — reduced 25→10 min: with 9-ticker universe and 20-40 min holds, 25 min was blocking same-ticker re-entry in the same hour entirely; 10 min allows a fresh setup after the position exits while preventing immediate same-bar re-entry
-_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "60"))  # min wait after a losing exit — reduced 180→60 min (Jun 9): 3-hr block was too restrictive for a 6.5-hr session; 60 min gives tape time to change without killing the afternoon
-_ALP_EXIT_COOLDOWN_MINS = int(os.getenv("ALPACA_EXIT_COOLDOWN_MINS", "30"))  # min wait after ANY exit (win or lose) — reduced 45→30 min (Jun 9): 45 min was preventing re-entry on working setups even after wins
+_ALP_LOSS_COOLDOWN_MINS = int(os.getenv("ALPACA_LOSS_COOLDOWN_MINS", "0"))  # min wait after a losing exit — set to 0 (Jun 23): user wants no cooldown blocks, trade all day
+_ALP_EXIT_COOLDOWN_MINS = int(os.getenv("ALPACA_EXIT_COOLDOWN_MINS", "0"))  # min wait after ANY exit — set to 0 (Jun 23): no cooldown blocks
 _ALP_MAX_BULL_POSITIONS = int(os.getenv("ALPACA_MAX_BULL_POSITIONS", "5"))  # max simultaneous bull/long positions (up to 5 of 6 slots)
 _ALP_MAX_BEAR_POSITIONS = int(os.getenv("ALPACA_MAX_BEAR_POSITIONS", "5"))  # max simultaneous bear/short positions (up to 5 of 6 slots)
 
@@ -7537,7 +7537,7 @@ _alp_daily_limit_fired    = False   # True for the rest of the session once trig
 # Jun 8: MRVL -$444 at 9:45 → T entered at 11:01 (75 min) → -$185
 #        With 90-min all-sym cooldown that would have been blocked.
 _ALP_BIG_LOSS_USD         = float(os.getenv("ALPACA_BIG_LOSS_USD",    "200"))   # single-trade loss threshold
-_ALP_BIG_LOSS_PAUSE_MINS  = int(os.getenv("ALPACA_BIG_LOSS_PAUSE",    "30"))    # all-symbol pause after big loss — reduced 90→30 min (Jun 9): 30 min stops revenge trading without killing the rest of the session
+_ALP_BIG_LOSS_PAUSE_MINS  = int(os.getenv("ALPACA_BIG_LOSS_PAUSE",    "0"))    # all-symbol pause after big loss — set to 0 (Jun 23): no cooldown blocks
 _alp_big_loss_until       = 0.0    # unix timestamp: all entries blocked until this time
 _alp_prev_loop_pnl        = None   # session P&L at end of previous monitoring loop (for big-loss delta detection)
 
@@ -9555,17 +9555,10 @@ def _alp_execute_signal(res: dict):
     # Require both_agree=1 AND conf ≥ 78 to enter during this window.
     # This doesn't block the window entirely — strong signals (DVN, OXY-type) still
     # fire; it just filters out marginal-confidence opens where risk is highest.
+    # Opening guard disabled (Jun 23) — user wants to trade from open with no time blocks.
     _ov_now = _get_et_now().time()
-    if dtime(9, 30) <= _ov_now < dtime(9, 45) and not _is_forced:
-        _ov_conf = float(res.get("confidence", 0) or 0)
-        _ov_ba   = int(res.get("both_agree", 0) or 0)
-        _ov_min_conf = int(os.getenv("OPEN_GUARD_MIN_CONF", "78"))
-        if _ov_ba < 1 or _ov_conf < _ov_min_conf:
-            print(f"[OpenGuard] {sym} — SKIPPED: opening window 9:30-9:44 ET requires "
-                  f"both_agree=1 AND conf≥{_ov_min_conf} "
-                  f"(got ba={_ov_ba} conf={_ov_conf:.1f}) — too volatile for marginal signals")
-            return
-        print(f"[OpenGuard] {sym} — PASSED: opening window (ba={_ov_ba} conf={_ov_conf:.1f}≥{_ov_min_conf})")
+    if dtime(9, 30) <= _ov_now < dtime(9, 45):
+        print(f"[OpenGuard] {sym} — opening window, guard disabled — allowing")
 
     # ── VIX gate — volatility-aware entry filter ──────────────────────────────
     # Only applies to the 4 focused ETFs (TQQQ/SQQQ/SPXL/SPXS).
