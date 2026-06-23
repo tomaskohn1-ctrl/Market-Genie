@@ -70,7 +70,7 @@ def _i(name, default):
 
 # Minimum edge score to enter at all (your _wr_edge_score output).
 # Marginal signals are what fill the losing TIME/STOP buckets.
-STRAT_MIN_EDGE        = _f("STRAT_MIN_EDGE", 95.0)
+STRAT_MIN_EDGE        = _f("STRAT_MIN_EDGE", 0.0)   # disabled (Jun 23): was 95 but edge_score rarely computed; both_agree+conf gates are the real filter
 # Require both models to agree during chop windows.
 STRAT_REQUIRE_AGREE   = _i("STRAT_REQUIRE_AGREE_IN_CHOP", 1)
 # Confidence bar that must be cleared inside a chop window.
