@@ -6773,9 +6773,9 @@ print("[TLT/PC/TICK] Treasury + P/C + TICK thread started (TLT/TICK every 2 min,
 # Lowered from 75/65/85 — original values were too conservative given:
 #   a) data showed conf inversion (higher conf = worse WR in 70-80% range)
 #   b) system was consistently stuck at 1-2/5 slots on bullish days
-_BREADTH_EASY_CONF_NEUTRAL = int(os.getenv("BREADTH_EASY_CONF_NEUTRAL", "82"))  # raised 65->82: NEUTRAL regime means no edge; only elite signals   # floor at regime boundary (was 75)
-_BREADTH_EASY_CONF_EXTREME = int(os.getenv("BREADTH_EASY_CONF_EXTREME", "55"))   # floor at max trend strength (was 65)
-_BREADTH_COUNTER_CONF      = int(os.getenv("BREADTH_COUNTER_CONF",      "88"))  # raised 80->88: counter-trend trades burn most P&L; need very high bar   # counter-regime always (was 85)
+_BREADTH_EASY_CONF_NEUTRAL = int(os.getenv("BREADTH_EASY_CONF_NEUTRAL", "70"))  # lowered 82->70 (Jul 8): was blocking too many signals in neutral/borderline regimes
+_BREADTH_EASY_CONF_EXTREME = int(os.getenv("BREADTH_EASY_CONF_EXTREME", "55"))   # floor at max trend strength
+_BREADTH_COUNTER_CONF      = int(os.getenv("BREADTH_COUNTER_CONF",      "75"))  # lowered 88->75 (Jul 8): 88 was blocking inverse ETF signals in bearish tape
 
 def _dynamic_conf_floors(score: float):
     """
@@ -7348,7 +7348,7 @@ _PAIR_TARGET_HIGH_PCT = float(os.getenv("PAIR_TARGET_HIGH_PCT", "0.025"))  # 2.5
 # R:R at 2.5%: 1.47:1 (TQQQ stop 1.7%), break-even WR = 40% — meaningfully better.
 # With new gates (both_agree, dead zones, blacklist, NEUTRAL block) win rate
 # should comfortably exceed 45%, making both tiers profitable.
-_ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "88"))  # 88: matches counter-regime floor; elite-only but not over-restrictive             # min confidence floor — raised 72→90 for concentrated $80K single-position strategy; only elite setups
+_ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "70"))  # lowered 88->70 (Jul 8): 88 was blocking everything; dynamic breadth floors handle regime filtering
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
 _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "18.0"))        # min stock price — $18: blocks MARA ($13) and SOFI-type noise but allows NCLH ($19) and other $18-20 liquid names that have real dollar moves
 _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.40"))   # max bid-ask spread % — loosened 0.10→0.40: 0.1% was blocking every trade during opening hour (natural spreads 0.2-0.5%); 0.4% on $100K = $400 max spread cost, still reasonable
