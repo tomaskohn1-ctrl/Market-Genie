@@ -6028,16 +6028,18 @@ _pc_lock = threading.Lock()
 #   < 10 resolved trades in a band → fall back to static tier multiplier
 #   ≥ 10 trades → use live Half-Kelly from the DB
 #
-# Hard caps: position never goes below $60K or above $100K regardless of Kelly.
+# Hard caps: position never goes below $30K or above $60K regardless of Kelly.
 # Refreshed every 30 minutes from winrate.db so it adapts as data accumulates.
 #
 # Static fallback tiers (used until enough data builds up):
-#   eff_conf 90–99  → 1.00× ($80K base)
-#   eff_conf 100+   → 1.25× ($100K, hard cap)
+#   eff_conf 72–79  → 0.75× ($22.5K → floored at $30K)
+#   eff_conf 80–89  → 1.00× ($30K)
+#   eff_conf 90–99  → 1.25× ($37.5K)
+#   eff_conf 100+   → 1.50× ($45K → capped at $60K)
 # ─────────────────────────────────────────────────────────────────────────────
 _KELLY_MIN_TRADES   = 10       # minimum resolved trades per band before using live Kelly
-_KELLY_HARD_MIN_USD = 60_000   # never go below $60K regardless of Kelly fraction
-_KELLY_HARD_MAX_USD = 100_000  # never go above $100K regardless of Kelly fraction
+_KELLY_HARD_MIN_USD = 30_000   # floor = base position size — fixed Jul 17: was 60K which doubled every loss vs $30K target
+_KELLY_HARD_MAX_USD = 60_000   # ceiling = 2× base at highest confidence band
 
 # Confidence bands: (label, lo_inclusive, hi_exclusive)
 _KELLY_BANDS = [
