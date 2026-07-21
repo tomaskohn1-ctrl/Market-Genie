@@ -7529,7 +7529,10 @@ _ALP_PROFIT_GUARD_NQ_SKIP = float(os.getenv("ALPACA_PROFIT_GUARD_NQ_SKIP", "0.5"
 # Jun 8: MRVL stop (-$444) alone would have triggered it, saving ~$510 of
 # subsequent recovery-trade losses (T, GDXJ, XLB).
 _ALP_DAILY_LOSS_LIMIT     = float(os.getenv("ALPACA_DAILY_LOSS_LIMIT", "-400"))  # session P&L floor — hard stop at -$400 loss for investor confidence (Jul 8)
-_alp_daily_limit_fired    = False   # True for the rest of the session once triggered
+_alp_daily_limit_fired    = False   # True for the rest of the SESSION (one calendar day) once triggered
+_alp_last_session_date    = None    # ET date string "YYYY-MM-DD" of the last trading day we've seen
+                                    # When this changes, all daily P&L state is reset automatically
+                                    # (fixes: limit never reset between days when server ran multi-day)
 
 # ── Big-loss all-symbol cooldown ──────────────────────────────────────────────
 # After any single trade loses more than _ALP_BIG_LOSS_USD, block ALL new
@@ -8943,7 +8946,26 @@ def _alp_time_exit_loop():
             # On first loop run, snapshot the starting equity as baseline.
             global _alp_session_start_equity, _alp_session_peak_pnl, \
                    _alp_profit_guard_fired, _alp_profit_guard_until, \
-                   _alp_daily_limit_fired, _alp_big_loss_until, _alp_prev_loop_pnl
+                   _alp_daily_limit_fired, _alp_big_loss_until, _alp_prev_loop_pnl, \
+                   _alp_last_session_date
+            # ── Daily reset: when ET date rolls over, clear all session P&L state ──
+            # Without this, _alp_daily_limit_fired stays True across midnight and
+            # blocks ALL trading on the next day if yesterday hit the loss limit.
+            try:
+                from zoneinfo import ZoneInfo as _ZI
+                _today_et = datetime.now(_ZI("America/New_York")).strftime("%Y-%m-%d")
+            except Exception:
+                _today_et = None
+            if _today_et and _alp_last_session_date and _today_et != _alp_last_session_date:
+                print(f"[DailyReset] 🌅 New trading day detected ({_alp_last_session_date} → {_today_et}) "
+                      f"— resetting session P&L state, daily limit, profit guard")
+                _alp_session_start_equity = None
+                _alp_session_peak_pnl     = 0.0
+                _alp_profit_guard_fired   = False
+                _alp_daily_limit_fired    = False
+                _alp_prev_loop_pnl        = None
+            if _today_et:
+                _alp_last_session_date = _today_et
             try:
                 acc_r = requests.get(f"{_ALPACA_BASE_URL}/v2/account",
                                      headers=_alp_headers(), timeout=6)
