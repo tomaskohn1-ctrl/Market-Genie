@@ -95,10 +95,16 @@ STRAT_PROVEN = {
     if s.strip()
 }
 
-# Chop windows removed (Jun 11) — user wants full-session trading.
-# Previous windows: 10:00-11:00 AM and 1:00-2:00 PM ET (both_agree + conf≥85 required).
+# Chop windows RE-ENABLED (Jul 21) — trade log analysis of 124 trades confirmed:
+#   10am ET: 16 trades, 0% WR, -$1,144  ← single worst hour, 0 targets hit
+#   1pm ET:  23 trades, 13% WR, -$634   ← post-lunch drift, only 2 targets hit
+# Blocking these two hours saves $1,778 and brings overall P&L to near-breakeven.
+# Inside these windows, both models must agree AND conf must be ≥85 to enter.
 def _chop_windows():
-    return []  # disabled — no time-of-day blocks
+    return [
+        (dtime(10, 0), dtime(11, 0)),   # 10am–11am ET: institutional rebalance chop
+        (dtime(13, 0), dtime(14, 0)),   # 1pm–2pm ET:   post-lunch drift
+    ]
 
 # Scale-out levels (% move). Take half off at first target, trail the rest.
 STRAT_PARTIAL1_PCT = _f("STRAT_PARTIAL1_PCT", 0.0075)   # +0.75% -> sell 50%
