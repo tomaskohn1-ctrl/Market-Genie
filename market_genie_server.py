@@ -9512,6 +9512,24 @@ def _alp_execute_signal(res: dict):
               f"(session P&L ≤ ${_ALP_DAILY_LOSS_LIMIT:.0f})")
         return
 
+    # ── Duplicate-symbol block ────────────────────────────────────────────────
+    # Never enter a symbol that already has an open position in Alpaca.
+    # This was responsible for triple NKE entries on Jul 16-22 — the same signal
+    # fired repeatedly and the system opened 3 concurrent NKE positions, tripling
+    # the loss when NKE gapped down. Fix: hard-check Alpaca before every entry.
+    if not _is_forced:
+        try:
+            _dup_r = requests.get(f"{_ALPACA_BASE_URL}/v2/positions/{sym}",
+                                  headers=_alp_headers(), timeout=4)
+            if _dup_r.status_code == 200:
+                _dup_qty = float(_dup_r.json().get("qty", 0) or 0)
+                if abs(_dup_qty) > 0:
+                    print(f"[DupBlock] {sym} — SKIPPED: already have open position "
+                          f"({_dup_qty:+.0f} shares) — no duplicate entries allowed")
+                    return
+        except Exception as _dup_err:
+            print(f"[DupBlock] {sym} — position check error (non-fatal, allowing): {_dup_err}")
+
     # ── Big-loss all-symbol cooldown ──────────────────────────────────────────
     # A single trade just lost > $BIG_LOSS_USD — pause everything to prevent
     # emotional/recovery trading.
