@@ -11768,7 +11768,8 @@ def api_strat_status():
                                headers=_alp_headers(), timeout=8)
             if acc.status_code == 200:
                 a = acc.json()
-                pnl = float(a.get("equity", 0)) - float(a.get("last_equity", 0))
+                _last_eq_strat = float(a.get("last_equity", 0) or 0)
+                pnl = (float(a.get("equity", 0)) - _last_eq_strat) if _last_eq_strat > 0 else 0.0
                 out["pnl_today"] = round(pnl, 2)
                 out["pct_to_goal"] = round(100 * pnl / goal, 1) if goal else None
                 out["goal_met"] = pnl >= goal
