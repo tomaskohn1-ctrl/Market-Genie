@@ -11310,7 +11310,8 @@ def api_youtube_data():
             if ra.status_code == 200:
                 acc = ra.json()
                 equity    = float(acc.get("equity", 100_000))
-                pnl_today = equity - float(acc.get("last_equity", equity))
+                _last_eq  = float(acc.get("last_equity", 0) or 0)
+                pnl_today = (equity - _last_eq) if _last_eq > 0 else 0.0  # 0 = Alpaca didn't send last_equity yet
         except Exception: pass
         try:
             rp = requests.get(f"{base_url}/v2/positions", headers=hdrs, timeout=4)
@@ -11799,7 +11800,8 @@ def api_alpaca_status():
             "equity":         float(acc_data.get("equity", 0)),
             "buying_power":   float(acc_data.get("buying_power", 0)),
             "cash":           float(acc_data.get("cash", 0)),
-            "pnl_today":      float(acc_data.get("equity", 0)) - float(acc_data.get("last_equity", 0)),
+            "pnl_today":      (float(acc_data.get("equity", 0)) - float(acc_data.get("last_equity", 0) or 0))
+                              if float(acc_data.get("last_equity", 0) or 0) > 0 else 0.0,
             "open_positions": len(pos_data),
             "open_orders":    len(ord_data),
             "max_positions":  _ALP_MAX_POSITIONS,
