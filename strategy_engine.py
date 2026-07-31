@@ -78,10 +78,16 @@ STRAT_CHOP_MIN_CONF   = _f("STRAT_CHOP_MIN_CONF", 85.0)
 
 # Symbols that bled consistently in the logs — benched until they re-earn
 # their place. Comma-separated env override available.
-_DEFAULT_BENCH = "LABU,SPXS,SQQQ,NUGT,FNGD,DUST,ERY,FAS,TECL,UBER,MRVL,GME,DKNG,PYPL,SPY,DIA"
-# Added Jun 20 from winrate DB analysis (14,740 signals):
-#   UBER 16% WR (49 trades), MRVL 22% (79), GME/DKNG/PYPL ~31% each
-#   SPY/DIA 32% each — consistent alpha drains across all confidence levels
+_DEFAULT_BENCH = (
+    "LABU,SPXS,SQQQ,NUGT,FNGD,DUST,ERY,FAS,TECL,UBER,MRVL,GME,DKNG,PYPL,SPY,DIA,"
+    # Added Jun 20 from winrate DB analysis:
+    #   UBER 16% WR, MRVL 22%, GME/DKNG/PYPL ~31%, SPY/DIA 32%
+    # Added Jul 23 from 490-trade live P&L analysis:
+    "PLTR,OXY,ABBV,UNH,CRM,"   # 0% WR in recent intraday trades, consistent losers
+    "RBLX,QCOM,MCHP,MU,"       # 0% WR, >$2K loss each in 30-day window
+    "ASTS,SMCI,SLB,SOFI,"      # 0% WR, steady bleed across multiple entries
+    "SOXL,SOXS"                 # SOXL -$1,817 (29% WR), SOXS -$643 (0% WR)
+)
 STRAT_BENCH = {
     s.strip().upper()
     for s in os.getenv("STRAT_BENCH_SYMBOLS", _DEFAULT_BENCH).split(",")
