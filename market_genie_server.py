@@ -2676,6 +2676,37 @@ def compute_market_mood(ape_tickers, st_tickers):
     return score, label, cls
 
 
+@app.route("/api/social/push", methods=["POST"])
+def api_social_push():
+    """Receives StockTwits sentiment from the Cowork scheduled task (Cowork-proxy).
+    Body: {"TICKER": {"score": int, "label": str, "vol_score": int}, ...}
+    StockTwits Cloudflare blocks Railway's IP, so Cowork pulls via OAuth MCP
+    and pushes here every 5 min during market hours."""
+    try:
+        data = request.json
+        if not isinstance(data, dict):
+            return jsonify({"error": "expected JSON dict"}), 400
+        now = time.time()
+        updated = []
+        with _st_sentiment_lock:
+            for sym, info in data.items():
+                sym = sym.upper().strip()
+                if not sym:
+                    continue
+                _st_sentiment_cache[sym] = {
+                    "score":     int(info.get("score", 50)),
+                    "label":     str(info.get("label", "NEUTRAL")),
+                    "vol_score": int(info.get("vol_score", 50)),
+                    "ts":        now,
+                }
+                updated.append(sym)
+        print(f"[StockTwits] Sentiment cache updated: {len(updated)} symbols — "
+              f"{', '.join(updated[:8])}{'...' if len(updated) > 8 else ''}")
+        return jsonify({"ok": True, "updated": len(updated)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/social/market-scan")
 def social_market_scan():
     """Full market-wide social sentiment scan. Used by the Social Sentiment panel."""
@@ -6838,6 +6869,19 @@ _SOCIAL_HOT_REFRESH = 300   # rebuild cache every 5 min
 _SOCIAL_BOOST_HOT   = 5     # +5 pts when velocity > 20 (🔥 HOT or ⚡ SPIKE)
 _SOCIAL_BOOST_SPIKE = 8     # +8 pts when velocity > 100 (⚡ SPIKE — crowd piling in)
 
+# ── StockTwits Real-Time Sentiment Cache (Cowork-proxy) ──────────────────────
+# Railway's IP is blocked by StockTwits Cloudflare.  Solution: a Cowork
+# scheduled task pulls sentiment via the connected StockTwits MCP (OAuth-auth'd)
+# every 5 min and POSTs the results to /api/social/push.  This cache stores those
+# results so _get_social_conf_boost() can factor in real-time crowd sentiment.
+# Format: { "TICKER": {"score": int, "label": str, "vol_score": int, "ts": float} }
+_st_sentiment_cache: dict = {}
+_st_sentiment_lock        = threading.Lock()
+_ST_BULLISH_BOOST         = 5    # +5 conf: score > 65 (bullish crowd)
+_ST_SPIKE_BOOST           = 8    # +8 conf: score > 65 AND vol_score > 70
+_ST_BEAR_GATE_SCORE       = 35   # log note when sentiment < 35 (bearish gate)
+_ST_CACHE_TTL             = 600  # stale after 10 min (2 push cycles)
+
 
 def _social_cache_loop():
     """Background thread: keeps _social_hot_cache fresh from ApeWisdom every 5 min."""
@@ -6876,17 +6920,35 @@ def _social_cache_loop():
 
 def _get_social_conf_boost(sym: str) -> int:
     """Return confidence boost points for sym based on current social heat.
+    Combines ApeWisdom velocity (Reddit) + StockTwits real-time sentiment.
     Returns 0 if ticker is not trending. Called inside _alp_execute_signal."""
+    boost = 0
+    sym_u = sym.upper()
+
+    # ── ApeWisdom / Reddit velocity (existing) ───────────────────────────────
     with _social_hot_lock:
-        data = _social_hot_cache.get(sym.upper())
-    if not data:
-        return 0
-    vel = data.get("velocity", 0)
-    if vel > 100:
-        return _SOCIAL_BOOST_SPIKE    # ⚡ SPIKE
-    if vel > 20:
-        return _SOCIAL_BOOST_HOT      # 🔥 HOT / Rising
-    return 0
+        ape_data = _social_hot_cache.get(sym_u)
+    if ape_data:
+        vel = ape_data.get("velocity", 0)
+        if vel > 100:
+            boost += _SOCIAL_BOOST_SPIKE    # ⚡ SPIKE
+        elif vel > 20:
+            boost += _SOCIAL_BOOST_HOT      # 🔥 HOT / Rising
+
+    # ── StockTwits real-time sentiment (Cowork-proxy) ────────────────────────
+    with _st_sentiment_lock:
+        st_data = _st_sentiment_cache.get(sym_u)
+    if st_data and (time.time() - st_data.get("ts", 0)) < _ST_CACHE_TTL:
+        score     = st_data.get("score", 50)
+        vol_score = st_data.get("vol_score", 50)
+        if score > 65:
+            st_boost = _ST_SPIKE_BOOST if vol_score > 70 else _ST_BULLISH_BOOST
+            boost += st_boost
+            print(f"[StockTwitsBoost] {sym_u} sentiment={score} vol={vol_score} → +{st_boost}")
+        elif score < _ST_BEAR_GATE_SCORE:
+            print(f"[StockTwits] {sym_u} bearish crowd ({score}) — noting")
+
+    return boost
 
 
 # ── FINRA Short Volume Cache ─────────────────────────────────────────────────
