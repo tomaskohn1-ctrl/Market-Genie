@@ -8764,10 +8764,14 @@ def _alp_eod_loop():
             is_weekday = et_now.weekday() <= 4
 
             # PRIMARY: 15:45–15:58 ET — fire once per day
+            # NOTE: intentionally NOT gated on _ALP_ENABLED — EOD must close positions
+            # even when trading is disabled (toggle off, redeploy, etc.).
+            # The HOOD $3K loss (Jul 20–31) was caused by this gate blocking EOD when
+            # trading was disabled mid-day, leaving a position open for 11 days.
             if (is_weekday
                     and dtime(15, 45) <= t < dtime(15, 59)
                     and date_key not in _flattened_primary
-                    and _ALP_ENABLED):
+                    and (_ALPACA_KEY and _ALPACA_SECRET)):
                 print(f"[EOD] {et_now.strftime('%H:%M')} ET — PRIMARY flatten: cancelling orders + closing all positions")
                 _alp_flatten_all()
                 _flattened_primary.add(date_key)
@@ -8781,7 +8785,7 @@ def _alp_eod_loop():
             if (is_weekday
                     and dtime(15, 59) <= t < dtime(16, 3)
                     and date_key not in _flattened_nuclear
-                    and _ALP_ENABLED):
+                    and (_ALPACA_KEY and _ALPACA_SECRET)):
                 print(f"[EOD] {et_now.strftime('%H:%M')} ET — NUCLEAR flatten: ensuring flat before close")
                 _alp_flatten_all()
                 _flattened_nuclear.add(date_key)
@@ -11900,10 +11904,39 @@ print(f"[Alpaca] Executor loaded — enabled={_ALP_ENABLED}, "
       f"paper={'yes' if 'paper' in _ALPACA_BASE_URL else 'NO — LIVE'}, "
       f"position_size=${_ALP_POSITION_SIZE_USD:.0f}, max_positions={_ALP_MAX_POSITIONS}")
 
+# ── Startup orphan closer ────────────────────────────────────────────────────
+# On every Railway deploy / server restart, check for positions that survived
+# from a prior session (e.g., EOD missed due to _ALP_ENABLED=False bug).
+# Close them immediately so we never start a session holding a stale bag.
+def _startup_close_orphans():
+    if not _ALPACA_KEY or not _ALPACA_SECRET:
+        return
+    import time as _t
+    _t.sleep(5)   # let Flask finish binding
+    try:
+        r = requests.get(f"{_ALPACA_BASE_URL}/v2/positions",
+                         headers=_alp_headers(), timeout=10)
+        if r.status_code != 200:
+            print(f"[Startup] Could not check positions: HTTP {r.status_code}")
+            return
+        orphans = r.json() if isinstance(r.json(), list) else []
+        if not orphans:
+            print("[Startup] ✅ No orphaned positions — clean start")
+            return
+        syms = [p.get("symbol","?") for p in orphans]
+        print(f"[Startup] ⚠️  {len(orphans)} orphaned position(s) found: {syms} — closing now")
+        _alp_flatten_all()
+        print(f"[Startup] Orphan close complete")
+    except Exception as e:
+        print(f"[Startup] Orphan close error: {e}")
+
+_startup_orphan_thread = threading.Thread(target=_startup_close_orphans, daemon=True, name="StartupOrphanClose")
+_startup_orphan_thread.start()
+
 # Start EOD flattener — ensures no overnight holds on scalp positions
 _eod_thread = threading.Thread(target=_alp_eod_loop, daemon=True)
 _eod_thread.start()
-print("[EOD] Flattener thread started — all positions will close at 15:55 ET daily")
+print("[EOD] Flattener thread started — all positions will close at 15:45 ET daily (ungated)")
 
 # Start time-based exit loop — closes ranging positions after _ALP_MAX_HOLD_MINS
 _time_exit_thread = threading.Thread(target=_alp_time_exit_loop, daemon=True, name="TimeExit")
