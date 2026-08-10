@@ -7967,6 +7967,13 @@ def _alp_get_open_positions():
     except Exception as e:
         print(f"[Alpaca] positions fetch error: {e}")
 
+    if not api_ok:
+        with _alp_lock:
+            fallback = set(_alp_last_traded.keys())
+        print(f"[Alpaca] positions API unavailable — using local tracker fallback: "
+              f"{sorted(fallback) if fallback else 'empty (no known positions)'}")
+        confirmed = fallback
+
     # Merge confirmed positions with locally-tracked pending orders,
     # expiring any pending entries older than 60 seconds.
     now = time.time()
@@ -9593,8 +9600,11 @@ def _alp_execute_signal(res: dict):
                     print(f"[DupBlock] {sym} — SKIPPED: already have open position "
                           f"({_dup_qty:+.0f} shares) — no duplicate entries allowed")
                     return
+            elif _dup_r.status_code != 404:
+                print(f"[DupBlock] {sym} — SKIPPED: Alpaca returned HTTP {_dup_r.status_code} — blocking")
+                return
         except Exception as _dup_err:
-            print(f"[DupBlock] {sym} — position check error (non-fatal, allowing): {_dup_err}")
+            print(f"[DupBlock] {sym} — SKIPPED: check failed ({_dup_err}) — blocking (was: non-fatal-allowing)")
 
     # ── Big-loss all-symbol cooldown ──────────────────────────────────────────
     # A single trade just lost > $BIG_LOSS_USD — pause everything to prevent
