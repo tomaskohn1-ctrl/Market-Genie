@@ -7959,11 +7959,13 @@ def _alp_get_open_positions():
     window before Alpaca API reflects the new position.
     """
     confirmed = set()
+    api_ok = False
     try:
         r = requests.get(f"{_ALPACA_BASE_URL}/v2/positions",
                          headers=_alp_headers(), timeout=8)
         if r.status_code == 200:
             confirmed = {p["symbol"] for p in r.json()}
+            api_ok = True
     except Exception as e:
         print(f"[Alpaca] positions fetch error: {e}")
 
