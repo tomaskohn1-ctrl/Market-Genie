@@ -5312,6 +5312,10 @@ _CHRONIC_LOSERS = frozenset(["NUGT", "LABU", "DUST", "TECL", "ZS",
                              "GLD", "SLV", "GDX", "GDXJ", "IAU", "GOLD", "NEM", "AEM",
                              # Meme / social stocks — manipulated, unpredictable
                              "GME", "AMC", "BBBY", "CHWY", "KOSS", "BB",
+                             # 0% win-rate chronic losers — Aug 2026 performance review
+                             # HIMS: -$10,158 / 11 trades / 0% WR; NKE: -$4,713 / 10 trades / 0% WR
+                             # HOOD: -$3,009 / 3 trades / 0% WR; PENN: -$2,928 / 6 trades / 0% WR
+                             "HIMS", "NKE", "HOOD", "PENN",
 ])
 # GME/CHWY added 2026-05-29: meme stocks traded 3x today, all losses.
 # Defensive stocks added: XLP, XLRE, WFC, OXY etc. don't have enough intraday
@@ -7412,7 +7416,7 @@ _PAIR_TARGET_HIGH_PCT = float(os.getenv("PAIR_TARGET_HIGH_PCT", "0.025"))  # 2.5
 # R:R at 2.5%: 1.47:1 (TQQQ stop 1.7%), break-even WR = 40% — meaningfully better.
 # With new gates (both_agree, dead zones, blacklist, NEUTRAL block) win rate
 # should comfortably exceed 45%, making both tiers profitable.
-_ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "70"))  # lowered 88->70 (Jul 8): 88 was blocking everything; dynamic breadth floors handle regime filtering
+_ALP_MIN_CONF         = int(os.getenv("ALPACA_MIN_CONF", "80"))  # raised 70->80 (Aug 13): 70 was too permissive — 43% win rate on low-conf trades dragging overall performance; 80 filters noise while breadth floors handle regime
 _ALP_MIN_STREAK       = int(os.getenv("ALPACA_MIN_STREAK", "2"))            # min streak — enter earlier in the move; streak=3 was 9+ min late, often past the initial push
 _ALP_MIN_PRICE        = float(os.getenv("ALPACA_MIN_PRICE", "18.0"))        # min stock price — $18: blocks MARA ($13) and SOFI-type noise but allows NCLH ($19) and other $18-20 liquid names that have real dollar moves
 _ALP_MAX_SPREAD_PCT   = float(os.getenv("ALPACA_MAX_SPREAD_PCT", "0.40"))   # max bid-ask spread % — loosened 0.10→0.40: 0.1% was blocking every trade during opening hour (natural spreads 0.2-0.5%); 0.4% on $100K = $400 max spread cost, still reasonable
